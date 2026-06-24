@@ -83,6 +83,10 @@ for i in $(seq 1 30); do
 done
 pct exec "$CTID" -- bash -c "echo ok" &>/dev/null || error "Container did not become ready in time"
 
+# ── Bootstrap curl ────────────────────────────────────────────────────────────
+info "Bootstrapping container..."
+pct exec "$CTID" -- bash -c "apt-get update -qq && apt-get install -y -qq curl"
+
 # ── Run MAXIS installer inside the container ──────────────────────────────────
 info "Installing MAXIS inside container $CTID..."
 pct exec "$CTID" -- bash -c "
