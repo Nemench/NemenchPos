@@ -16,7 +16,7 @@ export class KotDatabase {
   private db!: BetterSqlite3.Database;
 
   initialize() {
-    const dataDir = path.join(process.cwd(), "data");
+    const dataDir = process.env.DATA_DIR ?? path.join(process.cwd(), "data");
     fs.mkdirSync(dataDir, { recursive: true });
     this.db = new BetterSqlite3(path.join(dataDir, "maxis.sqlite"));
     this.db.pragma("journal_mode = WAL");

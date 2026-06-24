@@ -78,6 +78,16 @@ npm run dev
 
 ---
 
+## Option 4 — Windows desktop app (.exe installer)
+
+Download the latest installer from the [Releases page](https://github.com/Nemench/maxis/releases).
+
+Double-click `MAXIS-KOT-Setup.exe` to install. The app starts automatically and sits in the **system tray** — left-click the tray icon to open MAXIS in your browser. Other devices on the same network can connect via `http://<this-pc-ip>:3000`.
+
+> The installer is built automatically by GitHub Actions whenever a new version tag is pushed. No Windows machine needed to build it.
+
+---
+
 ## Data
 
 The SQLite database lives at `./data/maxis.sqlite`. Back this file up regularly to keep your orders and products safe.
