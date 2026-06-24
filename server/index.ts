@@ -4,9 +4,6 @@ import compression from "compression";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-if (process.env.NODE_ENV === "production" && !process.env.JWT_SECRET) {
-  console.warn("[MAXIS] Warning: JWT_SECRET not set — using default secret. Set JWT_SECRET in your environment for security.");
-}
 import { KotDatabase } from "./database.js";
 import authRouter from "./routes/auth.js";
 import usersRouter from "./routes/users.js";

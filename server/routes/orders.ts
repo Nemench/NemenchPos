@@ -32,9 +32,19 @@ router.patch("/:id/status", (req, res) => {
   catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to update status" }); }
 });
 
-router.patch("/:id/dept-status", (req, res) => {
+router.patch("/:id/dept-status", (req: AuthRequest, res) => {
   try {
     const { department, status } = req.body as { department: Department; status: DeptStatus };
+    const role = req.user?.role;
+    // Kitchen staff can only update kitchen; counter staff can only update counter
+    if (role === "kitchen" && department !== "kitchen") {
+      res.status(403).json({ message: "Kitchen staff can only update kitchen status" });
+      return;
+    }
+    if (role === "counter" && department !== "counter") {
+      res.status(403).json({ message: "Counter staff can only update counter status" });
+      return;
+    }
     res.json(db.updateDeptStatus(Number(req.params.id), department, status));
   } catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to update status" }); }
 });
