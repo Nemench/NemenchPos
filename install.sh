@@ -71,7 +71,8 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now "$SERVICE"
+systemctl enable "$SERVICE"
+systemctl restart "$SERVICE"
 ok "Service enabled and started"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
