@@ -18,48 +18,28 @@ Default login after a fresh install: **Admin / 0000**
 
 ---
 
-## Option 1 — One command on Proxmox host (creates + installs everything)
+## Option 1 — Install inside an existing LXC / server
 
-Run this **on the Proxmox host** (not inside a container):
-
-```bash
-bash <(curl -sSL https://raw.githubusercontent.com/Nemench/maxis/main/proxmox-deploy.sh)
-```
-
-That's it. The script automatically:
-- Downloads the Debian 12 LXC template (if not already present)
-- Creates and starts a new container (ID 200 by default)
-- Installs Node.js 20, clones the repo, builds the app, and sets up a systemd service
-
-The IP address is printed at the end. Access the app at `http://<container-ip>:3000`
-
-**Custom options** (all optional):
-```bash
-CTID=201 MEMORY=1024 STORAGE=local-lvm bash <(curl -sSL https://raw.githubusercontent.com/Nemench/maxis/main/proxmox-deploy.sh)
-```
-
-**Manage the container from Proxmox host:**
-```bash
-pct enter 200              # open a shell inside the container
-pct exec 200 -- journalctl -u maxis -f    # live logs
-pct exec 200 -- bash /opt/maxis/install.sh  # update to latest version
-```
-
-**Or manage the service from inside the container:**
-```bash
-systemctl status maxis
-systemctl restart maxis
-journalctl -u maxis -f
-```
-
----
-
-## Option 1b — Manual install (inside an existing LXC / Ubuntu server)
-
-If you already have a Debian/Ubuntu server or LXC, run inside it:
+Create a fresh **Debian 12 or Ubuntu 22.04** container or server, then run inside it:
 
 ```bash
 bash <(curl -sSL https://raw.githubusercontent.com/Nemench/maxis/main/install.sh)
+```
+
+The script installs Node.js 20, clones the repo, builds the app, and sets up a systemd service that starts automatically on boot.
+
+Access the app at `http://<server-ip>:3000`
+
+**Service commands:**
+```bash
+systemctl status maxis
+systemctl restart maxis
+journalctl -u maxis -f    # live logs
+```
+
+**To update:**
+```bash
+bash /opt/maxis/install.sh
 ```
 
 ---
