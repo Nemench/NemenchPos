@@ -23,7 +23,7 @@ Default login after a fresh install: **Admin / 0000**
 Create a fresh **Debian 12 or Ubuntu 22.04** container or server, then run inside it:
 
 ```bash
-bash <(curl -sSL https://raw.githubusercontent.com/Nemench/maxis/main/install.sh)
+curl -sSL https://raw.githubusercontent.com/Nemench/maxis/main/install.sh | bash
 ```
 
 The script installs Node.js 20, clones the repo, builds the app, and sets up a systemd service that starts automatically on boot.
