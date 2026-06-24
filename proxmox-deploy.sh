@@ -86,24 +86,24 @@ done
 pct exec "$CTID" -- bash -c "echo ok" &>/dev/null || error "Container did not become ready in time"
 
 # ── Force DNS — remove symlink (Debian 12 uses systemd-resolved) and write real file
-info "Configuring DNS..."
+info "Configuring network..."
 pct exec "$CTID" -- bash -c "rm -f /etc/resolv.conf && printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' > /etc/resolv.conf"
 
-# ── Wait for DHCP to assign a default route ──────────────────────────────────
-info "Waiting for network (DHCP)..."
-for i in $(seq 1 30); do
-  if pct exec "$CTID" -- bash -c "ip route show default | grep -q default" &>/dev/null; then
+# ── Add default route (Proxmox unprivileged LXC gives /32 DHCP with no gateway) ──
+GATEWAY=$(ip route show default | awk '/default/ {print $3}' | head -1)
+[ -n "$GATEWAY" ] || error "Could not detect host gateway. Check Proxmox network config."
+pct exec "$CTID" -- bash -c "ip route show default | grep -q default || ip route add default via $GATEWAY dev eth0"
+ok "Default route via $GATEWAY"
+
+# ── Verify internet reachability ──────────────────────────────────────────────
+for i in $(seq 1 10); do
+  if pct exec "$CTID" -- bash -c "ping -c1 -W3 8.8.8.8 > /dev/null 2>&1"; then
     break
   fi
   sleep 2
 done
-pct exec "$CTID" -- bash -c "ip route show default | grep -q default" \
-  || error "Container has no default route after 60s. Check that $BRIDGE is connected to your network."
-
-# ── Verify internet reachability (by IP, not DNS) ────────────────────────────
-if ! pct exec "$CTID" -- bash -c "ping -c1 -W5 8.8.8.8 > /dev/null 2>&1"; then
-  error "Container cannot reach the internet (ping 8.8.8.8 failed). Check your Proxmox bridge/firewall."
-fi
+pct exec "$CTID" -- bash -c "ping -c1 -W3 8.8.8.8 > /dev/null 2>&1" \
+  || error "Container cannot reach the internet. Check your Proxmox bridge/firewall."
 ok "Network is up"
 
 # ── Bootstrap curl ────────────────────────────────────────────────────────────
