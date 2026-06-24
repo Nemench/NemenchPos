@@ -42,5 +42,9 @@ export const api = {
     updateStatus: (id: number, status: OrderStatus) => req<Order>("PATCH", `/orders/${id}/status`, { status }),
     updateDeptStatus: (id: number, department: Department, status: DeptStatus) =>
       req<Order>("PATCH", `/orders/${id}/dept-status`, { department, status })
+  },
+  settings: {
+    get: () => req<Record<string, string>>("GET", "/settings"),
+    set: (data: Record<string, string>) => req<Record<string, string>>("PUT", "/settings", data)
   }
 };

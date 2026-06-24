@@ -273,7 +273,26 @@ export class KotDatabase {
         lineTotal REAL,
         department TEXT NOT NULL DEFAULT 'counter'
       );
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
+
+    // Seed default settings
+    this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('autoPrint', 'false')").run();
+  }
+
+  // ── Settings ───────────────────────────────────────────────────────────────
+
+  getAllSettings(): Record<string, string> {
+    const rows = this.db.prepare("SELECT key, value FROM settings").all() as { key: string; value: string }[];
+    return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  }
+
+  setSetting(key: string, value: string): void {
+    this.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
   }
 
   private seed() {

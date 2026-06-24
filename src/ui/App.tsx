@@ -6,9 +6,9 @@ import {
   Package,
   Plus,
   Printer,
-
   Save,
   Scissors,
+  Settings,
   Trash2,
   Users
 } from "lucide-react";
@@ -28,7 +28,7 @@ import type {
 } from "../shared/types";
 import { api } from "./api";
 
-type Tab = "orders" | "queue" | "history" | "products" | "users";
+type Tab = "orders" | "queue" | "history" | "products" | "users" | "settings";
 
 const deptStatusFlow: DeptStatus[] = ["New", "Received", "Ready", "Done"];
 const emptyLine: OrderItemInput = { productId: null, name: "", kg: null, quantity: null, notes: "", unitPrice: null, lineTotal: null, department: "counter" };
@@ -114,6 +114,7 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
   const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
   const [message, setMessage] = useState("");
+  const [autoPrint, setAutoPrint] = useState(false);
 
   const refresh = async () => {
     const [productList, activeList, doneList] = await Promise.all([
@@ -125,6 +126,10 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
     setActiveOrders(activeList);
     setHistoryOrders(doneList);
   };
+
+  useEffect(() => {
+    api.settings.get().then((s) => setAutoPrint(s.autoPrint === "true")).catch(() => undefined);
+  }, []);
 
   useEffect(() => { void refresh(); }, []);
 
@@ -160,6 +165,9 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
           {currentUser.role === "admin" && (
             <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={18} /> Users</button>
           )}
+          {currentUser.role === "admin" && (
+            <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Settings size={18} /> Settings</button>
+          )}
         </nav>
         <div className="sidebar-footer">
           <button className="secondary" onClick={onLogout}><LogOut size={16} /> Sign out</button>
@@ -180,6 +188,7 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
           <OrderEntry
             products={products}
             currentUser={currentUser}
+            autoPrint={autoPrint}
             onCreated={async (order) => { notify(`Created ${order.ticketNumber}`); await refresh(); setTab("queue"); }}
           />
         )}
@@ -187,6 +196,9 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
         {tab === "history" && <HistoryView orders={historyOrders} />}
         {tab === "products" && <Products products={products} onChanged={refresh} />}
         {tab === "users" && currentUser.role === "admin" && <UsersPanel />}
+        {tab === "settings" && currentUser.role === "admin" && (
+          <SettingsPanel autoPrint={autoPrint} onAutoPrintChange={setAutoPrint} />
+        )}
       </main>
     </div>
   );
@@ -194,7 +206,7 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
 
 // ── Order entry ───────────────────────────────────────────────────────────────
 
-function OrderEntry({ products, currentUser, onCreated }: { products: Product[]; currentUser: User; onCreated: (order: Order) => void }) {
+function OrderEntry({ products, currentUser, autoPrint, onCreated }: { products: Product[]; currentUser: User; autoPrint: boolean; onCreated: (order: Order) => void }) {
   const defaultDept: Department = currentUser.department ?? "counter";
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
@@ -232,6 +244,9 @@ function OrderEntry({ products, currentUser, onCreated }: { products: Product[];
     setAddr({ street: "", area: "", buildingType: "", apartment: "" }); setRequestedTime("");
     setItems([{ ...emptyLine, department: defaultDept }]);
     onCreated(order);
+    if (autoPrint && currentUser.role === "master_cashier") {
+      printReceipt(order, "master");
+    }
   };
 
   return (
@@ -266,7 +281,7 @@ function OrderEntry({ products, currentUser, onCreated }: { products: Product[];
       )}
       <label className="optional-time">
         {orderType === "delivery" ? "Requested delivery time" : "Requested pickup time"} <span className="optional-hint">(optional)</span>
-        <input type="time" value={requestedTime} onChange={(e) => setRequestedTime(e.target.value)} />
+        <input type="datetime-local" value={requestedTime} onChange={(e) => setRequestedTime(e.target.value)} />
       </label>
 
       <div className="line-list">
@@ -324,10 +339,11 @@ function OrderEntry({ products, currentUser, onCreated }: { products: Product[];
 // ── Queue ─────────────────────────────────────────────────────────────────────
 
 function Queue({ orders, currentUser, onChanged }: { orders: Order[]; currentUser: User; onChanged: () => Promise<void> }) {
-  if (orders.length === 0) return <EmptyState title="No active tickets" detail="New orders will appear here." />;
+  const sorted = useMemo(() => sortByUrgency(orders), [orders]);
+  if (sorted.length === 0) return <EmptyState title="No active tickets" detail="New orders will appear here." />;
   return (
     <div className="ticket-grid">
-      {orders.map((order) => <TicketCard key={order.id} order={order} currentUser={currentUser} onChanged={onChanged} />)}
+      {sorted.map((order) => <TicketCard key={order.id} order={order} currentUser={currentUser} onChanged={onChanged} />)}
     </div>
   );
 }
@@ -375,7 +391,13 @@ function TicketCard({ order, currentUser, onChanged }: { order: Order; currentUs
           <strong>{order.ticketNumber}</strong>
           <span>{new Date(order.createdAt).toLocaleTimeString(appSettings.locale, { hour: "2-digit", minute: "2-digit" })}</span>
         </div>
-        <span className="badge">{order.status}</span>
+        <div className="header-badges">
+          {order.requestedTime && (() => {
+            const { label, color } = urgencyInfo(order.requestedTime);
+            return <span className="urgency-badge" style={{ background: color }}>{label}</span>;
+          })()}
+          <span className="badge">{order.status}</span>
+        </div>
       </header>
       <div className="customer">
         <div className="customer-top">
@@ -393,7 +415,7 @@ function TicketCard({ order, currentUser, onChanged }: { order: Order; currentUs
           </span>
         )}
         {order.requestedTime && (
-          <span className="requested-time">{order.orderType === "delivery" ? "Deliver at" : "Pickup at"} {order.requestedTime}</span>
+          <span className="requested-time">{order.orderType === "delivery" ? "Deliver at" : "Pickup at"} {formatRequestedTime(order.requestedTime)}</span>
         )}
       </div>
       {order.requestedByName && <div className="requested-by">Requested by {order.requestedByName}</div>}
@@ -667,6 +689,36 @@ function UsersPanel() {
   );
 }
 
+// ── Settings (admin) ──────────────────────────────────────────────────────────
+
+function SettingsPanel({ autoPrint, onAutoPrintChange }: { autoPrint: boolean; onAutoPrintChange: (v: boolean) => void }) {
+  const [msg, setMsg] = useState("");
+
+  const toggle = async () => {
+    const next = !autoPrint;
+    await api.settings.set({ autoPrint: String(next) });
+    onAutoPrintChange(next);
+    setMsg(next ? "Auto-print enabled" : "Auto-print disabled");
+    window.setTimeout(() => setMsg(""), 2500);
+  };
+
+  return (
+    <div className="panel settings-panel">
+      <h2>System Settings</h2>
+      <div className="setting-row">
+        <div className="setting-info">
+          <strong>Auto-print on Master Cashier order</strong>
+          <p>Automatically opens the print dialog when a Master Cashier creates a new order. Turn off during setup and testing.</p>
+        </div>
+        <button type="button" className={autoPrint ? "" : "secondary"} onClick={() => void toggle()}>
+          {autoPrint ? "On" : "Off"}
+        </button>
+      </div>
+      {msg && <div className="form-message">{msg}</div>}
+    </div>
+  );
+}
+
 // ── Print ─────────────────────────────────────────────────────────────────────
 
 function printReceipt(order: Order, type: "kitchen" | "counter" | "master") {
@@ -766,6 +818,50 @@ function printReceipt(order: Order, type: "kitchen" | "counter" | "master") {
   win.document.close();
 }
 
+// ── Urgency helpers ───────────────────────────────────────────────────────────
+
+const URGENCY = [
+  { label: "Critical",  color: "#c41f1f" },
+  { label: "Urgent",    color: "#d97706" },
+  { label: "Today",     color: "#ca8a04" },
+  { label: "Scheduled", color: "#1a47a0" },
+  { label: "No rush",   color: "#6b7280" },
+] as const;
+
+function urgencyTier(requestedTime: string): number {
+  if (!requestedTime) return 2; // no deadline → treat as "today"
+  const requested = new Date(requestedTime);
+  if (isNaN(requested.getTime())) return 2; // old "HH:mm" format
+  const diffHours = (requested.getTime() - Date.now()) / 3_600_000;
+  if (diffHours < 1)   return 0; // overdue or within 1 hour
+  if (diffHours < 4)   return 1; // 1–4 hours
+  if (diffHours < 24)  return 2; // today
+  if (diffHours < 168) return 3; // within a week
+  return 4;                       // 7+ days away
+}
+
+function urgencyInfo(requestedTime: string) {
+  return URGENCY[urgencyTier(requestedTime)];
+}
+
+function sortByUrgency(orders: Order[]): Order[] {
+  return [...orders].sort((a, b) => {
+    const diff = urgencyTier(a.requestedTime) - urgencyTier(b.requestedTime);
+    if (diff !== 0) return diff;
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+  });
+}
+
+function formatRequestedTime(rt: string): string {
+  if (!rt) return "";
+  const d = new Date(rt);
+  if (isNaN(d.getTime())) return rt; // old "HH:mm" format — show as-is
+  return d.toLocaleString(appSettings.locale, {
+    weekday: "short", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit"
+  });
+}
+
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
 function EmptyState({ title, detail }: { title: string; detail: string }) {
@@ -789,7 +885,7 @@ function calculateLineTotal(item: OrderItemInput) {
 }
 
 function tabTitle(tab: Tab) {
-  return { orders: "New Order", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users" }[tab];
+  return { orders: "New Order", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings" }[tab];
 }
 
 function tabSubtitle(tab: Tab) {
@@ -797,6 +893,7 @@ function tabSubtitle(tab: Tab) {
     orders: "Capture customer details, weights, and cutting notes.",
     queue: "Move tickets through each stage.",
     history: "Review completed tickets.",
+    settings: "System configuration.",
     products: "Manage stock items and prices.",
     users: "Manage staff accounts and PINs."
   }[tab];

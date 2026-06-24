@@ -7,6 +7,7 @@ import authRouter from "./routes/auth.js";
 import usersRouter from "./routes/users.js";
 import productsRouter from "./routes/products.js";
 import ordersRouter from "./routes/orders.js";
+import settingsRouter from "./routes/settings.js";
 
 export const db = new KotDatabase();
 db.initialize();
@@ -27,6 +28,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/products", productsRouter);
 app.use("/api/orders", ordersRouter);
+app.use("/api/settings", settingsRouter);
 
 if (isProd) {
   // Serve built React app
