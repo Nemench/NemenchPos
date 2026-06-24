@@ -21,18 +21,20 @@ ok()    { echo -e "${GREEN}✔ $*${NC}"; }
 warn()  { echo -e "${YELLOW}⚠ $*${NC}"; }
 error() { echo -e "${RED}✘ $*${NC}"; exit 1; }
 
-# ── Must run on Proxmox host ───────────────────────────────────────────────────
+# ── Must run on Proxmox host ──────────────────────────────────────────────────
 command -v pct &>/dev/null || error "pct not found — run this on the Proxmox host, not inside a container."
 [ "$(id -u)" -eq 0 ] || error "Run as root"
 
-# ── Check CT ID is free ───────────────────────────────────────────────────────
+# ── Clean up any previous failed container ────────────────────────────────────
 if pct status "$CTID" &>/dev/null; then
-  error "Container $CTID already exists. Set a different ID: CTID=201 bash <(curl ...)"
+  warn "Container $CTID already exists — removing it and starting fresh..."
+  pct stop "$CTID" --force 2>/dev/null || true
+  pct destroy "$CTID" --purge 2>/dev/null || true
+  ok "Old container removed"
 fi
 
 # ── Auto-detect storage ───────────────────────────────────────────────────────
 if [ -z "$STORAGE" ]; then
-  # Prefer local-lvm, then local, then first available
   if pvesm status | awk '{print $1}' | grep -qx "local-lvm"; then
     STORAGE="local-lvm"
   elif pvesm status | awk '{print $1}' | grep -qx "local"; then
@@ -49,7 +51,6 @@ TEMPLATE_PATH=$(find /var/lib/vz/template/cache /mnt -name "debian-12-standard*.
 
 if [ -z "$TEMPLATE_PATH" ]; then
   info "Downloading Debian 12 template..."
-  # Update template list and find the right template name
   pveam update >/dev/null 2>&1 || true
   TEMPLATE_NAME=$(pveam available --section system 2>/dev/null | awk '/debian-12-standard/ {print $2}' | sort -V | tail -1)
   [ -n "$TEMPLATE_NAME" ] || error "Could not find debian-12-standard template. Run: pveam update"
@@ -84,9 +85,26 @@ for i in $(seq 1 30); do
 done
 pct exec "$CTID" -- bash -c "echo ok" &>/dev/null || error "Container did not become ready in time"
 
-# ── Bootstrap curl ────────────────────────────────────────────────────────────
+# ── Force DNS (in case DHCP didn't set it) ────────────────────────────────────
+info "Configuring DNS..."
+pct exec "$CTID" -- bash -c "echo -e 'nameserver 8.8.8.8\nnameserver 8.8.4.4' > /etc/resolv.conf"
+
+# ── Wait for network (DHCP may still be negotiating) ─────────────────────────
+info "Waiting for network..."
+for i in $(seq 1 15); do
+  if pct exec "$CTID" -- bash -c "curl -sf --max-time 3 https://deb.debian.org > /dev/null 2>&1"; then
+    break
+  fi
+  sleep 2
+done
+
+# ── Bootstrap curl (it may already be present) ───────────────────────────────
 info "Bootstrapping container..."
-pct exec "$CTID" -- bash -c "apt-get update -qq && apt-get install -y -qq curl"
+pct exec "$CTID" -- bash -c "
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y -qq curl
+"
 
 # ── Run MAXIS installer inside the container ──────────────────────────────────
 info "Installing MAXIS inside container $CTID..."
