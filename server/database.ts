@@ -18,7 +18,7 @@ export class KotDatabase {
   initialize() {
     const dataDir = path.join(process.cwd(), "data");
     fs.mkdirSync(dataDir, { recursive: true });
-    this.db = new BetterSqlite3(path.join(dataDir, "butcher-kot.sqlite"));
+    this.db = new BetterSqlite3(path.join(dataDir, "maxis.sqlite"));
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.migrate();

@@ -80,4 +80,4 @@ npm run dev
 
 ## Data
 
-The SQLite database lives at `./data/butcher-kot.sqlite`. Back this file up regularly to keep your orders and products safe.
+The SQLite database lives at `./data/maxis.sqlite`. Back this file up regularly to keep your orders and products safe.
