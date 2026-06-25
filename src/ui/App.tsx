@@ -253,9 +253,12 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
     setLine(index, { productId: p.id, name: p.name, unitPrice: p.pricePerUnit, notes: p.prepNotes, department: p.department });
   };
 
+  const [submitError, setSubmitError] = useState("");
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!canSave) return;
+    setSubmitError("");
     const payload: CreateOrderInput = {
       customerName,
       customerPhone,
@@ -267,13 +270,17 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
         .filter((i) => i.name.trim())
         .map((i) => ({ ...i, kg: i.kg ? Number(i.kg) : null, quantity: i.quantity ? Number(i.quantity) : null, lineTotal: calculateLineTotal(i) }))
     };
-    const order = await api.orders.create(payload);
-    setCustomerName(""); setCustomerPhone(""); setOrderType("pickup");
-    setAddr({ street: "", area: "", buildingType: "", apartment: "" }); setRequestedTime(""); setAssignedTo("");
-    setItems([{ ...emptyLine, department: defaultDept }]);
-    onCreated(order);
-    if (autoPrint && currentUser.role === "master_cashier") {
-      void printReceipt(order, "master", printStyle, printerMap.master ?? "");
+    try {
+      const order = await api.orders.create(payload);
+      setCustomerName(""); setCustomerPhone(""); setOrderType("pickup");
+      setAddr({ street: "", area: "", buildingType: "", apartment: "" }); setRequestedTime(""); setAssignedTo("");
+      setItems([{ ...emptyLine, department: defaultDept }]);
+      onCreated(order);
+      if (autoPrint && currentUser.role === "master_cashier") {
+        void printReceipt(order, "master", printStyle, printerMap.master ?? "");
+      }
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Failed to create order");
     }
   };
 
@@ -363,6 +370,7 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
         </button>
         <button type="submit" disabled={!canSave}><Save size={18} /> Create Order</button>
       </footer>
+      {submitError && <p className="form-error">{submitError}</p>}
     </form>
   );
 }
@@ -849,10 +857,14 @@ function UsersPanel() {
 
 // ── Settings (admin) ──────────────────────────────────────────────────────────
 
-function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleChange, printerMap, onPrinterMapChange }: { autoPrint: boolean; onAutoPrintChange: (v: boolean) => void; printStyle: string; onPrintStyleChange: (v: string) => void; printerMap: Record<string, string>; onPrinterMapChange: (v: Record<string, string>) => void }) {
+function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleChange, printerMap, onPrinterMapChange }: { autoPrint: boolean; onAutoPrintChange: (v: boolean) => void; printStyle: string; onPrintStyleChange: (v: string) => void; printerMap: Record<string, string>; onPrinterMapChange: (v: { kitchen: string; counter: string; master: string }) => void }) {
   const [msg, setMsg] = useState("");
   const [availablePrinters, setAvailablePrinters] = useState<string[]>([]);
   const [loadingPrinters, setLoadingPrinters] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const csvInputRef = useRef<HTMLInputElement>(null);
+  const restoreInputRef = useRef<HTMLInputElement>(null);
 
   const fetchPrinters = async () => {
     setLoadingPrinters(true);
@@ -880,9 +892,46 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
 
   const changePrinter = async (key: string, value: string) => {
     await api.settings.set({ [key]: value });
-    onPrinterMapChange({ ...printerMap, [key.replace("Printer", "")]: value });
+    onPrinterMapChange({ ...printerMap, [key.replace("Printer", "")]: value } as { kitchen: string; counter: string; master: string });
     setMsg("Printer assignment saved");
     window.setTimeout(() => setMsg(""), 2500);
+  };
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const csv = await file.text();
+      const result = await api.products.import(csv);
+      const errNote = result.errors.length ? ` (${result.errors.length} skipped)` : "";
+      setMsg(`Imported ${result.imported} products${errNote}`);
+    } catch (err) {
+      setMsg(`Import failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    } finally {
+      setImporting(false);
+      if (csvInputRef.current) csvInputRef.current.value = "";
+      window.setTimeout(() => setMsg(""), 4000);
+    }
+  };
+
+  const handleRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!window.confirm("Restore this backup? The current database will be replaced. The page will reload after restore.")) {
+      if (restoreInputRef.current) restoreInputRef.current.value = "";
+      return;
+    }
+    setRestoring(true);
+    try {
+      await api.backup.restore(file);
+      window.location.reload();
+    } catch (err) {
+      setMsg(`Restore failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+      setRestoring(false);
+      if (restoreInputRef.current) restoreInputRef.current.value = "";
+      window.setTimeout(() => setMsg(""), 4000);
+    }
   };
 
   return (
@@ -933,6 +982,32 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
         {availablePrinters.length === 0 && !loadingPrinters && (
           <p style={{ fontSize: 12, color: "var(--muted)" }}>No printers found. Make sure CUPS is running and printers are configured on the server.</p>
         )}
+      </div>
+      <div className="setting-row">
+        <div className="setting-info">
+          <strong>Product import</strong>
+          <p>Upload a CSV file to bulk-import products. Required column: <code>name</code>. Optional columns: <code>category</code>, <code>unitDefault</code>, <code>pricePerUnit</code>, <code>prepNotes</code>, <code>department</code>. Existing products with the same name are updated.</p>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input ref={csvInputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => void handleImport(e)} />
+          <button type="button" className="secondary" disabled={importing} onClick={() => csvInputRef.current?.click()}>
+            {importing ? "Importing…" : "Import CSV"}
+          </button>
+          <a href={api.products.exportUrl()} download className="button secondary">Export CSV</a>
+        </div>
+      </div>
+      <div className="setting-row">
+        <div className="setting-info">
+          <strong>Database backup &amp; restore</strong>
+          <p>Download a full backup of all orders, products, users, and settings. To restore, upload a backup file — this will replace the current database and reload the page.</p>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a href={api.backup.downloadUrl()} download className="button secondary">Download Backup</a>
+          <input ref={restoreInputRef} type="file" accept=".sqlite,application/octet-stream" style={{ display: "none" }} onChange={(e) => void handleRestore(e)} />
+          <button type="button" className="secondary danger" disabled={restoring} onClick={() => restoreInputRef.current?.click()}>
+            {restoring ? "Restoring…" : "Restore Backup"}
+          </button>
+        </div>
       </div>
       {msg && <div className="form-message">{msg}</div>}
     </div>

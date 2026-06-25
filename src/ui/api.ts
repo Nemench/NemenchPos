@@ -33,7 +33,25 @@ export const api = {
     list: () => req<Product[]>("GET", "/products"),
     save: (data: ProductInput) =>
       data.id ? req<Product>("PUT", `/products/${data.id}`, data) : req<Product>("POST", "/products", data),
-    delete: (id: number) => req<void>("DELETE", `/products/${id}`)
+    delete: (id: number) => req<void>("DELETE", `/products/${id}`),
+    import: (csv: string) => req<{ imported: number; errors: string[] }>("POST", "/products/import", { csv }),
+    exportUrl: () => "/api/products/export"
+  },
+  backup: {
+    downloadUrl: () => "/api/backup",
+    restore: async (file: File): Promise<void> => {
+      const token = sessionStorage.getItem("kot-token");
+      const buf = await file.arrayBuffer();
+      const res = await fetch("/api/backup/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: buf
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as { message?: string };
+        throw new Error(err.message ?? res.statusText);
+      }
+    }
   },
   orders: {
     list: (scope: string) => req<Order[]>("GET", `/orders?scope=${scope}`),

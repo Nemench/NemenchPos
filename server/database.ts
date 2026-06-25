@@ -107,6 +107,67 @@ export class KotDatabase {
     }
   }
 
+  importProducts(rows: { name: string; category: string; unitDefault: string; pricePerUnit: string; prepNotes: string; department: string }[]): { imported: number; errors: string[] } {
+    const now = new Date().toISOString();
+    let imported = 0;
+    const errors: string[] = [];
+    const upsert = this.db.transaction(() => {
+      for (const [i, row] of rows.entries()) {
+        const name = row.name?.trim();
+        if (!name) { errors.push(`Row ${i + 2}: name is required`); continue; }
+        const category = row.category?.trim() || "General";
+        const unitDefault = ["kg", "each", "g", "pack"].includes(row.unitDefault) ? row.unitDefault : "kg";
+        const price = row.pricePerUnit ? parseFloat(row.pricePerUnit) : null;
+        const dept = row.department === "kitchen" ? "kitchen" : "counter";
+        const prepNotes = row.prepNotes?.trim() || "";
+        const existing = this.db.prepare("SELECT id FROM products WHERE lower(name) = lower(?) AND isActive = 1").get(name) as { id: number } | null;
+        if (existing) {
+          this.db.prepare("UPDATE products SET category=?, unitDefault=?, pricePerUnit=?, prepNotes=?, department=?, updatedAt=? WHERE id=?")
+            .run(category, unitDefault, price, prepNotes, dept, now, existing.id);
+        } else {
+          this.db.prepare("INSERT INTO products (name, category, unitDefault, pricePerUnit, prepNotes, department, isActive, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)")
+            .run(name, category, unitDefault, price, prepNotes, dept, now, now);
+        }
+        imported++;
+      }
+    });
+    upsert();
+    return { imported, errors };
+  }
+
+  exportProducts(): string {
+    const products = this.db
+      .prepare("SELECT name, category, unitDefault, pricePerUnit, prepNotes, department FROM products WHERE isActive = 1 ORDER BY category, name")
+      .all() as { name: string; category: string; unitDefault: string; pricePerUnit: number | null; prepNotes: string; department: string }[];
+    const header = "name,category,unitDefault,pricePerUnit,prepNotes,department";
+    const rows = products.map((p) => [p.name, p.category, p.unitDefault, p.pricePerUnit ?? "", p.prepNotes, p.department]
+      .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+      .join(","));
+    return [header, ...rows].join("\n");
+  }
+
+  get dataFile(): string {
+    return (this.db as unknown as { name: string }).name;
+  }
+
+  restoreDatabase(buffer: Buffer): void {
+    const dataDir = path.dirname(this.dataFile);
+    const restoreFile = path.join(dataDir, "maxis.sqlite.restore");
+    fs.writeFileSync(restoreFile, buffer);
+    // Validate it's a real SQLite file
+    let testDb: BetterSqlite3.Database | null = null;
+    try {
+      testDb = new BetterSqlite3(restoreFile, { readonly: true });
+      testDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
+    } finally {
+      testDb?.close();
+    }
+    this.db.close();
+    fs.copyFileSync(restoreFile, this.dataFile);
+    fs.unlinkSync(restoreFile);
+    this.initialize();
+  }
+
   deleteProduct(id: number): void {
     this.db.prepare("UPDATE products SET isActive = 0, updatedAt = ? WHERE id = ?").run(new Date().toISOString(), id);
   }
@@ -123,7 +184,7 @@ export class KotDatabase {
 
     const result = this.db
       .prepare("INSERT INTO orders (ticketNumber, customerName, customerPhone, orderType, deliveryAddress, requestedTime, assignedTo, status, kitchenStatus, counterStatus, requestedById, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, 'New', ?, ?, ?, ?, ?)")
-      .run(ticketNumber, input.customerName.trim(), input.customerPhone.trim(), input.orderType, input.orderType === "delivery" ? JSON.stringify(input.deliveryAddress) : null, input.requestedTime.trim(), input.assignedTo?.trim() || null, kitchenStatus, counterStatus, requestedById, now, now);
+      .run(ticketNumber, input.customerName.trim(), input.customerPhone.trim(), input.orderType, input.orderType === "delivery" ? JSON.stringify(input.deliveryAddress) : "{}", input.requestedTime.trim(), input.assignedTo?.trim() || null, kitchenStatus, counterStatus, requestedById, now, now);
 
     const orderId = Number(result.lastInsertRowid);
     const insertItem = this.db.prepare(
@@ -350,6 +411,7 @@ export class KotDatabase {
         orderType TEXT NOT NULL DEFAULT 'pickup',
         deliveryAddress TEXT NOT NULL DEFAULT '{}',
         requestedTime TEXT NOT NULL DEFAULT '',
+        assignedTo TEXT,
         status TEXT NOT NULL DEFAULT 'New',
         kitchenStatus TEXT NOT NULL DEFAULT 'n/a',
         counterStatus TEXT NOT NULL DEFAULT 'n/a',

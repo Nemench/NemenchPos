@@ -13,6 +13,7 @@ import settingsRouter from "./routes/settings.js";
 import reportsRouter from "./routes/reports.js";
 import printersRouter from "./routes/printers.js";
 import printRouter from "./routes/print.js";
+import backupRouter from "./routes/backup.js";
 
 export const db = new KotDatabase();
 db.initialize();
@@ -39,6 +40,7 @@ app.use("/api/settings", settingsRouter);
 app.use("/api/reports", reportsRouter);
 app.use("/api/printers", printersRouter);
 app.use("/api/print", printRouter);
+app.use("/api/backup", backupRouter);
 
 if (isProd) {
   // Serve built React app

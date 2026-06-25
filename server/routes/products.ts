@@ -24,4 +24,52 @@ router.delete("/:id", requireAdmin, (req, res) => {
   catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to delete product" }); }
 });
 
+router.post("/import", requireAdmin, (req, res) => {
+  try {
+    const { csv } = req.body as { csv: string };
+    if (!csv) { res.status(400).json({ message: "No CSV data provided" }); return; }
+    const lines = csv.split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length < 2) { res.status(400).json({ message: "CSV must have a header row and at least one data row" }); return; }
+
+    const parseRow = (line: string): string[] => {
+      const cols: string[] = [];
+      let cur = "", inQuote = false;
+      for (const ch of line) {
+        if (ch === '"') { inQuote = !inQuote; }
+        else if (ch === "," && !inQuote) { cols.push(cur); cur = ""; }
+        else { cur += ch; }
+      }
+      cols.push(cur);
+      return cols.map((c) => c.trim());
+    };
+
+    const headers = parseRow(lines[0]).map((h) => h.toLowerCase().replace(/[^a-z]/g, ""));
+    const nameIdx = headers.indexOf("name");
+    if (nameIdx === -1) { res.status(400).json({ message: "CSV must have a 'name' column" }); return; }
+    const col = (row: string[], key: string) => row[headers.indexOf(key)] ?? "";
+
+    const rows = lines.slice(1).map((line) => {
+      const r = parseRow(line);
+      return {
+        name: col(r, "name"),
+        category: col(r, "category"),
+        unitDefault: col(r, "unitdefault") || col(r, "unit"),
+        pricePerUnit: col(r, "pricerperunit") || col(r, "priceperunit") || col(r, "price"),
+        prepNotes: col(r, "prepnotes") || col(r, "notes"),
+        department: col(r, "department") || col(r, "dept"),
+      };
+    });
+
+    res.json(db.importProducts(rows));
+  } catch (err) {
+    res.status(400).json({ message: err instanceof Error ? err.message : "Import failed" });
+  }
+});
+
+router.get("/export", requireAdmin, (_req, res) => {
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", `attachment; filename="maxis-products-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send(db.exportProducts());
+});
+
 export default router;
