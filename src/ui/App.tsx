@@ -992,20 +992,27 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
           </button>
         </div>
         <div className="printer-body">
-          <p className="settings-hint">Assign each receipt type to a CUPS printer on the server. Leave blank to use the browser print dialog.</p>
+          <p className="settings-hint">Type a CUPS printer name or pick one from the list. Leave blank to use the browser print dialog.</p>
+          <datalist id="printer-list">
+            {availablePrinters.map((p) => <option key={p} value={p} />)}
+          </datalist>
           <div className="printer-assignments">
             {([ ["Kitchen receipt", "kitchenPrinter", "kitchen"], ["Counter receipt", "counterPrinter", "counter"], ["Master receipt", "masterPrinter", "master"] ] as [string, string, string][]).map(([label, key, mapKey]) => (
               <label key={key}>
                 {label}
-                <select value={printerMap[mapKey] ?? ""} onChange={(e) => void changePrinter(key, e.target.value)}>
-                  <option value="">— Browser dialog —</option>
-                  {availablePrinters.map((p) => <option key={p} value={p}>{p}</option>)}
-                </select>
+                <input
+                  type="text"
+                  list="printer-list"
+                  placeholder="— Browser dialog —"
+                  value={printerMap[mapKey] ?? ""}
+                  onChange={(e) => void changePrinter(key, e.target.value)}
+                  onBlur={(e) => void changePrinter(key, e.target.value)}
+                />
               </label>
             ))}
           </div>
           {availablePrinters.length === 0 && !loadingPrinters && (
-            <p className="settings-hint">No printers found on this machine via CUPS.</p>
+            <p className="settings-hint">No printers auto-detected. You can still type a printer name above — run <code>lpstat -a</code> on the server to find available names.</p>
           )}
         </div>
       </section>
@@ -1212,12 +1219,11 @@ function ReportsPanel() {
 
 function buildReceiptHtml(order: Order, type: "kitchen" | "counter" | "master", style: "thermal" | "a4"): string {
   const items = type === "master" ? order.items : order.items.filter((i) => i.department === type);
-  const label = type === "kitchen" ? "Kitchen Order" : type === "counter" ? "Counter Order" : "Receipt";
-  const showPrices = type !== "kitchen";
-  const total = items.reduce((s, i) => s + (i.lineTotal ?? 0), 0);
+  const label = type === "kitchen" ? "KITCHEN ORDER" : type === "counter" ? "COUNTER ORDER" : "RECEIPT";
   const d = new Date(order.createdAt);
   const dateStr = d.toLocaleDateString(appSettings.locale);
   const timeStr = d.toLocaleTimeString(appSettings.locale, { hour: "2-digit", minute: "2-digit" });
+  const logoUrl = `${window.location.origin}/logo.jpg`;
 
   const addrLines = order.orderType === "delivery" && order.deliveryAddress?.street
     ? [order.deliveryAddress.street, order.deliveryAddress.area, order.deliveryAddress.buildingType === "building" && order.deliveryAddress.apartment ? `Apt ${order.deliveryAddress.apartment}` : ""].filter(Boolean)
@@ -1226,112 +1232,91 @@ function buildReceiptHtml(order: Order, type: "kitchen" | "counter" | "master", 
 
   if (style === "a4") {
     const rows = items.map((i) => `<tr>
-      <td><strong>${esc(i.name)}</strong>${i.notes ? `<div class="note">${esc(i.notes)}</div>` : ""}</td>
-      ${showPrices ? `<td>${i.unitPrice != null ? `R${i.unitPrice.toFixed(2)}` : "—"}</td>` : ""}
-      <td>${i.kg ? `${i.kg} kg` : i.quantity ? `×${i.quantity}` : "—"}</td>
-      ${showPrices ? `<td class="right">${i.lineTotal != null ? `<strong>R${i.lineTotal.toFixed(2)}</strong>` : "—"}</td>` : ""}
+      <td><b>${esc(i.name)}</b>${i.notes ? `<div class="note">${esc(i.notes)}</div>` : ""}</td>
+      <td>${i.kg ? `${i.kg} kg` : "—"}</td>
+      <td>${i.quantity ? `×${i.quantity}` : "—"}</td>
     </tr>`).join("");
 
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(label)} ${esc(order.ticketNumber)}</title><style>
-@page{size:A4;margin:20mm}*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:Inter,'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a1a2e;line-height:1.5}
-.hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0d2b6b;padding-bottom:16px;margin-bottom:20px}
-.brand{font-size:22px;font-weight:800;color:#c41f1f}.rtype{font-size:14px;font-weight:700;color:#0d2b6b;margin-top:4px}
-.hdr-r{text-align:right}.tnum{font-size:16px;font-weight:800;color:#0d2b6b}.dt{font-size:12px;color:#666;margin-top:2px}
-.cbox{background:#f0f4fd;border:1px solid #c8d5ee;border-radius:8px;padding:14px 18px;margin-bottom:20px}
-.clbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#5a6480;margin-bottom:8px}
-.cname{font-size:18px;font-weight:700;color:#0d2b6b}.cline{font-size:13px;color:#333;margin-top:3px}
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(label)} — ${esc(order.ticketNumber)}</title><style>
+@page{size:A4;margin:0}*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a1a2e;line-height:1.5;padding:18mm}
+.hdr{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:3px solid #0d2b6b;margin-bottom:20px}
+.hdr-left .shop{font-size:20px;font-weight:800;color:#c41f1f}.hdr-left .type{font-size:15px;font-weight:700;color:#0d2b6b;margin-top:4px}
+.hdr-right{text-align:right}.logo{width:72px;height:72px;border-radius:50%;object-fit:cover;border:2px solid #0d2b6b}
+.tnum{font-size:14px;font-weight:700;color:#0d2b6b;margin-top:6px}.dt{font-size:12px;color:#666;margin-top:2px}
+.cbox{border:1px solid #c8d5ee;border-radius:8px;padding:14px 18px;margin-bottom:20px;background:#f4f7fd}
+.clbl{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#5a6480;font-weight:700;margin-bottom:8px}
+.cname{font-size:16px;font-weight:700;color:#0d2b6b}.cline{font-size:13px;color:#333;margin-top:4px}
 .del{color:#c41f1f;font-weight:700}.ttag{color:#0d2b6b;font-weight:600}
-table{width:100%;border-collapse:collapse}
-thead tr{background:#0d2b6b}
-th{color:#fff;padding:9px 12px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
-td{padding:9px 12px;border-bottom:1px solid #e8eef7;vertical-align:top}
+table{width:100%;border-collapse:collapse;margin-bottom:8px}thead tr{background:#0d2b6b}
+th{color:#fff;padding:8px 12px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+td{padding:9px 12px;border-bottom:1px solid #e8eef7;font-size:13px;vertical-align:top}
 tr:nth-child(even) td{background:#f8f9fc}tr:last-child td{border-bottom:none}
-.right{text-align:right}.note{font-size:11px;color:#888;margin-top:2px;font-style:italic}
-.tot{display:flex;justify-content:flex-end;gap:20px;align-items:baseline;border-top:2px solid #0d2b6b;padding-top:12px;margin-top:8px}
-.tot-lbl{font-size:13px;color:#5a6480}.tot-val{font-size:22px;font-weight:800;color:#0d2b6b}
+.note{font-size:11px;color:#666;margin-top:2px}
 .footer{margin-top:40px;text-align:center;color:#888;font-size:12px;border-top:1px solid #e0e6f0;padding-top:12px}
 </style></head><body>
 <div class="hdr">
-  <div><div class="brand">MAXIS KOSHER BUTCHERY</div><div class="rtype">${esc(label)}</div></div>
-  <div class="hdr-r"><div class="tnum">${esc(order.ticketNumber)}</div><div class="dt">${dateStr} · ${timeStr}</div></div>
+  <div class="hdr-left"><div class="shop">MAXIS KOSHER BUTCHERY</div><div class="type">${esc(label)}</div></div>
+  <div class="hdr-right"><img class="logo" src="${logoUrl}" alt="MAXIS"><div class="tnum">${esc(order.ticketNumber)}</div><div class="dt">${dateStr} &nbsp; ${timeStr}</div></div>
 </div>
 <div class="cbox">
-  <div class="clbl">Customer</div>
+  <div class="clbl">Customer Details</div>
   <div class="cname">${esc(order.customerName)}</div>
   <div class="cline">${esc(order.customerPhone)}</div>
   <div class="cline ${order.orderType === "delivery" ? "del" : ""}">${order.orderType === "delivery" ? "★ DELIVERY" : "Pickup"}</div>
   ${addrLines.map((l) => `<div class="cline">${esc(l)}</div>`).join("")}
   ${requestedAtLine ? `<div class="cline ttag">${esc(requestedAtLine)}</div>` : ""}
   ${order.requestedByName ? `<div class="cline">Served by: ${esc(order.requestedByName)}</div>` : ""}
-  ${order.assignedTo ? `<div class="cline">Assigned to: <strong>${esc(order.assignedTo)}</strong></div>` : ""}
+  ${order.assignedTo ? `<div class="cline">Assigned to: <b>${esc(order.assignedTo)}</b></div>` : ""}
 </div>
-<table>
-  <thead><tr>
-    <th>Item</th>
-    ${showPrices ? "<th>Unit price</th>" : ""}
-    <th>Qty / weight</th>
-    ${showPrices ? '<th class="right">Total</th>' : ""}
-  </tr></thead>
-  <tbody>${rows}</tbody>
-</table>
-${showPrices && total > 0 ? `<div class="tot"><div class="tot-lbl">ORDER TOTAL</div><div class="tot-val">R${total.toFixed(2)}</div></div>` : ""}
+<table><thead><tr><th>Item</th><th>Kg</th><th>Qty</th></tr></thead>
+<tbody>${rows}</tbody></table>
 <div class="footer">Thank you for your order — MAXIS Discount Kosher Butchery</div>
 </body></html>`;
   }
 
-  // Thermal
+  // Thermal (80mm)
   const rows = items.map((i) => {
     const qty = [i.kg ? `${i.kg} kg` : "", i.quantity ? `×${i.quantity}` : ""].filter(Boolean).join("  ");
-    const amt = showPrices && i.lineTotal ? `R${i.lineTotal.toFixed(2)}` : "";
-    return `<div class="item">
-  <div class="iname">${esc(i.name)}</div>
-  <div class="isub"><span>${esc(qty)}${i.notes ? `  <em>${esc(i.notes)}</em>` : ""}</span>${amt ? `<span class="amt">${amt}</span>` : ""}</div>
-</div>`;
+    return `<div class="item"><div class="iname">${esc(i.name)}</div><div class="isub">${esc(qty)}${i.notes ? `  — ${esc(i.notes)}` : ""}</div></div>`;
   }).join("");
 
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(label)} ${esc(order.ticketNumber)}</title><style>
-@page{size:80mm auto;margin:4mm 5mm}*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:Inter,'Segoe UI',Arial,sans-serif;font-size:12px;color:#000;line-height:1.45}
-.center{text-align:center}
-.shop{font-size:14px;font-weight:800;color:#0d2b6b;letter-spacing:.3px}
-.lbl{font-size:13px;font-weight:700;letter-spacing:.5px;margin:2px 0}
-.sub{font-size:11px;color:#555}
-hr{border:none;border-top:1px dashed #bbb;margin:6px 0}
-.cust{margin:4px 0}
-.cname{font-size:13px;font-weight:700}
-.cphone{font-size:12px;color:#333}
-.del{font-weight:700;color:#c41f1f}
-.addr{font-size:11px;color:#444;margin-top:1px}
-.ttag{font-size:11px;font-weight:700;color:#0d2b6b;margin-top:2px}
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(label)} — ${esc(order.ticketNumber)}</title><style>
+@page{size:80mm auto;margin:0}*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Courier New',Courier,monospace;font-size:12px;width:72mm;padding:4mm;margin:0 auto;line-height:1.5;color:#000}
+.center{text-align:center}.sep{border:none;border-top:1px dashed #999;margin:6px 0}
+.logo{width:52px;height:52px;border-radius:50%;object-fit:cover;margin-bottom:4px}
+.shop{font-size:13px;font-weight:bold;color:#c41f1f;letter-spacing:.5px}
+.lbl{font-size:15px;font-weight:bold;letter-spacing:1px;color:#0d2b6b;margin-top:2px}
+.tnum{font-size:12px;font-weight:bold;color:#333}.dt{font-size:11px;color:#555}
+.cust{margin:4px 0}.cname{font-size:13px;font-weight:bold}
+.cphone{font-size:12px;color:#333}.del{font-weight:bold;color:#c41f1f}
+.addr{font-size:11px;color:#333;margin-top:2px}.ttag{font-size:11px;font-weight:bold;color:#0d2b6b;margin-top:2px}
 .by{font-size:10px;color:#666;margin-top:2px}
-.item{padding:4px 0;border-bottom:1px dotted #ddd}
-.item:last-child{border-bottom:none}
-.iname{font-weight:700}
-.isub{display:flex;justify-content:space-between;font-size:11px;color:#555;margin-top:1px}
-.amt{font-weight:700;color:#000;white-space:nowrap;padding-left:8px}
-.tot{display:flex;justify-content:space-between;font-weight:800;font-size:14px;padding-top:5px}
-.footer{text-align:center;font-size:10px;color:#888;margin-top:6px}
+.item{margin:5px 0}.iname{font-weight:bold}.isub{color:#444;font-size:11px;margin-top:1px}
+.footer{font-size:11px;color:#555}
 </style></head><body>
 <div class="center">
+  <img class="logo" src="${logoUrl}" alt="MAXIS">
   <div class="shop">MAXIS KOSHER BUTCHERY</div>
-  <div class="lbl">${esc(label.toUpperCase())}</div>
-  <div class="sub">${esc(order.ticketNumber)} &middot; ${dateStr} ${timeStr}</div>
+  <div class="lbl">${esc(label)}</div>
+  <div class="tnum">${esc(order.ticketNumber)}</div>
+  <div class="dt">${dateStr} &nbsp; ${timeStr}</div>
 </div>
-<hr>
+<hr class="sep">
 <div class="cust">
   <div class="cname">${esc(order.customerName)}</div>
   <div class="cphone">${esc(order.customerPhone)}</div>
-  <div class="${order.orderType === "delivery" ? "del" : "cphone"}">${order.orderType === "delivery" ? "★ DELIVERY" : "Pickup"}</div>
+  <div class="${order.orderType === "delivery" ? "del" : "cphone"}">${order.orderType === "delivery" ? "*** DELIVERY ***" : "Pickup"}</div>
   ${addrLines.map((l) => `<div class="addr">${esc(l)}</div>`).join("")}
   ${requestedAtLine ? `<div class="ttag">${esc(requestedAtLine)}</div>` : ""}
   ${order.requestedByName ? `<div class="by">Served by: ${esc(order.requestedByName)}</div>` : ""}
-  ${order.assignedTo ? `<div class="by">Assigned to: <strong>${esc(order.assignedTo)}</strong></div>` : ""}
+  ${order.assignedTo ? `<div class="by">Assigned to: <b>${esc(order.assignedTo)}</b></div>` : ""}
 </div>
-<hr>
+<hr class="sep">
 ${rows}
-${showPrices && total > 0 ? `<hr><div class="tot"><span>TOTAL</span><span>R${total.toFixed(2)}</span></div>` : ""}
-<div class="footer">Thank you — Maxis Discount Kosher Butchery</div>
+<hr class="sep">
+<div class="center footer">Thank you for your order</div>
 </body></html>`;
 }
 
@@ -1340,6 +1325,18 @@ function esc(s: string): string {
 }
 
 function printHtml(html: string): void {
+  const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  if (isMobile) {
+    // Mobile browsers can't print from iframes — open receipt in a new tab and auto-print
+    const printable = html.replace("</head>", '<script>window.addEventListener("load",function(){window.print()})<\/script></head>');
+    const blob = new Blob([printable], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    return;
+  }
+
   const iframe = document.createElement("iframe");
   iframe.style.cssText = "position:fixed;left:-9999px;top:0;width:800px;height:600px;border:none;visibility:hidden";
   document.body.appendChild(iframe);
