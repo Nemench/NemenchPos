@@ -855,12 +855,18 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  flex-wrap: wrap;
+  gap: 12px 20px;
   padding: 14px 16px;
 }
 
 .setting-row + .setting-row {
   border-top: 1px solid var(--border);
+}
+
+.setting-info {
+  flex: 1;
+  min-width: 180px;
 }
 
 .setting-info strong {
@@ -882,7 +888,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 }
 
 .settings-select {
-  min-width: 200px;
+  width: 190px;
   flex-shrink: 0;
 }
 
