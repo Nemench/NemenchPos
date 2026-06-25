@@ -117,6 +117,7 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
   const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
   const [message, setMessage] = useState("");
   const [autoPrint, setAutoPrint] = useState(false);
+  const [printStyle, setPrintStyle] = useState("thermal");
 
   // Full refresh — products + orders. Only on mount and after mutations.
   const refresh = async () => {
@@ -135,7 +136,10 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
   };
 
   useEffect(() => {
-    api.settings.get().then((s) => setAutoPrint(s.autoPrint === "true")).catch(() => undefined);
+    api.settings.get().then((s) => {
+      setAutoPrint(s.autoPrint === "true");
+      setPrintStyle(s.printStyle ?? "thermal");
+    }).catch(() => undefined);
   }, []);
 
   useEffect(() => { void refresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -206,15 +210,16 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
             products={products}
             currentUser={currentUser}
             autoPrint={autoPrint}
+            printStyle={printStyle}
             onCreated={async (order) => { notify(`Created ${order.ticketNumber}`); await refresh(); setTab("queue"); }}
           />
         )}
-        {tab === "queue" && <Queue orders={activeOrders} currentUser={currentUser} onChanged={refresh} />}
-        {tab === "history" && <HistoryView orders={historyOrders} />}
+        {tab === "queue" && <Queue orders={activeOrders} currentUser={currentUser} onChanged={refresh} printStyle={printStyle} />}
+        {tab === "history" && <HistoryView orders={historyOrders} printStyle={printStyle} />}
         {tab === "products" && <Products products={products} onChanged={refresh} />}
         {tab === "users" && currentUser.role === "admin" && <UsersPanel />}
         {tab === "settings" && currentUser.role === "admin" && (
-          <SettingsPanel autoPrint={autoPrint} onAutoPrintChange={setAutoPrint} />
+          <SettingsPanel autoPrint={autoPrint} onAutoPrintChange={setAutoPrint} printStyle={printStyle} onPrintStyleChange={setPrintStyle} />
         )}
         {tab === "reports" && currentUser.role === "admin" && <ReportsPanel />}
       </main>
@@ -224,13 +229,14 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
 
 // ── Order entry ───────────────────────────────────────────────────────────────
 
-function OrderEntry({ products, currentUser, autoPrint, onCreated }: { products: Product[]; currentUser: User; autoPrint: boolean; onCreated: (order: Order) => void }) {
+function OrderEntry({ products, currentUser, autoPrint, printStyle, onCreated }: { products: Product[]; currentUser: User; autoPrint: boolean; printStyle: string; onCreated: (order: Order) => void }) {
   const defaultDept: Department = currentUser.department ?? "counter";
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [orderType, setOrderType] = useState<"pickup" | "delivery">("pickup");
   const [addr, setAddr] = useState<DeliveryAddress>({ street: "", area: "", buildingType: "", apartment: "" });
   const [requestedTime, setRequestedTime] = useState("");
+  const [assignedTo, setAssignedTo] = useState("");
   const [items, setItems] = useState<OrderItemInput[]>([{ ...emptyLine, department: defaultDept }]);
 
   const canSave = customerName.trim() && customerPhone.trim() && items.some((i) => i.name.trim());
@@ -253,17 +259,18 @@ function OrderEntry({ products, currentUser, autoPrint, onCreated }: { products:
       orderType,
       deliveryAddress: orderType === "delivery" ? addr : { street: "", area: "", buildingType: "", apartment: "" },
       requestedTime,
+      assignedTo,
       items: items
         .filter((i) => i.name.trim())
         .map((i) => ({ ...i, kg: i.kg ? Number(i.kg) : null, quantity: i.quantity ? Number(i.quantity) : null, lineTotal: calculateLineTotal(i) }))
     };
     const order = await api.orders.create(payload);
     setCustomerName(""); setCustomerPhone(""); setOrderType("pickup");
-    setAddr({ street: "", area: "", buildingType: "", apartment: "" }); setRequestedTime("");
+    setAddr({ street: "", area: "", buildingType: "", apartment: "" }); setRequestedTime(""); setAssignedTo("");
     setItems([{ ...emptyLine, department: defaultDept }]);
     onCreated(order);
     if (autoPrint && currentUser.role === "master_cashier") {
-      printReceipt(order, "master");
+      printReceipt(order, "master", printStyle);
     }
   };
 
@@ -300,6 +307,10 @@ function OrderEntry({ products, currentUser, autoPrint, onCreated }: { products:
       <label className="optional-time">
         {orderType === "delivery" ? "Requested delivery time" : "Requested pickup time"} <span className="optional-hint">(optional)</span>
         <input type="datetime-local" value={requestedTime} onChange={(e) => setRequestedTime(e.target.value)} />
+      </label>
+      <label className="optional-time">
+        Assign to <span className="optional-hint">(optional)</span>
+        <input value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} placeholder="Staff member who should complete this order" />
       </label>
 
       <div className="line-list">
@@ -409,7 +420,7 @@ function ProductCombobox({ products, value, onSelect }: { products: Product[]; v
 
 // ── Queue ─────────────────────────────────────────────────────────────────────
 
-function Queue({ orders, currentUser, onChanged }: { orders: Order[]; currentUser: User; onChanged: () => Promise<void> }) {
+function Queue({ orders, currentUser, onChanged, printStyle }: { orders: Order[]; currentUser: User; onChanged: () => Promise<void>; printStyle: string }) {
   const [search, setSearch] = useState("");
   const sorted = useMemo(() => sortByUrgency(orders), [orders]);
   const displayed = useMemo(() => {
@@ -431,7 +442,7 @@ function Queue({ orders, currentUser, onChanged }: { orders: Order[]; currentUse
       </div>
       {displayed.length === 0
         ? <EmptyState title="No active tickets" detail="New orders will appear here." />
-        : <div className="ticket-grid">{displayed.map((order) => <TicketCard key={order.id} order={order} currentUser={currentUser} onChanged={onChanged} />)}</div>
+        : <div className="ticket-grid">{displayed.map((order) => <TicketCard key={order.id} order={order} currentUser={currentUser} onChanged={onChanged} printStyle={printStyle} />)}</div>
       }
     </>
   );
@@ -439,7 +450,7 @@ function Queue({ orders, currentUser, onChanged }: { orders: Order[]; currentUse
 
 // ── Ticket card ───────────────────────────────────────────────────────────────
 
-function TicketCard({ order, currentUser, onChanged }: { order: Order; currentUser: User; onChanged: () => Promise<void> }) {
+function TicketCard({ order, currentUser, onChanged, printStyle }: { order: Order; currentUser: User; onChanged: () => Promise<void>; printStyle: string }) {
   const visibleItems =
     currentUser.role === "kitchen" ? order.items.filter((i) => i.department === "kitchen") :
     currentUser.role === "counter" ? order.items.filter((i) => i.department === "counter") :
@@ -508,6 +519,7 @@ function TicketCard({ order, currentUser, onChanged }: { order: Order; currentUs
         )}
       </div>
       {order.requestedByName && <div className="requested-by">Requested by {order.requestedByName}</div>}
+      {order.assignedTo && <div className="assignee-tag">Assigned to: <b>{order.assignedTo}</b></div>}
 
       <div className="dept-statuses">
         {hasKitchen && <span className={`dept-badge kitchen ds-${order.kitchenStatus.toLowerCase()}`}>Kitchen: {order.kitchenStatus}</span>}
@@ -535,9 +547,9 @@ function TicketCard({ order, currentUser, onChanged }: { order: Order; currentUs
       <footer>
         {showTotal && total > 0 && <span className="total">{currency.format(total)}</span>}
         <div className="ticket-actions">
-          {hasKitchen && <button className="icon-button secondary" onClick={() => printReceipt(order, "kitchen")} title="Print kitchen receipt">K</button>}
-          {hasCounter && <button className="icon-button secondary" onClick={() => printReceipt(order, "counter")} title="Print counter receipt">C</button>}
-          <button className="icon-button" onClick={() => printReceipt(order, "master")} title="Print master receipt"><Printer size={18} /></button>
+          {hasKitchen && <button className="icon-button secondary" onClick={() => printReceipt(order, "kitchen", printStyle)} title="Print kitchen receipt">K</button>}
+          {hasCounter && <button className="icon-button secondary" onClick={() => printReceipt(order, "counter", printStyle)} title="Print counter receipt">C</button>}
+          <button className="icon-button" onClick={() => printReceipt(order, "master", printStyle)} title="Print master receipt"><Printer size={18} /></button>
           {isMasterCashier && order.status !== "Done" && (
             <>
               {(order.kitchenStatus === "New" || order.counterStatus === "New") && (
@@ -564,7 +576,7 @@ function TicketCard({ order, currentUser, onChanged }: { order: Order; currentUs
 
 // ── History ───────────────────────────────────────────────────────────────────
 
-function HistoryView({ orders }: { orders: Order[] }) {
+function HistoryView({ orders, printStyle }: { orders: Order[]; printStyle: string }) {
   const [search, setSearch] = useState("");
   const displayed = useMemo(() => {
     if (!search.trim()) return orders;
@@ -599,7 +611,7 @@ function HistoryView({ orders }: { orders: Order[] }) {
                 <td>{order.items.length}</td>
                 <td>{new Date(order.updatedAt).toLocaleString(appSettings.locale)}</td>
                 <td>
-                  <button className="icon-button" onClick={() => printReceipt(order, "master")} title="Print master receipt"><Printer size={18} /></button>
+                  <button className="icon-button" onClick={() => printReceipt(order, "master", printStyle)} title="Print master receipt"><Printer size={18} /></button>
                 </td>
               </tr>
             ))}
@@ -702,7 +714,11 @@ function UsersPanel() {
   const [busy, setBusy] = useState(false);
 
   const load = () => api.users.list().then(setUsers).catch(() => undefined);
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+    const id = setInterval(() => void load(), 10_000);
+    return () => clearInterval(id);
+  }, []);
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -777,13 +793,22 @@ function UsersPanel() {
 
       <div className="panel table-panel">
         <table>
-          <thead><tr><th>Name</th><th>Role</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Role</th><th>Account</th><th>Online</th><th></th></tr></thead>
           <tbody>
-            {users.map((u) => (
+            {users.map((u) => {
+              const online = !!u.lastSeenAt && Date.now() - new Date(u.lastSeenAt).getTime() < 2 * 60 * 1000;
+              return (
               <tr key={u.id} style={{ opacity: u.isActive ? 1 : 0.45 }}>
                 <td>{u.name}</td>
-                <td style={{ textTransform: "capitalize" }}>{u.role}</td>
+                <td style={{ textTransform: "capitalize" }}>{u.role.replace("_", " ")}</td>
                 <td>{u.isActive ? "Active" : "Inactive"}</td>
+                <td>
+                  <span className={`online-dot ${online ? "online" : "offline"}`}
+                    title={online ? "Online now" : u.lastSeenAt
+                      ? `Last seen ${new Date(u.lastSeenAt).toLocaleTimeString(appSettings.locale, { hour: "2-digit", minute: "2-digit" })}`
+                      : "Never logged in"} />
+                  {online ? <span style={{ color: "#16a34a", fontSize: 12, fontWeight: 700 }}>Online</span> : null}
+                </td>
                 <td className="row-actions">
                   <button type="button" className="secondary" onClick={() => startEdit(u)}>Edit</button>
                   <button type="button" className="secondary" onClick={() => void toggleActive(u)}>
@@ -791,7 +816,8 @@ function UsersPanel() {
                   </button>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -801,7 +827,7 @@ function UsersPanel() {
 
 // ── Settings (admin) ──────────────────────────────────────────────────────────
 
-function SettingsPanel({ autoPrint, onAutoPrintChange }: { autoPrint: boolean; onAutoPrintChange: (v: boolean) => void }) {
+function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleChange }: { autoPrint: boolean; onAutoPrintChange: (v: boolean) => void; printStyle: string; onPrintStyleChange: (v: string) => void }) {
   const [msg, setMsg] = useState("");
 
   const toggle = async () => {
@@ -809,6 +835,13 @@ function SettingsPanel({ autoPrint, onAutoPrintChange }: { autoPrint: boolean; o
     await api.settings.set({ autoPrint: String(next) });
     onAutoPrintChange(next);
     setMsg(next ? "Auto-print enabled" : "Auto-print disabled");
+    window.setTimeout(() => setMsg(""), 2500);
+  };
+
+  const changePrintStyle = async (style: string) => {
+    await api.settings.set({ printStyle: style });
+    onPrintStyleChange(style);
+    setMsg("Receipt format updated");
     window.setTimeout(() => setMsg(""), 2500);
   };
 
@@ -823,6 +856,18 @@ function SettingsPanel({ autoPrint, onAutoPrintChange }: { autoPrint: boolean; o
         <button type="button" className={autoPrint ? "" : "secondary"} onClick={() => void toggle()}>
           {autoPrint ? "On" : "Off"}
         </button>
+      </div>
+      <div className="setting-row">
+        <div className="setting-info">
+          <strong>Receipt format</strong>
+          <p>Choose between 80mm thermal strips or full A4 pages. You can also mix: A4 for the master receipt and thermal for kitchen/counter, or vice versa.</p>
+        </div>
+        <select value={printStyle} style={{ width: 260 }} onChange={(e) => void changePrintStyle(e.target.value)}>
+          <option value="thermal">All receipts — thermal (80mm)</option>
+          <option value="a4">All receipts — A4</option>
+          <option value="master_a4">Master receipt A4 · dept receipts thermal</option>
+          <option value="dept_a4">Master receipt thermal · dept receipts A4</option>
+        </select>
       </div>
       {msg && <div className="form-message">{msg}</div>}
     </div>
@@ -972,9 +1017,14 @@ function fmtReceiptTime(rt: string): string {
   return d.toLocaleString(appSettings.locale, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function printReceipt(order: Order, type: "kitchen" | "counter" | "master") {
+function printReceipt(order: Order, type: "kitchen" | "counter" | "master", printStyle = "thermal") {
   const items = type === "master" ? order.items : order.items.filter((i) => i.department === type);
   if (items.length === 0) return;
+
+  // Resolve effective style for this receipt type
+  let resolved = printStyle;
+  if (printStyle === "master_a4") resolved = type === "master" ? "a4" : "thermal";
+  if (printStyle === "dept_a4")   resolved = type !== "master" ? "a4" : "thermal";
 
   const label = { kitchen: "KITCHEN ORDER", counter: "COUNTER ORDER", master: "RECEIPT" }[type];
   const showPrices = type !== "kitchen";
@@ -982,90 +1032,108 @@ function printReceipt(order: Order, type: "kitchen" | "counter" | "master") {
   const d = new Date(order.createdAt);
   const dateStr = d.toLocaleDateString(appSettings.locale);
   const timeStr = d.toLocaleTimeString(appSettings.locale, { hour: "2-digit", minute: "2-digit" });
-
-  const itemRows = items.map((i) => {
-    const qty = [i.kg ? `${i.kg} kg` : "", i.quantity ? `×${i.quantity}` : ""].filter(Boolean).join("  ");
-    const lineTotal = showPrices && i.lineTotal ? `R${i.lineTotal.toFixed(2)}` : "";
-    return `
-      <div class="item">
-        <div class="item-name">${i.name}</div>
-        <div class="item-sub">
-          <span>${qty}${i.notes ? `  ${i.notes}` : ""}</span>
-          ${lineTotal ? `<span class="amt">${lineTotal}</span>` : ""}
-        </div>
-      </div>`;
-  }).join("");
-
   const logoUrl = `${window.location.origin}/logo.jpg`;
-  const win = window.open("", "_blank", "width=380,height=720");
+
+  const win = window.open("", "_blank", resolved === "a4" ? "width=900,height=700" : "width=380,height=720");
   if (!win) return;
 
-  win.document.write(`<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>${label} — ${order.ticketNumber}</title>
-  <style>
-    @page { size: 80mm auto; margin: 4mm; }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Courier New', Courier, monospace; font-size: 12px; width: 72mm; margin: 0 auto; line-height: 1.5; color: #000; }
-    .center { text-align: center; }
-    .sep  { border: none; border-top: 1px dashed #999; margin: 7px 0; }
-    .sep2 { border: none; border-top: 2px solid #000; margin: 7px 0; }
-    .logo { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; margin-bottom: 4px; }
-    .shop-name { font-size: 13px; font-weight: bold; color: #c41f1f; letter-spacing: 0.5px; }
-    .label { font-size: 15px; font-weight: bold; letter-spacing: 1px; color: #0d2b6b; margin-top: 2px; }
-    .ticket-num { font-size: 12px; font-weight: bold; color: #333; }
-    .datetime { font-size: 11px; color: #555; }
-    .customer { margin: 4px 0; }
-    .customer b { font-size: 13px; }
-    .delivery-tag { font-weight: bold; color: #c41f1f; font-size: 12px; }
-    .addr { font-size: 11px; color: #333; margin-top: 2px; }
-    .time-tag { font-size: 11px; font-weight: bold; color: #0d2b6b; margin-top: 2px; }
-    .item { margin: 5px 0; }
-    .item-name { font-weight: bold; }
-    .item-sub { display: flex; justify-content: space-between; color: #444; font-size: 11px; margin-top: 1px; }
-    .amt { font-weight: bold; color: #000; white-space: nowrap; padding-left: 8px; }
-    .total-row { display: flex; justify-content: space-between; font-weight: bold; font-size: 14px; margin: 4px 0; color: #0d2b6b; }
-    .served-by { font-size: 10px; color: #666; margin-top: 3px; }
-    .thank-you { font-size: 11px; color: #555; }
-    @media print { body { width: 72mm; } }
-  </style>
-</head>
-<body>
-  <div class="center">
-    <img class="logo" src="${logoUrl}" alt="MAXIS" />
-    <div class="shop-name">MAXIS KOSHER BUTCHERY</div>
-    <div class="label">${label}</div>
-    <div class="ticket-num">${order.ticketNumber}</div>
-    <div class="datetime">${dateStr} &nbsp; ${timeStr}</div>
-  </div>
-  <hr class="sep">
-  <div class="customer">
-    <b>${order.customerName}</b><br>
-    ${order.customerPhone}<br>
-    <span class="${order.orderType === "delivery" ? "delivery-tag" : ""}">${order.orderType === "delivery" ? "*** DELIVERY ***" : "Pickup"}</span>
-    ${order.orderType === "delivery" && order.deliveryAddress?.street ? `
-      <div class="addr">${order.deliveryAddress.street}</div>
-      <div class="addr">${order.deliveryAddress.area}</div>
-      ${order.deliveryAddress.buildingType === "building" && order.deliveryAddress.apartment ? `<div class="addr">Apt: ${order.deliveryAddress.apartment}</div>` : ""}
-    ` : ""}
-    ${order.requestedTime ? `<div class="time-tag">${order.orderType === "delivery" ? "Deliver at" : "Pickup at"}: ${fmtReceiptTime(order.requestedTime)}</div>` : ""}
-    ${order.requestedByName ? `<div class="served-by">Served by: ${order.requestedByName}</div>` : ""}
-  </div>
-  <hr class="sep">
-  ${itemRows}
-  ${showPrices && total > 0 ? `<hr class="sep2"><div class="total-row"><span>TOTAL</span><span>R${total.toFixed(2)}</span></div>` : ""}
-  <hr class="sep">
-  <div class="center thank-you">Thank you for your order</div>
-  <script>
-    window.onload = function() {
-      window.print();
-      window.onafterprint = function() { window.close(); };
-    };
-  </script>
-</body>
-</html>`);
+  if (resolved === "a4") {
+    const a4Rows = items.map((i) => `
+      <tr>
+        <td><b>${i.name}</b>${i.notes ? `<div class="item-note">${i.notes}</div>` : ""}</td>
+        ${showPrices ? `<td>${i.unitPrice != null ? `R${i.unitPrice.toFixed(2)}` : "—"}</td>` : ""}
+        <td>${i.kg ? `${i.kg} kg` : "—"}</td>
+        <td>${i.quantity ? `×${i.quantity}` : "—"}</td>
+        ${showPrices ? `<td style="text-align:right;font-weight:700">${i.lineTotal != null ? `R${i.lineTotal.toFixed(2)}` : "—"}</td>` : ""}
+      </tr>`).join("");
+    win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${label} — ${order.ticketNumber}</title><style>
+      @page{size:A4;margin:18mm}*{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:Inter,'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a1a2e}
+      .hdr{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:3px solid #0d2b6b;margin-bottom:20px}
+      .hdr-left .shop{font-size:20px;font-weight:800;color:#c41f1f}.hdr-left .type{font-size:15px;font-weight:700;color:#0d2b6b;margin-top:4px}
+      .hdr-right{text-align:right}.logo{width:72px;height:72px;border-radius:50%;object-fit:cover;border:2px solid #0d2b6b}
+      .tnum{font-size:14px;font-weight:700;color:#0d2b6b;margin-top:6px}.dt{font-size:12px;color:#666;margin-top:2px}
+      .cbox{border:1px solid #c8d5ee;border-radius:8px;padding:14px 18px;margin-bottom:20px;background:#f4f7fd}
+      .clabel{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#5a6480;font-weight:700;margin-bottom:8px}
+      .cname{font-size:16px;font-weight:700;color:#0d2b6b}.cline{font-size:13px;color:#333;margin-top:4px}
+      .del{color:#c41f1f;font-weight:700}.ttag{color:#0d2b6b;font-weight:600}
+      table{width:100%;border-collapse:collapse;margin-bottom:8px}thead tr{background:#0d2b6b}
+      th{color:#fff;padding:8px 12px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap}
+      td{padding:9px 12px;border-bottom:1px solid #e8eef7;font-size:13px;vertical-align:top}
+      tr:nth-child(even) td{background:#f8f9fc}tr:last-child td{border-bottom:none}
+      .item-note{font-size:11px;color:#666;margin-top:2px}
+      .tot{display:flex;justify-content:flex-end;padding:12px 12px 0;border-top:2px solid #0d2b6b;margin-top:8px;gap:24px;align-items:baseline}
+      .tot-label{color:#555;font-size:13px}.tot-value{font-size:20px;font-weight:800;color:#0d2b6b}
+      .footer{margin-top:40px;text-align:center;color:#888;font-size:12px;border-top:1px solid #e0e6f0;padding-top:12px}
+    </style></head><body>
+    <div class="hdr">
+      <div class="hdr-left"><div class="shop">MAXIS KOSHER BUTCHERY</div><div class="type">${label}</div></div>
+      <div class="hdr-right"><img class="logo" src="${logoUrl}" alt="MAXIS"><div class="tnum">${order.ticketNumber}</div><div class="dt">${dateStr} &nbsp; ${timeStr}</div></div>
+    </div>
+    <div class="cbox">
+      <div class="clabel">Customer Details</div>
+      <div class="cname">${order.customerName}</div>
+      <div class="cline">${order.customerPhone}</div>
+      <div class="cline ${order.orderType === "delivery" ? "del" : ""}">${order.orderType === "delivery" ? "★ DELIVERY" : "Pickup"}</div>
+      ${order.orderType === "delivery" && order.deliveryAddress?.street ? `<div class="cline">${order.deliveryAddress.street}, ${order.deliveryAddress.area}${order.deliveryAddress.buildingType === "building" && order.deliveryAddress.apartment ? `, Apt ${order.deliveryAddress.apartment}` : ""}</div>` : ""}
+      ${order.requestedTime ? `<div class="cline ttag">${order.orderType === "delivery" ? "Deliver at" : "Pickup at"}: ${fmtReceiptTime(order.requestedTime)}</div>` : ""}
+      ${order.requestedByName ? `<div class="cline">Served by: ${order.requestedByName}</div>` : ""}
+      ${order.assignedTo ? `<div class="cline">Assigned to: <b>${order.assignedTo}</b></div>` : ""}
+    </div>
+    <table><thead><tr><th>Item</th>${showPrices ? "<th>R/kg</th>" : ""}<th>Kg</th><th>Qty</th>${showPrices ? '<th style="text-align:right">Total</th>' : ""}</tr></thead>
+    <tbody>${a4Rows}</tbody></table>
+    ${showPrices && total > 0 ? `<div class="tot"><div class="tot-label">ORDER TOTAL</div><div class="tot-value">R${total.toFixed(2)}</div></div>` : ""}
+    <div class="footer">Thank you for your order — MAXIS Discount Kosher Butchery</div>
+    <script>window.onload=function(){window.print();window.onafterprint=function(){window.close();};}</script>
+    </body></html>`);
+  } else {
+    const thermalRows = items.map((i) => {
+      const qty = [i.kg ? `${i.kg} kg` : "", i.quantity ? `×${i.quantity}` : ""].filter(Boolean).join("  ");
+      const lineTotal = showPrices && i.lineTotal ? `R${i.lineTotal.toFixed(2)}` : "";
+      return `<div class="item"><div class="item-name">${i.name}</div><div class="item-sub"><span>${qty}${i.notes ? `  ${i.notes}` : ""}</span>${lineTotal ? `<span class="amt">${lineTotal}</span>` : ""}</div></div>`;
+    }).join("");
+    win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${label} — ${order.ticketNumber}</title><style>
+      @page{size:80mm auto;margin:4mm}*{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:'Courier New',Courier,monospace;font-size:12px;width:72mm;margin:0 auto;line-height:1.5;color:#000}
+      .center{text-align:center}.sep{border:none;border-top:1px dashed #999;margin:7px 0}.sep2{border:none;border-top:2px solid #000;margin:7px 0}
+      .logo{width:52px;height:52px;border-radius:50%;object-fit:cover;margin-bottom:4px}
+      .shop-name{font-size:13px;font-weight:bold;color:#c41f1f;letter-spacing:.5px}
+      .label{font-size:15px;font-weight:bold;letter-spacing:1px;color:#0d2b6b;margin-top:2px}
+      .ticket-num{font-size:12px;font-weight:bold;color:#333}.datetime{font-size:11px;color:#555}
+      .customer{margin:4px 0}.customer b{font-size:13px}
+      .delivery-tag{font-weight:bold;color:#c41f1f;font-size:12px}
+      .addr{font-size:11px;color:#333;margin-top:2px}.time-tag{font-size:11px;font-weight:bold;color:#0d2b6b;margin-top:2px}
+      .item{margin:5px 0}.item-name{font-weight:bold}
+      .item-sub{display:flex;justify-content:space-between;color:#444;font-size:11px;margin-top:1px}
+      .amt{font-weight:bold;color:#000;white-space:nowrap;padding-left:8px}
+      .total-row{display:flex;justify-content:space-between;font-weight:bold;font-size:14px;margin:4px 0;color:#0d2b6b}
+      .served-by{font-size:10px;color:#666;margin-top:3px}.thank-you{font-size:11px;color:#555}
+      @media print{body{width:72mm}}
+    </style></head><body>
+    <div class="center">
+      <img class="logo" src="${logoUrl}" alt="MAXIS">
+      <div class="shop-name">MAXIS KOSHER BUTCHERY</div>
+      <div class="label">${label}</div>
+      <div class="ticket-num">${order.ticketNumber}</div>
+      <div class="datetime">${dateStr} &nbsp; ${timeStr}</div>
+    </div>
+    <hr class="sep">
+    <div class="customer">
+      <b>${order.customerName}</b><br>${order.customerPhone}<br>
+      <span class="${order.orderType === "delivery" ? "delivery-tag" : ""}">${order.orderType === "delivery" ? "*** DELIVERY ***" : "Pickup"}</span>
+      ${order.orderType === "delivery" && order.deliveryAddress?.street ? `<div class="addr">${order.deliveryAddress.street}</div><div class="addr">${order.deliveryAddress.area}</div>${order.deliveryAddress.buildingType === "building" && order.deliveryAddress.apartment ? `<div class="addr">Apt: ${order.deliveryAddress.apartment}</div>` : ""}` : ""}
+      ${order.requestedTime ? `<div class="time-tag">${order.orderType === "delivery" ? "Deliver at" : "Pickup at"}: ${fmtReceiptTime(order.requestedTime)}</div>` : ""}
+      ${order.requestedByName ? `<div class="served-by">Served by: ${order.requestedByName}</div>` : ""}
+      ${order.assignedTo ? `<div class="served-by">Assigned to: <b>${order.assignedTo}</b></div>` : ""}
+    </div>
+    <hr class="sep">
+    ${thermalRows}
+    ${showPrices && total > 0 ? `<hr class="sep2"><div class="total-row"><span>TOTAL</span><span>R${total.toFixed(2)}</span></div>` : ""}
+    <hr class="sep">
+    <div class="center thank-you">Thank you for your order</div>
+    <script>window.onload=function(){window.print();window.onafterprint=function(){window.close();};}</script>
+    </body></html>`);
+  }
   win.document.close();
 }
 

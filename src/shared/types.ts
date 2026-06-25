@@ -10,6 +10,7 @@ export interface User {
   department: Department | null;
   isActive: number;
   createdAt: string;
+  lastSeenAt: string | null;
 }
 
 export interface UserInput {
@@ -71,6 +72,7 @@ export interface CreateOrderInput {
   orderType: "pickup" | "delivery";
   deliveryAddress: DeliveryAddress;
   requestedTime: string;
+  assignedTo: string;
   items: OrderItemInput[];
 }
 
@@ -82,6 +84,7 @@ export interface Order {
   orderType: "pickup" | "delivery";
   deliveryAddress: DeliveryAddress;
   requestedTime: string;
+  assignedTo: string | null;
   status: OrderStatus;
   kitchenStatus: DeptStatus;
   counterStatus: DeptStatus;

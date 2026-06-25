@@ -8,6 +8,7 @@ const router = Router();
 router.use(requireAuth);
 
 router.get("/", (req: AuthRequest, res) => {
+  if (req.user?.id) db.touchLastSeen(req.user.id);
   const scope = (req.query.scope as string) || "active";
   const role = req.user?.role;
   const dept: Department | null =

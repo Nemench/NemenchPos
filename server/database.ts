@@ -29,8 +29,12 @@ export class KotDatabase {
 
   listUsers(): User[] {
     return this.db
-      .prepare("SELECT id, name, role, department, isActive, createdAt FROM users ORDER BY name")
+      .prepare("SELECT id, name, role, department, isActive, createdAt, lastSeenAt FROM users ORDER BY name")
       .all() as User[];
+  }
+
+  touchLastSeen(id: number): void {
+    this.db.prepare("UPDATE users SET lastSeenAt = ? WHERE id = ?").run(new Date().toISOString(), id);
   }
 
   getUser(id: number): User | null {
@@ -118,8 +122,8 @@ export class KotDatabase {
     const counterStatus: DeptStatus = hasCounter ? "New" : "n/a";
 
     const result = this.db
-      .prepare("INSERT INTO orders (ticketNumber, customerName, customerPhone, orderType, deliveryAddress, requestedTime, status, kitchenStatus, counterStatus, requestedById, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, 'New', ?, ?, ?, ?, ?)")
-      .run(ticketNumber, input.customerName.trim(), input.customerPhone.trim(), input.orderType, input.orderType === "delivery" ? JSON.stringify(input.deliveryAddress) : null, input.requestedTime.trim(), kitchenStatus, counterStatus, requestedById, now, now);
+      .prepare("INSERT INTO orders (ticketNumber, customerName, customerPhone, orderType, deliveryAddress, requestedTime, assignedTo, status, kitchenStatus, counterStatus, requestedById, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, 'New', ?, ?, ?, ?, ?)")
+      .run(ticketNumber, input.customerName.trim(), input.customerPhone.trim(), input.orderType, input.orderType === "delivery" ? JSON.stringify(input.deliveryAddress) : null, input.requestedTime.trim(), input.assignedTo?.trim() || null, kitchenStatus, counterStatus, requestedById, now, now);
 
     const orderId = Number(result.lastInsertRowid);
     const insertItem = this.db.prepare(
@@ -135,7 +139,7 @@ export class KotDatabase {
     // Single JOIN query — avoids N+1 (one query per order for items)
     const base = `
       SELECT o.id, o.ticketNumber, o.customerName, o.customerPhone, o.orderType,
-             o.deliveryAddress, o.requestedTime, o.status, o.kitchenStatus, o.counterStatus,
+             o.deliveryAddress, o.requestedTime, o.assignedTo, o.status, o.kitchenStatus, o.counterStatus,
              o.requestedById, o.createdAt, o.updatedAt, u.name as requestedByName,
              oi.id as oi_id, oi.productId as oi_productId, oi.name as oi_name,
              oi.kg as oi_kg, oi.quantity as oi_quantity, oi.notes as oi_notes,
@@ -190,7 +194,7 @@ export class KotDatabase {
   listOrdersInRange(from: string, to: string): Order[] {
     const sql = `
       SELECT o.id, o.ticketNumber, o.customerName, o.customerPhone, o.orderType,
-             o.deliveryAddress, o.requestedTime, o.status, o.kitchenStatus, o.counterStatus,
+             o.deliveryAddress, o.requestedTime, o.assignedTo, o.status, o.kitchenStatus, o.counterStatus,
              o.requestedById, o.createdAt, o.updatedAt, u.name as requestedByName,
              oi.id as oi_id, oi.productId as oi_productId, oi.name as oi_name,
              oi.kg as oi_kg, oi.quantity as oi_quantity, oi.notes as oi_notes,
@@ -297,19 +301,20 @@ export class KotDatabase {
       this.db.prepare("UPDATE users SET role = 'counter', department = 'counter' WHERE role = 'staff'").run();
     }
 
-    // Add orderType column if missing (existing databases)
+    // Add columns to users if missing
+    if ((this.db.prepare("SELECT COUNT(*) as n FROM sqlite_master WHERE type='table' AND name='users'").get() as { n: number }).n > 0) {
+      const userCols = (this.db.prepare("PRAGMA table_info(users)").all() as { name: string }[]).map((c) => c.name);
+      if (!userCols.includes("lastSeenAt")) this.db.exec("ALTER TABLE users ADD COLUMN lastSeenAt TEXT");
+    }
+
+    // Add columns to orders if missing (existing databases)
     const ordersExists = (this.db.prepare("SELECT COUNT(*) as n FROM sqlite_master WHERE type='table' AND name='orders'").get() as { n: number }).n > 0;
     if (ordersExists) {
       const cols = (this.db.prepare("PRAGMA table_info(orders)").all() as { name: string }[]).map((c) => c.name);
-      if (!cols.includes("orderType")) {
-        this.db.exec("ALTER TABLE orders ADD COLUMN orderType TEXT NOT NULL DEFAULT 'pickup'");
-      }
-      if (!cols.includes("deliveryAddress")) {
-        this.db.exec("ALTER TABLE orders ADD COLUMN deliveryAddress TEXT NOT NULL DEFAULT '{}'");
-      }
-      if (!cols.includes("requestedTime")) {
-        this.db.exec("ALTER TABLE orders ADD COLUMN requestedTime TEXT NOT NULL DEFAULT ''");
-      }
+      if (!cols.includes("orderType")) this.db.exec("ALTER TABLE orders ADD COLUMN orderType TEXT NOT NULL DEFAULT 'pickup'");
+      if (!cols.includes("deliveryAddress")) this.db.exec("ALTER TABLE orders ADD COLUMN deliveryAddress TEXT NOT NULL DEFAULT '{}'");
+      if (!cols.includes("requestedTime")) this.db.exec("ALTER TABLE orders ADD COLUMN requestedTime TEXT NOT NULL DEFAULT ''");
+      if (!cols.includes("assignedTo")) this.db.exec("ALTER TABLE orders ADD COLUMN assignedTo TEXT");
     }
 
     this.db.exec(`
@@ -379,6 +384,7 @@ export class KotDatabase {
 
     // Seed default settings
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('autoPrint', 'false')").run();
+    this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('printStyle', 'thermal')").run();
   }
 
   // ── Settings ───────────────────────────────────────────────────────────────

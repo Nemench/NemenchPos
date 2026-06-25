@@ -42,6 +42,7 @@ router.post("/login", (req, res) => {
 });
 
 router.get("/me", requireAuth, (req: AuthRequest, res) => {
+  if (req.user?.id) db.touchLastSeen(req.user.id);
   res.json(req.user);
 });
 
