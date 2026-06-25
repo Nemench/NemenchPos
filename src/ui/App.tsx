@@ -175,21 +175,21 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
         </div>
         <nav>
           {(currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier") && (
-            <button className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}><Plus size={18} /> New</button>
+            <button className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}><Plus size={18} /><span>New</span></button>
           )}
-          <button className={tab === "queue" ? "active" : ""} onClick={() => setTab("queue")}><ClipboardList size={18} /> Queue</button>
-          <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}><History size={18} /> History</button>
+          <button className={tab === "queue" ? "active" : ""} onClick={() => setTab("queue")}><ClipboardList size={18} /><span>Queue</span></button>
+          <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}><History size={18} /><span>History</span></button>
           {currentUser.role === "admin" && (
-            <button className={tab === "products" ? "active" : ""} onClick={() => setTab("products")}><Package size={18} /> Stock</button>
-          )}
-          {currentUser.role === "admin" && (
-            <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={18} /> Users</button>
+            <button className={tab === "products" ? "active" : ""} onClick={() => setTab("products")}><Package size={18} /><span>Stock</span></button>
           )}
           {currentUser.role === "admin" && (
-            <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Settings size={18} /> Settings</button>
+            <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={18} /><span>Users</span></button>
           )}
           {currentUser.role === "admin" && (
-            <button className={tab === "reports" ? "active" : ""} onClick={() => setTab("reports")}><BarChart2 size={18} /> Reports</button>
+            <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Settings size={18} /><span>Settings</span></button>
+          )}
+          {currentUser.role === "admin" && (
+            <button className={tab === "reports" ? "active" : ""} onClick={() => setTab("reports")}><BarChart2 size={18} /><span>Reports</span></button>
           )}
         </nav>
         <div className="sidebar-footer">
@@ -862,6 +862,7 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
   const [loadingPrinters, setLoadingPrinters] = useState(false);
   const [importing, setImporting] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [historyDays, setHistoryDays] = useState(30);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const restoreInputRef = useRef<HTMLInputElement>(null);
 
@@ -873,6 +874,19 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
   };
 
   useEffect(() => { void fetchPrinters(); }, []);
+
+  useEffect(() => {
+    api.settings.get().then((s) => {
+      setHistoryDays(Number(s.historyDays ?? 30));
+    }).catch(() => undefined);
+  }, []);
+
+  const saveHistoryDays = async (days: number) => {
+    await api.settings.set({ historyDays: String(days) });
+    setHistoryDays(days);
+    setMsg("History retention saved");
+    window.setTimeout(() => setMsg(""), 2500);
+  };
 
   const toggle = async () => {
     const next = !autoPrint;
@@ -1026,6 +1040,27 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
             <button type="button" className="secondary danger" disabled={restoring} onClick={() => restoreInputRef.current?.click()}>
               {restoring ? "Restoring…" : "Restore backup"}
             </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Order History</h3>
+        <div className="setting-row">
+          <div className="setting-info">
+            <strong>History retention</strong>
+            <p>Completed orders older than this many days are hidden from the History tab. They are still visible in Reports.</p>
+          </div>
+          <div className="history-days-input">
+            <input
+              type="number"
+              min="1"
+              max="365"
+              value={historyDays}
+              onChange={(e) => setHistoryDays(Number(e.target.value))}
+              onBlur={(e) => void saveHistoryDays(Math.max(1, Number(e.target.value)))}
+            />
+            <span>days</span>
           </div>
         </div>
       </section>

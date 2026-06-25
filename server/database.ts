@@ -241,15 +241,20 @@ export class KotDatabase {
       LEFT JOIN order_items oi ON o.id = oi.orderId`;
 
     let sql: string;
+    let params: unknown[] = [];
     if (scope === "active") {
       sql = `${base} WHERE o.status IN ('New','Received','Ready') ORDER BY o.createdAt ASC`;
     } else if (scope === "history") {
-      sql = `${base} WHERE o.status = 'Done' ORDER BY o.updatedAt DESC LIMIT ${limit * 20}`; // over-fetch rows, group into orders
+      const setting = this.db.prepare("SELECT value FROM settings WHERE key = 'historyDays'").get() as { value: string } | null;
+      const days = Math.max(1, Number(setting?.value ?? 30));
+      const since = new Date(Date.now() - days * 86_400_000).toISOString();
+      sql = `${base} WHERE o.status = 'Done' AND o.updatedAt >= ? ORDER BY o.updatedAt DESC LIMIT ${limit * 20}`;
+      params = [since];
     } else {
       sql = `${base} ORDER BY o.createdAt DESC LIMIT ${limit * 20}`;
     }
 
-    const allRows = this.db.prepare(sql).all() as Record<string, unknown>[];
+    const allRows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
     const orderMap = this.buildOrderMap(allRows, scope !== "active" ? limit : undefined);
 
     let orders = Array.from(orderMap.values());
@@ -459,6 +464,7 @@ export class KotDatabase {
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('kitchenPrinter', '')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('counterPrinter', '')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('masterPrinter', '')").run();
+    this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('historyDays', '30')").run();
   }
 
   // ── Settings ───────────────────────────────────────────────────────────────

@@ -535,6 +535,8 @@ th {
 .empty p { margin-top: 6px; }
 
 /* ── Responsive ── */
+
+/* Tablet (≤920px): sidebar collapses to a sticky top bar */
 @media (max-width: 920px) {
   .shell { grid-template-columns: 1fr; }
 
@@ -546,16 +548,39 @@ th {
   }
 
   .brand { margin-bottom: 8px; padding-bottom: 10px; }
+  .sidebar-footer { display: none; }
 
   nav { grid-template-columns: repeat(auto-fit, minmax(60px, 1fr)); }
-  nav button { justify-content: center; font-size: 12px; padding: 0 8px; }
+  nav button { justify-content: center; font-size: 12px; padding: 0 8px; gap: 4px; }
 
   .workspace { padding: 16px; }
 
   .form-grid, .products-layout { grid-template-columns: 1fr; }
-
   .line-row { grid-template-columns: 1fr 60px 60px; }
   .printer-assignments { grid-template-columns: 1fr; }
+  .table-panel { overflow-x: auto; }
+  table { min-width: 540px; }
+}
+
+/* Phone (≤520px): icon-only nav, further simplification */
+@media (max-width: 520px) {
+  .brand { display: none; }
+
+  nav button span { display: none; }
+  nav button { padding: 6px; min-height: 44px; }
+  nav { gap: 2px; }
+
+  .workspace { padding: 10px; }
+  .ticket { padding: 12px; }
+
+  .line-row {
+    grid-template-columns: 1fr 64px;
+    gap: 8px;
+  }
+
+  .ticket-actions { flex-wrap: wrap; gap: 6px; }
+  .settings-panel { padding: 14px; }
+  .setting-row { padding: 12px 14px; }
 }
 
 /* ── Form message / error ── */
@@ -910,6 +935,18 @@ button.toggle-on {
   min-width: 58px;
   background: #22c55e;
   color: #fff;
+}
+
+.history-days-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.history-days-input input {
+  width: 72px;
+  text-align: center;
 }
 
 button.toggle-on:hover:not(:disabled) {
