@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   BarChart2,
   ClipboardList,
@@ -307,10 +307,11 @@ function OrderEntry({ products, currentUser, autoPrint, onCreated }: { products:
           <div className="line-row" key={index}>
             <label>
               Product
-              <select value={item.productId ?? ""} onChange={(e) => chooseProduct(index, e.target.value)}>
-                <option value="">Free text</option>
-                {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
+              <ProductCombobox
+                products={products}
+                value={String(item.productId ?? "")}
+                onSelect={(id) => chooseProduct(index, id)}
+              />
             </label>
             <label>
               Item
@@ -354,15 +355,85 @@ function OrderEntry({ products, currentUser, autoPrint, onCreated }: { products:
   );
 }
 
+// ── Product combobox ──────────────────────────────────────────────────────────
+
+function ProductCombobox({ products, value, onSelect }: { products: Product[]; value: string; onSelect: (id: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  const selected = products.find((p) => String(p.id) === value);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) { setOpen(false); setQuery(""); }
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  const filtered = useMemo(() => {
+    if (!query) return products;
+    const q = query.toLowerCase();
+    return products.filter((p) => p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q));
+  }, [products, query]);
+
+  const pick = (id: string) => { onSelect(id); setQuery(""); setOpen(false); };
+
+  return (
+    <div className="combo-wrap" ref={wrapRef}>
+      <input
+        value={open ? query : (selected?.name ?? "")}
+        placeholder="Search or free text…"
+        autoComplete="off"
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => { if (e.key === "Escape") { setOpen(false); setQuery(""); } }}
+      />
+      {open && (
+        <div className="combo-dropdown">
+          <div className="combo-option combo-free" onMouseDown={() => pick("")}>— Free text —</div>
+          {filtered.map((p) => (
+            <div key={p.id} className={`combo-option${String(p.id) === value ? " combo-selected" : ""}`} onMouseDown={() => pick(String(p.id))}>
+              <span>{p.name}</span>
+              <small>{p.category} · {p.department}</small>
+            </div>
+          ))}
+          {filtered.length === 0 && <div className="combo-empty">No matches</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Queue ─────────────────────────────────────────────────────────────────────
 
 function Queue({ orders, currentUser, onChanged }: { orders: Order[]; currentUser: User; onChanged: () => Promise<void> }) {
+  const [search, setSearch] = useState("");
   const sorted = useMemo(() => sortByUrgency(orders), [orders]);
-  if (sorted.length === 0) return <EmptyState title="No active tickets" detail="New orders will appear here." />;
+  const filtered = useMemo(() => {
+    if (!search.trim()) return sorted;
+    const q = search.toLowerCase();
+    return sorted.filter((o) =>
+      o.customerName.toLowerCase().includes(q) ||
+      o.customerPhone.includes(q) ||
+      o.ticketNumber.toLowerCase().includes(q) ||
+      o.items.some((i) => i.name.toLowerCase().includes(q))
+    );
+  }, [sorted, search]);
+
   return (
-    <div className="ticket-grid">
-      {sorted.map((order) => <TicketCard key={order.id} order={order} currentUser={currentUser} onChanged={onChanged} />)}
-    </div>
+    <>
+      <div className="search-bar">
+        <input placeholder="Search by name, phone, ticket or item…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        {search && <button type="button" className="search-clear" onClick={() => setSearch("")}>×</button>}
+      </div>
+      {filtered.length === 0
+        ? <EmptyState title={search ? "No matching tickets" : "No active tickets"} detail={search ? "Try a different search." : "New orders will appear here."} />
+        : <div className="ticket-grid">{filtered.map((order) => <TicketCard key={order.id} order={order} currentUser={currentUser} onChanged={onChanged} />)}</div>
+      }
+    </>
   );
 }
 
@@ -494,29 +565,49 @@ function TicketCard({ order, currentUser, onChanged }: { order: Order; currentUs
 // ── History ───────────────────────────────────────────────────────────────────
 
 function HistoryView({ orders }: { orders: Order[] }) {
+  const [search, setSearch] = useState("");
+  const filtered = useMemo(() => {
+    if (!search.trim()) return orders;
+    const q = search.toLowerCase();
+    return orders.filter((o) =>
+      o.customerName.toLowerCase().includes(q) ||
+      o.customerPhone.includes(q) ||
+      o.ticketNumber.toLowerCase().includes(q) ||
+      (o.requestedByName ?? "").toLowerCase().includes(q) ||
+      o.items.some((i) => i.name.toLowerCase().includes(q))
+    );
+  }, [orders, search]);
+
   if (orders.length === 0) return <EmptyState title="No completed orders yet" detail="Done tickets are kept here." />;
   return (
     <div className="panel table-panel">
-      <table>
-        <thead>
-          <tr><th>Ticket</th><th>Customer</th><th>Phone</th><th>Requested by</th><th>Items</th><th>Completed</th><th></th></tr>
-        </thead>
-        <tbody>
-          {orders.map((order) => (
-            <tr key={order.id}>
-              <td>{order.ticketNumber}</td>
-              <td>{order.customerName}</td>
-              <td>{order.customerPhone}</td>
-              <td>{order.requestedByName ?? "—"}</td>
-              <td>{order.items.length}</td>
-              <td>{new Date(order.updatedAt).toLocaleString(appSettings.locale)}</td>
-              <td>
-                <button className="icon-button" onClick={() => printReceipt(order, "master")} title="Print master receipt"><Printer size={18} /></button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="search-bar">
+        <input placeholder="Search by name, phone, ticket, item or staff…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        {search && <button type="button" className="search-clear" onClick={() => setSearch("")}>×</button>}
+      </div>
+      {filtered.length === 0
+        ? <p style={{ color: "var(--muted)", padding: "12px 0" }}>No matching orders.</p>
+        : <table>
+            <thead>
+              <tr><th>Ticket</th><th>Customer</th><th>Phone</th><th>Requested by</th><th>Items</th><th>Completed</th><th></th></tr>
+            </thead>
+            <tbody>
+              {filtered.map((order) => (
+                <tr key={order.id}>
+                  <td>{order.ticketNumber}</td>
+                  <td>{order.customerName}</td>
+                  <td>{order.customerPhone}</td>
+                  <td>{order.requestedByName ?? "—"}</td>
+                  <td>{order.items.length}</td>
+                  <td>{new Date(order.updatedAt).toLocaleString(appSettings.locale)}</td>
+                  <td>
+                    <button className="icon-button" onClick={() => printReceipt(order, "master")} title="Print master receipt"><Printer size={18} /></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+      }
     </div>
   );
 }

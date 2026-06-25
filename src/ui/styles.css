@@ -873,3 +873,81 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   font-size: 14px;
   padding: 32px 0;
 }
+
+/* ── Product combobox ── */
+.combo-wrap {
+  position: relative;
+}
+
+.combo-dropdown {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  right: 0;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  box-shadow: 0 8px 24px rgba(26,71,160,0.14);
+  z-index: 20;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.combo-option {
+  padding: 8px 10px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.combo-option:hover    { background: var(--blue-light); }
+.combo-selected        { background: var(--blue-light); font-weight: 700; }
+.combo-free            { color: var(--muted); font-style: italic; }
+
+.combo-option small {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.combo-empty {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+/* ── Search bar ── */
+.search-bar {
+  position: relative;
+  margin-bottom: 16px;
+}
+
+.search-bar input {
+  width: 100%;
+  padding-right: 40px;
+}
+
+.search-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  min-height: 28px;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  font-weight: 400;
+  border-radius: 50%;
+}
+
+.search-clear:hover:not(:disabled) {
+  background: var(--border);
+  color: var(--text);
+}
