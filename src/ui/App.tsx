@@ -862,7 +862,9 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
   const [availablePrinters, setAvailablePrinters] = useState<string[]>([]);
   const [loadingPrinters, setLoadingPrinters] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const csvInputRef = useRef<HTMLInputElement>(null);
+  const restoreInputRef = useRef<HTMLInputElement>(null);
 
   const fetchPrinters = async () => {
     setLoadingPrinters(true);
@@ -910,6 +912,29 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
       setImporting(false);
       if (csvInputRef.current) csvInputRef.current.value = "";
       window.setTimeout(() => setMsg(""), 4000);
+    }
+  };
+
+  const handleRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!window.confirm("This will replace all products, users, orders and settings with the backup data. Continue?")) {
+      if (restoreInputRef.current) restoreInputRef.current.value = "";
+      return;
+    }
+    setRestoring(true);
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text) as object;
+      const result = await api.backup.restore(data);
+      setMsg(`Restored: ${result.products} products, ${result.users} users, ${result.orders} orders`);
+      window.setTimeout(() => setMsg(""), 5000);
+    } catch (err) {
+      setMsg(`Restore failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+      window.setTimeout(() => setMsg(""), 5000);
+    } finally {
+      setRestoring(false);
+      if (restoreInputRef.current) restoreInputRef.current.value = "";
     }
   };
 
@@ -969,19 +994,38 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
       </section>
 
       <section className="settings-section">
-        <h3>Products &amp; backup</h3>
+        <h3>Products</h3>
         <div className="setting-row">
           <div className="setting-info">
-            <strong>Product list</strong>
-            <p>Export saves your product catalog as a CSV. Import loads from one — existing products are updated by name. Use Export as your backup and Import to restore.</p>
+            <strong>Product catalog</strong>
+            <p>Import a CSV to bulk-add or update products. Export downloads the full product list as a CSV.</p>
           </div>
           <div className="setting-actions">
             <input ref={csvInputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => void handleImport(e)} />
             <button type="button" className="secondary" disabled={importing} onClick={() => csvInputRef.current?.click()}>
-              {importing ? "Importing…" : "Import"}
+              {importing ? "Importing…" : "Import CSV"}
             </button>
             <button type="button" className="secondary" onClick={() => void api.products.export()}>
-              Export
+              Export CSV
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Backup &amp; restore</h3>
+        <div className="setting-row">
+          <div className="setting-info">
+            <strong>Full system backup</strong>
+            <p>Download backs up everything — products, users, all orders and settings — as a JSON file. Restore loads a backup file and replaces the current data.</p>
+          </div>
+          <div className="setting-actions">
+            <button type="button" className="secondary" onClick={() => void api.backup.download()}>
+              Download backup
+            </button>
+            <input ref={restoreInputRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={(e) => void handleRestore(e)} />
+            <button type="button" className="secondary danger" disabled={restoring} onClick={() => restoreInputRef.current?.click()}>
+              {restoring ? "Restoring…" : "Restore backup"}
             </button>
           </div>
         </div>
@@ -1266,7 +1310,7 @@ function esc(s: string): string {
 
 function printHtml(html: string): void {
   const iframe = document.createElement("iframe");
-  iframe.style.cssText = "position:fixed;width:0;height:0;border:none;opacity:0;top:-9999px";
+  iframe.style.cssText = "position:fixed;left:-9999px;top:0;width:800px;height:600px;border:none;visibility:hidden";
   document.body.appendChild(iframe);
   const doc = iframe.contentDocument!;
   doc.open(); doc.write(html); doc.close();

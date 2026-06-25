@@ -146,6 +146,59 @@ export class KotDatabase {
     return [header, ...rows].join("\n");
   }
 
+  exportBackup(): object {
+    const products = this.db.prepare("SELECT * FROM products WHERE isActive = 1").all();
+    const users = this.db.prepare("SELECT id, name, pin, role, department, isActive, createdAt FROM users").all();
+    const orders = this.db.prepare("SELECT * FROM orders ORDER BY createdAt ASC").all();
+    const orderItems = this.db.prepare("SELECT * FROM order_items").all();
+    const settings = this.db.prepare("SELECT key, value FROM settings").all() as { key: string; value: string }[];
+    return {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      products,
+      users,
+      orders,
+      orderItems,
+      settings: Object.fromEntries(settings.map((s) => [s.key, s.value]))
+    };
+  }
+
+  importBackup(data: Record<string, unknown>): { products: number; users: number; orders: number } {
+    if (!data.version || !Array.isArray(data.products)) throw new Error("Invalid backup file");
+    const products = data.products as Record<string, unknown>[];
+    const users = (data.users as Record<string, unknown>[]) ?? [];
+    const orders = (data.orders as Record<string, unknown>[]) ?? [];
+    const orderItems = (data.orderItems as Record<string, unknown>[]) ?? [];
+    const settings = (data.settings as Record<string, string>) ?? {};
+
+    // FK must be disabled outside transactions in SQLite
+    this.db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      this.db.transaction(() => {
+        this.db.exec("DELETE FROM order_items; DELETE FROM orders; DELETE FROM products; DELETE FROM users;");
+        for (const u of users) {
+          this.db.prepare("INSERT INTO users (id,name,pin,role,department,isActive,createdAt) VALUES (?,?,?,?,?,?,?)")
+            .run(u.id ?? null, u.name, u.pin, u.role, u.department ?? null, u.isActive ?? 1, u.createdAt);
+        }
+        const now = new Date().toISOString();
+        for (const p of products) {
+          this.db.prepare("INSERT INTO products (id,name,category,unitDefault,pricePerUnit,prepNotes,department,isActive,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,1,?,?)")
+            .run(p.id ?? null, p.name, p.category, p.unitDefault, p.pricePerUnit ?? null, p.prepNotes, p.department, p.createdAt ?? now, p.updatedAt ?? now);
+        }
+        const insOrder = this.db.prepare("INSERT INTO orders (id,ticketNumber,customerName,customerPhone,orderType,deliveryAddress,requestedTime,assignedTo,status,kitchenStatus,counterStatus,requestedById,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        for (const o of orders) insOrder.run(o.id,o.ticketNumber,o.customerName,o.customerPhone,o.orderType,o.deliveryAddress,o.requestedTime,o.assignedTo??null,o.status,o.kitchenStatus,o.counterStatus,o.requestedById??null,o.createdAt,o.updatedAt);
+        const insItem = this.db.prepare("INSERT INTO order_items (id,orderId,productId,name,kg,quantity,notes,unitPrice,lineTotal,department) VALUES (?,?,?,?,?,?,?,?,?,?)");
+        for (const i of orderItems) insItem.run(i.id,i.orderId,i.productId??null,i.name,i.kg??null,i.quantity??null,i.notes,i.unitPrice??null,i.lineTotal??null,i.department);
+        for (const [key, value] of Object.entries(settings)) {
+          this.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
+        }
+      })();
+    } finally {
+      this.db.exec("PRAGMA foreign_keys = ON");
+    }
+    return { products: products.length, users: users.length, orders: orders.length };
+  }
+
   deleteProduct(id: number): void {
     this.db.prepare("UPDATE products SET isActive = 0, updatedAt = ? WHERE id = ?").run(new Date().toISOString(), id);
   }

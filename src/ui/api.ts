@@ -54,6 +54,10 @@ export const api = {
     import: (csv: string) => req<{ imported: number; errors: string[] }>("POST", "/products/import", { csv }),
     export: () => download("/products/export", `maxis-products-${new Date().toISOString().slice(0, 10)}.csv`)
   },
+  backup: {
+    download: () => download("/backup", `maxis-backup-${new Date().toISOString().slice(0, 10)}.json`),
+    restore: (data: object) => req<{ ok: boolean; products: number; users: number; orders: number }>("POST", "/backup/restore", data)
+  },
   orders: {
     list: (scope: string) => req<Order[]>("GET", `/orders?scope=${scope}`),
     create: (data: CreateOrderInput) => req<Order>("POST", "/orders", data),
