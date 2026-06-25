@@ -19,7 +19,7 @@ error() { echo -e "${RED}✘ $*${NC}"; exit 1; }
 info "Installing system dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq curl git build-essential python3
+apt-get install -y -qq curl git build-essential python3 cups-client avahi-utils
 
 # Node.js 20 via NodeSource
 if ! command -v node &>/dev/null || [[ "$(node -v)" != v20* ]]; then
