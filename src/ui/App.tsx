@@ -276,7 +276,11 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
       setAddr({ street: "", area: "", buildingType: "", apartment: "" }); setRequestedTime(""); setAssignedTo("");
       setItems([{ ...emptyLine, department: defaultDept }]);
       onCreated(order);
-      if (autoPrint && currentUser.role === "master_cashier") {
+      if (autoPrint) {
+        const hasK = order.items.some((i) => i.department === "kitchen");
+        const hasC = order.items.some((i) => i.department === "counter");
+        if (hasK) void printReceipt(order, "kitchen", printStyle, printerMap.kitchen ?? "");
+        if (hasC) void printReceipt(order, "counter", printStyle, printerMap.counter ?? "");
         void printReceipt(order, "master", printStyle, printerMap.master ?? "");
       }
     } catch (err) {
@@ -966,7 +970,7 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
         <div className="setting-row">
           <div className="setting-info">
             <strong>Auto-print</strong>
-            <p>Automatically print the master receipt when a Master Cashier creates an order.</p>
+            <p>When an order is created, automatically send the kitchen slip to the kitchen printer, the counter slip to the counter printer, and the master receipt to the cashier printer.</p>
           </div>
           <button type="button" className={autoPrint ? "toggle-on" : "toggle-off"} onClick={() => void toggle()}>
             {autoPrint ? "On" : "Off"}
@@ -994,27 +998,43 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
           </button>
         </div>
         <div className="printer-body">
-          <p className="settings-hint">Type a CUPS printer name or pick one from the list. Leave blank to use the browser print dialog.</p>
+          <p className="settings-hint">
+            Pick a printer from the dropdown or type the CUPS printer name. Leave blank to use the browser print dialog.
+            Hit <b>Test</b> to send a test page and confirm it works.
+          </p>
           <datalist id="printer-list">
             {availablePrinters.map((p) => <option key={p} value={p} />)}
           </datalist>
           <div className="printer-assignments">
-            {([ ["Kitchen receipt", "kitchenPrinter", "kitchen"], ["Counter receipt", "counterPrinter", "counter"], ["Master receipt", "masterPrinter", "master"] ] as [string, string, string][]).map(([label, key, mapKey]) => (
-              <label key={key}>
-                {label}
-                <input
-                  type="text"
-                  list="printer-list"
-                  placeholder="— Browser dialog —"
-                  value={printerMap[mapKey] ?? ""}
-                  onChange={(e) => void changePrinter(key, e.target.value)}
-                  onBlur={(e) => void changePrinter(key, e.target.value)}
-                />
-              </label>
+            {([ ["Kitchen printer", "kitchenPrinter", "kitchen"], ["Counter printer", "counterPrinter", "counter"], ["Master / cashier printer", "masterPrinter", "master"] ] as [string, string, string][]).map(([label, key, mapKey]) => (
+              <div className="printer-row" key={key}>
+                <span className="printer-row-label">{label}</span>
+                <div className="printer-row-inputs">
+                  <input
+                    type="text"
+                    list="printer-list"
+                    placeholder="— Browser dialog —"
+                    value={printerMap[mapKey] ?? ""}
+                    onChange={(e) => void changePrinter(key, e.target.value)}
+                    onBlur={(e) => void changePrinter(key, e.target.value)}
+                  />
+                  <button type="button" className="secondary sm" onClick={() => void printTestPage(printerMap[mapKey] ?? "")}>
+                    Test
+                  </button>
+                </div>
+              </div>
             ))}
           </div>
           {availablePrinters.length === 0 && !loadingPrinters && (
-            <p className="settings-hint">No printers auto-detected. You can still type a printer name above — run <code>lpstat -a</code> on the server to find available names.</p>
+            <div className="printer-help">
+              <p>No printers found automatically. If your printer is connected to the server, add it to CUPS first:</p>
+              <div className="printer-help-cmds">
+                <div><code>lpstat -a</code> — list printers already in CUPS</div>
+                <div><code>lpadmin -p KitchenPrinter -v socket://192.168.x.x:9100 -E</code> — add a network printer</div>
+                <div><code>lpadmin -p UsbPrinter -v usb://... -E</code> — add a USB printer</div>
+              </div>
+              <p>Once added to CUPS, click <b>Refresh</b> and the printer will appear in the dropdown.</p>
+            </div>
           )}
         </div>
       </section>
@@ -1360,6 +1380,30 @@ async function printReceipt(order: Order, type: "kitchen" | "counter" | "master"
 
   if (printerName) {
     try { await api.print(printerName, html); return; } catch { /* fall through to browser print */ }
+  }
+  printHtml(html);
+}
+
+async function printTestPage(printerName: string): Promise<void> {
+  const ts = new Date().toLocaleString(appSettings.locale);
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+@page{size:80mm auto;margin:0}*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Courier New',Courier,monospace;padding:5mm;font-size:12px;text-align:center;color:#000}
+hr{border:none;border-top:1px dashed #999;margin:6px 0}
+.big{font-size:16px;font-weight:bold}.small{font-size:10px;color:#555}
+</style></head><body>
+<div class="big">MAXIS KOT</div>
+<div>--- TEST PRINT ---</div>
+<hr>
+<div class="small">${ts}</div>
+<div class="small">Printer: ${printerName || "Browser dialog"}</div>
+<hr>
+<div>If you can read this,</div>
+<div>the printer is working.</div>
+</body></html>`;
+
+  if (printerName) {
+    try { await api.print(printerName, html); return; } catch { /* fall through to browser */ }
   }
   printHtml(html);
 }

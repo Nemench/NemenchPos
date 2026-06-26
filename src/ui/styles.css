@@ -811,11 +811,66 @@ th {
 
 /* ── Printer assignments ── */
 .printer-assignments {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   width: 100%;
-  padding-top: 4px;
+}
+
+.printer-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.printer-row-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.printer-row-inputs {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.printer-row-inputs input {
+  flex: 1;
+  min-width: 0;
+}
+
+.printer-help {
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--blue-light);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.printer-help p { margin: 0; }
+
+.printer-help-cmds {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: #fff;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.printer-help code {
+  font-family: inherit;
+  color: var(--blue-dark);
+  font-weight: 600;
 }
 
 .optional-hint {
