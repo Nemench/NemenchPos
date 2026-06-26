@@ -20,23 +20,54 @@ error() { echo -e "${RED}✘ $*${NC}"; exit 1; }
 info "Installing system dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq \
-  curl git build-essential python3 \
-  cups-client avahi-utils \
-  debian-keyring debian-archive-keyring apt-transport-https
+apt-get install -y -qq curl git build-essential python3 cups-client avahi-utils
 
 # ── Caddy (HTTPS reverse proxy) ───────────────────────────────────────────────
 if ! command -v caddy &>/dev/null; then
   info "Installing Caddy (automatic HTTPS)..."
-  curl -1sLf 'https://dl.cloudflare.com/cloudflare-pkg/gpg/caddy-stable.gpg' \
-    | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  curl -1sLf 'https://dl.cloudflare.com/cloudflare-pkg/install/caddy/stable/deb/any-version/main.list' \
-    | tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
-  apt-get update -qq
-  apt-get install -y -qq caddy
-  ok "Caddy installed"
+  # Download binary directly from GitHub — no GPG keys or apt repos needed
+  CADDY_VER=$(curl -fsSL "https://api.github.com/repos/caddyserver/caddy/releases/latest" \
+    | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/' | head -1)
+  if [ -z "$CADDY_VER" ]; then
+    warn "Could not fetch Caddy version — skipping HTTPS setup"
+    warn "Install manually later: https://caddyserver.com/docs/install"
+  else
+    curl -fsSL "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VER}/caddy_${CADDY_VER}_linux_amd64.tar.gz" \
+      | tar -xz -C /usr/local/bin caddy
+    chmod +x /usr/local/bin/caddy
+
+    # Caddy needs its own user to bind ports 80/443 safely
+    id caddy &>/dev/null || useradd --system --home /var/lib/caddy --shell /sbin/nologin caddy
+    mkdir -p /var/lib/caddy /etc/caddy
+    chown -R caddy:caddy /var/lib/caddy
+
+    # Systemd unit (mirrors the official Caddy package service file)
+    cat > /etc/systemd/system/caddy.service <<'CADDY_SVC'
+[Unit]
+Description=Caddy
+Documentation=https://caddyserver.com/docs/
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+CADDY_SVC
+
+    systemctl daemon-reload
+    ok "Caddy v${CADDY_VER} installed"
+  fi
 else
-  ok "Caddy already installed ($(caddy version))"
+  ok "Caddy already installed ($(caddy version 2>/dev/null || echo unknown))"
 fi
 
 # Create Caddyfile if not already configured for MAXIS
