@@ -42,8 +42,9 @@ app.use(helmet({
       imgSrc:         ["'self'", "data:", "blob:"],   // logo + blob: receipt windows
       connectSrc:     ["'self'"],
       fontSrc:        ["'self'", "data:"],
-      objectSrc:      ["'none'"],
-      frameAncestors: ["'none'"],                     // blocks clickjacking
+      objectSrc:           ["'none'"],
+      frameAncestors:      ["'none'"],                // blocks clickjacking
+      upgradeInsecureRequests: null,                  // disabled until HTTPS/Caddy is active
     },
   },
   crossOriginEmbedderPolicy: false, // allow blob: print tabs to open on mobile
