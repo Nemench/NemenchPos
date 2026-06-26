@@ -1,0 +1,69 @@
+#Requires -RunAsAdministrator
+<#
+.SYNOPSIS
+    MAXIS KOT — Windows update script
+.DESCRIPTION
+    Pulls the latest code, rebuilds the frontend, and restarts the MAXIS service.
+    Run this whenever a new version is available.
+.PARAMETER InstallDir
+    MAXIS install directory. Default: C:\opt\maxis
+.PARAMETER ServiceName
+    NSSM service name. Default: maxis
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File C:\opt\maxis\update.ps1
+#>
+[CmdletBinding()]
+param(
+    [string] $InstallDir  = "C:\opt\maxis",
+    [string] $ServiceName = "maxis"
+)
+
+$ErrorActionPreference = "Stop"
+
+function Step  ([string]$msg) { Write-Host "`n>> $msg" -ForegroundColor Cyan }
+function OK                   { Write-Host "   OK"     -ForegroundColor Green }
+function Abort ([string]$msg) { Write-Host "`nERROR: $msg`n" -ForegroundColor Red; exit 1 }
+
+$NssmExe = "C:\nssm\nssm.exe"
+
+if (-not (Test-Path (Join-Path $InstallDir ".git"))) {
+    Abort "MAXIS not found at $InstallDir. Run install.ps1 first."
+}
+if (-not (Test-Path $NssmExe)) {
+    Abort "NSSM not found at $NssmExe. Run install.ps1 first."
+}
+
+# ── Pull latest code ──────────────────────────────────────────────────────────
+Step "Pulling latest code..."
+& git -C $InstallDir pull --ff-only
+if ($LASTEXITCODE -ne 0) { Abort "git pull failed. Resolve any conflicts in $InstallDir." }
+OK
+
+# ── Rebuild ───────────────────────────────────────────────────────────────────
+Push-Location $InstallDir
+try {
+    Step "Updating npm dependencies..."
+    & npm ci --prefer-offline --no-fund --no-audit
+    if ($LASTEXITCODE -ne 0) { Abort "npm ci failed." }
+
+    Step "Rebuilding frontend..."
+    & npm run build
+    if ($LASTEXITCODE -ne 0) { Abort "npm run build failed." }
+    OK
+} finally {
+    Pop-Location
+}
+
+# ── Restart service ───────────────────────────────────────────────────────────
+Step "Restarting '$ServiceName' service..."
+& $NssmExe restart $ServiceName
+Start-Sleep -Seconds 3
+
+$svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+if ($svc -and $svc.Status -eq "Running") {
+    OK
+    Write-Host "`n   MAXIS updated and running." -ForegroundColor Green
+} else {
+    Write-Host "   Service status: $($svc?.Status ?? 'unknown')" -ForegroundColor Yellow
+    Write-Host "   Check logs in $InstallDir\logs for details."
+}

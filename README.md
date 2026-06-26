@@ -88,6 +88,55 @@ Double-click `MAXIS-KOT-Setup.exe` to install. The app starts automatically and 
 
 ---
 
+## Option 5 — Windows server (PowerShell installer)
+
+Use this option when you want MAXIS to run as a **background Windows service** (auto-starts on boot, no tray icon, accessible from the whole network) on a Windows 10 or 11 PC.
+
+**Requirements:** Windows 10 21H2+ or Windows 11, PowerShell 5.1+, internet access.
+
+Open **PowerShell as Administrator** and run:
+
+```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force
+irm https://raw.githubusercontent.com/Nemench/maxis/main/install.ps1 | iex
+```
+
+Or clone the repo first and run the script directly:
+
+```powershell
+git clone https://github.com/Nemench/maxis.git C:\opt\maxis
+powershell -ExecutionPolicy Bypass -File C:\opt\maxis\install.ps1
+```
+
+The script will:
+1. Install **Node.js LTS** and **Git** via winget if not already present
+2. Clone (or pull) the repo to `C:\opt\maxis`
+3. Run `npm ci` and `npm run build`
+4. Download **NSSM** (Non-Sucking Service Manager) to `C:\nssm\`
+5. Register MAXIS as a Windows service that starts automatically on boot
+6. Print the local IP and port when done
+
+Access the app at `http://<this-pc-ip>:3000`
+
+**Service commands:**
+```powershell
+C:\nssm\nssm.exe status  maxis
+C:\nssm\nssm.exe restart maxis
+C:\nssm\nssm.exe stop    maxis
+```
+
+**Logs:** `C:\opt\maxis\logs\`
+
+**To update:**
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\opt\maxis\update.ps1
+```
+
+**Printing on Windows:**
+Server-side printing writes the ticket HTML to a temp file and opens it in the default browser, which triggers `window.print()`. For this to work, the MAXIS service must run under an **interactive user account** (not `LocalSystem`). After install, open `services.msc`, find **MAXIS KOT**, go to the **Log On** tab, and set it to log on as your Windows user account.
+
+---
+
 ## Data
 
 The SQLite database lives at `./data/maxis.sqlite`. Back this file up regularly to keep your orders and products safe.

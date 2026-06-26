@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -15,24 +15,72 @@ router.post("/", (req, res) => {
     return;
   }
 
-  // Only allow characters valid in a CUPS printer name — prevents shell injection
-  if (!/^[\w.@-]+$/.test(printerName)) {
+  // Validation differs by platform:
+  // Linux/macOS — CUPS names are ASCII word chars only (no shell metacharacters)
+  // Windows     — names from wmic may contain spaces and parentheses; block only
+  //               characters that would allow command injection
+  const validPrinter = process.platform === "win32"
+    ? /^[^&;|`$<>"\r\n]{1,260}$/.test(printerName)
+    : /^[\w.@-]+$/.test(printerName);
+
+  if (!validPrinter) {
     res.status(400).json({ message: "Invalid printer name" });
     return;
   }
 
   const tmpFile = join(tmpdir(), `maxis-${Date.now()}.html`);
+
+  // ── Windows ────────────────────────────────────────────────────────────────
+  if (process.platform === "win32") {
+    // Inject window.print() if the HTML doesn't already trigger it.
+    const autoprint = `<script>window.addEventListener('load',function(){window.print();});<\/script>`;
+    let printable: string;
+    if (html.includes("window.print()")) {
+      printable = html;
+    } else if (html.includes("</head>")) {
+      printable = html.replace("</head>", `${autoprint}</head>`);
+    } else {
+      printable = `${autoprint}${html}`;
+    }
+
+    try {
+      writeFileSync(tmpFile, printable, "utf8");
+    } catch (err) {
+      res.status(500).json({ message: `Could not write temp file: ${err instanceof Error ? err.message : "unknown"}` });
+      return;
+    }
+
+    // Convert to a file:/// URI (forward slashes required).
+    const fileUri = `file:///${tmpFile.replace(/\\/g, "/")}`;
+
+    // execFile bypasses cmd.exe so path quoting is handled by the OS, not the shell.
+    // Start-Process opens the URI with the Windows default browser.
+    // The injected script calls window.print() once the page loads.
+    //
+    // NOTE: This requires the service to run under an interactive user account,
+    // not as LocalSystem (Session 0). See README for configuration details.
+    execFile(
+      "powershell.exe",
+      ["-NonInteractive", "-Command", `Start-Process '${fileUri.replace(/'/g, "''")}'`],
+      { timeout: 10_000 },
+      (err) => {
+        // Keep the file alive long enough for the browser to load it, then delete.
+        setTimeout(() => { try { unlinkSync(tmpFile); } catch { /* ignore */ } }, 30_000);
+        if (err) {
+          res.status(500).json({ message: `Could not open browser for printing: ${err.message}` });
+        } else {
+          res.json({ ok: true });
+        }
+      }
+    );
+    return;
+  }
+
+  // ── Linux / macOS: CUPS ────────────────────────────────────────────────────
   try {
     writeFileSync(tmpFile, html, "utf8");
   } catch (err) {
     res.status(500).json({ message: `Could not write temp file: ${err instanceof Error ? err.message : "unknown"}` });
-    return;
-  }
-
-  // Linux/macOS: CUPS via lp. Windows: not supported server-side.
-  if (process.platform === "win32") {
-    try { unlinkSync(tmpFile); } catch { /* ignore */ }
-    res.status(422).json({ message: "Server-side printing is not supported on Windows. Use the browser print dialog." });
     return;
   }
 
