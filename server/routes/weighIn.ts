@@ -22,7 +22,14 @@ router.get("/current", (_req, res) => {
   res.json({ batch, lines: batch ? db.listWeighInLines(batch.id) : [] });
 });
 
-router.get("/", requireAdmin, (_req, res) => { res.json(db.listWeighInLines()); });
+router.get("/", requireAdmin, (req, res) => {
+  const from = req.query.from as string | undefined;
+  const to = req.query.to as string | undefined;
+  if ((from && !/^\d{4}-\d{2}-\d{2}$/.test(from)) || (to && !/^\d{4}-\d{2}-\d{2}$/.test(to))) {
+    res.status(400).json({ message: "from/to must be YYYY-MM-DD" }); return;
+  }
+  res.json(db.listFinalizedBatches(from && to ? from : undefined, from && to ? to : undefined));
+});
 
 router.get("/:batchId", requireAdmin, (req, res) => {
   try {

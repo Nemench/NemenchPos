@@ -8,7 +8,7 @@ import type {
   Order, OrderItem, CreateOrderInput, OrderStatus,
   User, UserInput,
   Department, DeptStatus, DeliveryAddress,
-  Supplier, WeighInBatch, WeighInLine, WeighInLineInput
+  Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput
 } from "../src/shared/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -247,6 +247,27 @@ export class KotDatabase {
       return this.db.prepare(`${base} WHERE l.batchId = ? ORDER BY l.createdAt ASC`).all(batchId) as WeighInLine[];
     }
     return this.db.prepare(`${base} ORDER BY l.createdAt DESC LIMIT ?`).all(limit) as WeighInLine[];
+  }
+
+  listFinalizedBatches(from?: string, to?: string): WeighInBatchSummary[] {
+    const where = from && to ? "WHERE b.status = 'finalized' AND substr(b.finalizedAt, 1, 10) >= ? AND substr(b.finalizedAt, 1, 10) <= ?" : "WHERE b.status = 'finalized'";
+    const sql = `
+      SELECT b.*, u.name as createdByName,
+             COUNT(l.id) as lineCount,
+             COALESCE(SUM(l.piecesReceived), 0) as totalPieces,
+             COALESCE(SUM(l.weightKg), 0) as totalKg,
+             GROUP_CONCAT(DISTINCT s.name) as supplierNames,
+             GROUP_CONCAT(DISTINCT p.name) as productNames
+      FROM weigh_in_batches b
+      LEFT JOIN users u ON b.createdById = u.id
+      LEFT JOIN weigh_in_lines l ON l.batchId = b.id
+      LEFT JOIN suppliers s ON l.supplierId = s.id
+      LEFT JOIN products p ON l.productId = p.id
+      ${where}
+      GROUP BY b.id
+      ORDER BY b.finalizedAt DESC`;
+    const params = from && to ? [from, to] : [];
+    return this.db.prepare(sql).all(...params) as WeighInBatchSummary[];
   }
 
   importProducts(rows: { name: string; category: string; unitDefault: string; pricePerUnit: string; prepNotes: string; department: string }[]): { imported: number; errors: string[] } {

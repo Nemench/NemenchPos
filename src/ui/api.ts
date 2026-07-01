@@ -1,4 +1,4 @@
-import type { User, UserInput, Product, ProductInput, Order, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInLine, WeighInLineInput } from "../shared/types";
+import type { User, UserInput, Product, ProductInput, Order, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput } from "../shared/types";
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const token = sessionStorage.getItem("kot-token");
@@ -90,7 +90,8 @@ export const api = {
   },
   weighIn: {
     current: () => req<{ batch: WeighInBatch | null; lines: WeighInLine[] }>("GET", "/weigh-in/current"),
-    list: () => req<WeighInLine[]>("GET", "/weigh-in"),
+    list: (from?: string, to?: string) => req<WeighInBatchSummary[]>("GET", from && to ? `/weigh-in?from=${from}&to=${to}` : "/weigh-in"),
+    get: (batchId: number) => req<{ batch: WeighInBatch; lines: WeighInLine[] }>("GET", `/weigh-in/${batchId}`),
     addLine: (data: WeighInLineInput) => req<WeighInLine>("POST", "/weigh-in/lines", data),
     updateLine: (id: number, data: WeighInLineInput) => req<WeighInLine>("PUT", `/weigh-in/lines/${id}`, data),
     deleteLine: (id: number) => req<{ success: boolean }>("DELETE", `/weigh-in/lines/${id}`),

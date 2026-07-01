@@ -69,6 +69,14 @@ export interface WeighInBatch {
   finalizedAt: string | null;
 }
 
+export interface WeighInBatchSummary extends WeighInBatch {
+  lineCount: number;
+  totalPieces: number;
+  totalKg: number;
+  supplierNames: string | null;
+  productNames: string | null;
+}
+
 export interface WeighInLineInput {
   productId: number;
   grade: Grade;

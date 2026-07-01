@@ -30,6 +30,7 @@ import type {
   Supplier,
   User,
   UserInput,
+  WeighInBatchSummary,
   WeighInLine
 } from "../shared/types";
 import { api } from "./api";
@@ -869,14 +870,32 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
   const [busy, setBusy] = useState(false);
   const [cooldown, setCooldown] = useState(false);
   const [msg, setMsg] = useState("");
-  const [history, setHistory] = useState<WeighInLine[]>([]);
+  const [history, setHistory] = useState<WeighInBatchSummary[]>([]);
+  const [historyFrom, setHistoryFrom] = useState("");
+  const [historyTo, setHistoryTo] = useState("");
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [editingLineId, setEditingLineId] = useState<number | null>(null);
 
   const loadCurrent = () => api.weighIn.current().then((r) => setLines(r.lines)).catch(() => undefined);
   const loadSuppliers = () => api.suppliers.list().then(setSuppliers).catch(() => undefined);
-  const loadHistory = () => { if (currentUser.role === "admin") api.weighIn.list().then(setHistory).catch(() => undefined); };
+  const loadHistory = (from = historyFrom, to = historyTo) => {
+    if (currentUser.role !== "admin") return;
+    setHistoryLoading(true);
+    api.weighIn.list(from && to ? from : undefined, from && to ? to : undefined)
+      .then(setHistory).catch(() => undefined).finally(() => setHistoryLoading(false));
+  };
 
   useEffect(() => { void loadCurrent(); void loadSuppliers(); loadHistory(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const printBatch = async (batchId: number) => {
+    try {
+      const { batch, lines: batchLines } = await api.weighIn.get(batchId);
+      printHtml(buildWeighInSummaryHtml(batch.finalizedAt ?? batch.createdAt, batchLines, products));
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not load batch for printing.");
+      window.setTimeout(() => setMsg(""), 3000);
+    }
+  };
 
   const totals = useMemo(
     () => lines.reduce((acc, l) => ({ pieces: acc.pieces + l.piecesReceived, weightKg: acc.weightKg + l.weightKg }), { pieces: 0, weightKg: 0 }),
@@ -1080,24 +1099,49 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
       </div>
 
       {currentUser.role === "admin" && (
-        <div className="panel table-panel">
+        <div className="panel reports-panel">
           <h2>Weigh-in history</h2>
-          <table>
-            <thead><tr><th>Date</th><th>Item</th><th>Grade</th><th>Pieces</th><th>Kg</th><th>Supplier</th><th>Logged by</th></tr></thead>
-            <tbody>
-              {history.map((l) => (
-                <tr key={l.id}>
-                  <td>{new Date(l.createdAt).toLocaleString(appSettings.locale, { dateStyle: "medium", timeStyle: "short" })}</td>
-                  <td>{l.productName}</td>
-                  <td>{l.grade}</td>
-                  <td>{l.piecesReceived}</td>
-                  <td>{l.weightKg}</td>
-                  <td>{l.supplierName}</td>
-                  <td>{l.createdByName ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="report-controls">
+            <label>From<input type="date" value={historyFrom} onChange={(e) => setHistoryFrom(e.target.value)} /></label>
+            <label>To<input type="date" value={historyTo} onChange={(e) => setHistoryTo(e.target.value)} /></label>
+            <button type="button" onClick={() => loadHistory()} disabled={historyLoading}>{historyLoading ? "Loading…" : "Filter"}</button>
+            {(historyFrom || historyTo) && (
+              <button type="button" className="secondary" onClick={() => { setHistoryFrom(""); setHistoryTo(""); loadHistory("", ""); }}>
+                Clear
+              </button>
+            )}
+          </div>
+
+          {history.length === 0 ? (
+            <p className="report-empty">{historyLoading ? "Loading…" : "No finalized batches found."}</p>
+          ) : (
+            <>
+              <div className="report-summary">
+                <strong>{history.length}</strong> batch{history.length !== 1 ? "es" : ""}
+              </div>
+              <div className="table-panel">
+                <table>
+                  <thead><tr><th>Date</th><th>Items</th><th>Suppliers</th><th>Lines</th><th>Pieces</th><th>Kg</th><th>Finalized by</th><th></th></tr></thead>
+                  <tbody>
+                    {history.map((b) => (
+                      <tr key={b.id}>
+                        <td>{b.finalizedAt ? new Date(b.finalizedAt).toLocaleString(appSettings.locale, { dateStyle: "medium", timeStyle: "short" }) : "—"}</td>
+                        <td>{b.productNames ?? "—"}</td>
+                        <td>{b.supplierNames ?? "—"}</td>
+                        <td>{b.lineCount}</td>
+                        <td>{b.totalPieces}</td>
+                        <td>{b.totalKg.toFixed(2)}</td>
+                        <td>{b.createdByName ?? "—"}</td>
+                        <td className="row-actions">
+                          <button type="button" className="secondary sm" onClick={() => void printBatch(b.id)}><FileDown size={16} /> Print</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>
