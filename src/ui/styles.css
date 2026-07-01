@@ -746,6 +746,7 @@ th {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-height: 44px;
   padding: 8px 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1101,7 +1102,7 @@ button.toggle-off:hover:not(:disabled) {
 
 button.sm {
   font-size: 12px;
-  min-height: 32px;
+  min-height: 40px;
   padding: 0 12px;
 }
 
@@ -1245,8 +1246,8 @@ button.sm {
   right: 6px;
   top: 50%;
   transform: translateY(-50%);
-  width: 28px;
-  min-height: 28px;
+  width: 36px;
+  min-height: 36px;
   padding: 0;
   background: transparent;
   color: var(--muted);

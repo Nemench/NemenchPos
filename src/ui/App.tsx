@@ -362,11 +362,12 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
   };
 
   const [submitError, setSubmitError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!canSave) return;
-    setSubmitError("");
+    if (!canSave || submitting) return;
+    setSubmitError(""); setSubmitting(true);
     const payload: CreateOrderInput = {
       customerName,
       customerPhone,
@@ -393,6 +394,8 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
       }
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Failed to create order");
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -470,7 +473,7 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
             <button
               type="button" className="icon-button danger"
               onClick={() => setItems((cur) => cur.filter((_, i) => i !== index))}
-              title="Remove line" disabled={items.length === 1}
+              title="Remove line" aria-label="Remove line" disabled={items.length === 1}
             ><Trash2 size={18} /></button>
           </div>
         ))}
@@ -480,7 +483,7 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
         <button type="button" className="secondary" onClick={() => setItems((cur) => [...cur, { ...emptyLine, department: defaultDept }])}>
           <Plus size={18} /> Add item
         </button>
-        <button type="submit" disabled={!canSave}><Save size={18} /> Create Order</button>
+        <button type="submit" disabled={!canSave || submitting}><Save size={18} /> {submitting ? "Creating…" : "Create Order"}</button>
       </footer>
       {submitError && <p className="form-error">{submitError}</p>}
     </form>
@@ -703,7 +706,7 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
         <div className="ticket-actions">
           {hasKitchen && <button className="secondary sm" onClick={() => void printReceipt(order, "kitchen", printStyle, printerMap.kitchen ?? "")} title="Print kitchen receipt">Kitchen</button>}
           {hasCounter && <button className="secondary sm" onClick={() => void printReceipt(order, "counter", printStyle, printerMap.counter ?? "")} title="Print counter receipt">Counter</button>}
-          <button className="icon-button" onClick={() => void printReceipt(order, "master", printStyle, printerMap.master ?? "")} title="Print master receipt"><Printer size={18} /></button>
+          <button className="secondary sm" onClick={() => void printReceipt(order, "master", printStyle, printerMap.master ?? "")} title="Print master receipt"><Printer size={16} /> Receipt</button>
           {isMasterCashier && order.status !== "Done" && (
             <>
               {(order.kitchenStatus === "New" || order.counterStatus === "New") && (
@@ -766,7 +769,7 @@ function HistoryView({ orders, printStyle, printerMap }: { orders: Order[]; prin
                 <td>{order.items.length}</td>
                 <td>{new Date(order.updatedAt).toLocaleString(appSettings.locale)}</td>
                 <td>
-                  <button className="icon-button" onClick={() => void printReceipt(order, "master", printStyle, printerMap.master ?? "")} title="Print master receipt"><Printer size={18} /></button>
+                  <button className="secondary sm" onClick={() => void printReceipt(order, "master", printStyle, printerMap.master ?? "")} title="Print master receipt"><Printer size={16} /> Print</button>
                 </td>
               </tr>
             ))}
@@ -841,30 +844,34 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
         </footer>
       </form>
 
-      <div className="panel table-panel">
-        <table>
-          <thead><tr><th>Name</th><th>Category</th><th>Dept</th><th>R/kg</th><th>On hand</th><th>Notes</th><th></th></tr></thead>
-          <tbody>
-            {products.map((p) => {
-              const low = p.lowStockThreshold != null && p.onHandQty <= p.lowStockThreshold;
-              return (
-              <tr key={p.id}>
-                <td>{p.name}</td>
-                <td>{p.category}</td>
-                <td><span className={`dept-badge ${p.department}`}>{p.department}</span></td>
-                <td>{p.pricePerUnit ? currency.format(p.pricePerUnit) : ""}</td>
-                <td>{p.onHandQty}{low && <span className="low-stock-badge">Low</span>}</td>
-                <td>{p.prepNotes}</td>
-                <td className="row-actions">
-                  <button type="button" className="secondary" onClick={() => setEditing(p)}>Edit</button>
-                  <button type="button" className="icon-button danger" onClick={() => void remove(p.id, p.name)} title="Delete"><Trash2 size={18} /></button>
-                </td>
-              </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      {products.length === 0 ? (
+        <EmptyState title="No items yet" detail="Add your first item using the form on the left." />
+      ) : (
+        <div className="panel table-panel">
+          <table>
+            <thead><tr><th>Name</th><th>Category</th><th>Dept</th><th>R/kg</th><th>On hand</th><th>Notes</th><th></th></tr></thead>
+            <tbody>
+              {products.map((p) => {
+                const low = p.lowStockThreshold != null && p.onHandQty <= p.lowStockThreshold;
+                return (
+                <tr key={p.id}>
+                  <td>{p.name}</td>
+                  <td>{p.category}</td>
+                  <td><span className={`dept-badge ${p.department}`}>{p.department}</span></td>
+                  <td>{p.pricePerUnit ? currency.format(p.pricePerUnit) : ""}</td>
+                  <td>{p.onHandQty}{low && <span className="low-stock-badge">Low</span>}</td>
+                  <td>{p.prepNotes}</td>
+                  <td className="row-actions">
+                    <button type="button" className="secondary" onClick={() => setEditing(p)}>Edit</button>
+                    <button type="button" className="icon-button danger" onClick={() => void remove(p.id, p.name)} title="Delete"><Trash2 size={18} /></button>
+                  </td>
+                </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -889,6 +896,10 @@ function StockTakePanel({ products, onChanged }: { products: Product[]; onChange
       window.setTimeout(() => setMsg(""), 2500);
     }
   };
+
+  if (products.length === 0) {
+    return <EmptyState title="No items yet" detail="An admin needs to add items in Stock before they can be counted here." />;
+  }
 
   return (
     <div className="panel table-panel">
@@ -1306,6 +1317,10 @@ function UsersPanel() {
   };
 
   const toggleActive = async (user: User) => {
+    // Only confirm the deactivate direction — reactivating is harmless and
+    // shouldn't need a prompt. Sits right next to "Edit" in a compact row,
+    // so a mis-tap here would otherwise lock someone out with no warning.
+    if (user.isActive && !window.confirm(`Deactivate ${user.name}? They won't be able to log in until reactivated.`)) return;
     try {
       await api.users.update(user.id, { isActive: user.isActive ? 0 : 1 });
       await load();
