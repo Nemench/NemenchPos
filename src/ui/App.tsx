@@ -817,6 +817,14 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
 
   const canActKitchen = currentUser.role === "admin" || currentUser.role === "kitchen";
   const canActCounter = currentUser.role === "admin" || currentUser.role === "counter";
+  const canAddItems = currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier";
+  const [barcodeModalOpen, setBarcodeModalOpen] = useState(false);
+
+  const addScannedItem = async (p: Product) => {
+    setBarcodeModalOpen(false);
+    await api.orders.addItem(order.id, { productId: p.id, name: p.name, kg: null, quantity: null, notes: p.prepNotes, unitPrice: p.pricePerUnit, lineTotal: null, department: p.department });
+    await onChanged();
+  };
 
   return (
     <article className={`ticket status-${order.status.toLowerCase()}`}>
@@ -888,6 +896,9 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
           {hasKitchen && <button className="secondary sm" onClick={() => void printReceipt(order, "kitchen", printStyle, printerMap.kitchen ?? "")} title="Print kitchen receipt">Kitchen</button>}
           {hasCounter && <button className="secondary sm" onClick={() => void printReceipt(order, "counter", printStyle, printerMap.counter ?? "")} title="Print counter receipt">Counter</button>}
           <button className="secondary sm" onClick={() => void printReceipt(order, "master", printStyle, printerMap.master ?? "")} title="Print master receipt"><Printer size={16} /> Receipt</button>
+          {canAddItems && order.status !== "Done" && (
+            <button className="secondary sm" onClick={() => setBarcodeModalOpen(true)}><ScanLine size={16} /> Scan</button>
+          )}
           {isMasterCashier && order.status !== "Done" && (
             <>
               {(order.kitchenStatus === "New" || order.counterStatus === "New") && (
@@ -908,6 +919,9 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
           )}
         </div>
       </footer>
+      {barcodeModalOpen && (
+        <BarcodeAddModal defaultDept={currentUser.department ?? "counter"} onAdd={(p) => void addScannedItem(p)} onClose={() => setBarcodeModalOpen(false)} />
+      )}
     </article>
   );
 }

@@ -1,7 +1,7 @@
 // Thin typed wrapper around the backend REST API. Every call goes through
 // req()/download(), which attach the JWT and centrally handle a 401 (token
 // missing/expired) by clearing it and forcing a reload back to the login screen.
-import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput } from "../shared/types";
+import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput } from "../shared/types";
 import { tokenStorage } from "./tokenStorage";
 
 // JSON request/response helper used by nearly every endpoint below.
@@ -71,6 +71,7 @@ export const api = {
     list: (scope: string) => req<Order[]>("GET", `/orders?scope=${scope}`),
     create: (data: CreateOrderInput) => req<Order>("POST", "/orders", data),
     get: (id: number) => req<Order>("GET", `/orders/${id}`),
+    addItem: (id: number, item: OrderItemInput) => req<Order>("POST", `/orders/${id}/items`, item),
     updateStatus: (id: number, status: OrderStatus) => req<Order>("PATCH", `/orders/${id}/status`, { status }),
     updateDeptStatus: (id: number, department: Department, status: DeptStatus) =>
       req<Order>("PATCH", `/orders/${id}/dept-status`, { department, status }),

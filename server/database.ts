@@ -9,7 +9,7 @@ import path from "node:path";
 import fs from "node:fs";
 import type {
   Product, ProductInput, QuickCreateProductInput,
-  Order, OrderItem, CreateOrderInput, OrderStatus,
+  Order, OrderItem, OrderItemInput, CreateOrderInput, OrderStatus,
   User, UserInput,
   Department, DeptStatus, DeliveryAddress,
   Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput
@@ -539,6 +539,20 @@ export class KotDatabase {
   updateOrderStatus(id: number, status: OrderStatus): Order {
     this.db.prepare("UPDATE orders SET status = ?, updatedAt = ? WHERE id = ?").run(status, new Date().toISOString(), id);
     return this.getOrder(id);
+  }
+
+  // Appends one item to an already-created order — used by the "Scan
+  // barcode" button on an in-progress ticket (as opposed to items added
+  // while first building the order in OrderEntry). Blocked once an order
+  // is Done, same as editing anything else about a finished ticket.
+  addOrderItem(orderId: number, item: OrderItemInput): Order {
+    const order = this.getOrder(orderId);
+    if (order.status === "Done") throw new Error("Cannot add items to a completed order");
+    this.db
+      .prepare("INSERT INTO order_items (orderId, productId, name, kg, quantity, notes, unitPrice, lineTotal, department) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(orderId, item.productId ?? null, item.name.trim(), item.kg ?? null, item.quantity ?? null, item.notes.trim(), item.unitPrice ?? null, item.lineTotal ?? null, item.department);
+    this.db.prepare("UPDATE orders SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), orderId);
+    return this.getOrder(orderId);
   }
 
   // Updates one department's status, then recomputes the order's overall

@@ -4,10 +4,15 @@ import { Router } from "express";
 import { db } from "../index.js";
 import { requireAuth } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
-import type { CreateOrderInput, OrderStatus, Department, DeptStatus } from "../../src/shared/types.js";
+import type { CreateOrderInput, OrderItemInput, OrderStatus, Department, DeptStatus } from "../../src/shared/types.js";
 
 const router = Router();
 router.use(requireAuth);
+
+// Roles that build receipts — same set allowed to quick-create a product
+// via an unrecognized barcode scan (see products.ts).
+const canAddItems = (req: AuthRequest) =>
+  req.user?.role === "admin" || req.user?.role === "cashier" || req.user?.role === "master_cashier";
 
 // GET /api/orders?scope=active|history|all
 // Kitchen/counter roles are implicitly scoped to their own department's
@@ -35,6 +40,18 @@ router.get("/:id", (req, res) => {
   if (!Number.isInteger(id) || id <= 0) { res.status(404).json({ message: "Not found" }); return; }
   try { res.json(db.getOrder(id)); }
   catch (err) { res.status(404).json({ message: err instanceof Error ? err.message : "Not found" }); }
+});
+
+// Adds one item to an already-created order — the "Scan barcode" button on
+// an in-progress ticket in the Queue, as opposed to items added while
+// first building the order in OrderEntry.
+router.post("/:id/items", (req: AuthRequest, res) => {
+  if (!canAddItems(req)) {
+    res.status(403).json({ message: "Not authorized to add items to an order" });
+    return;
+  }
+  try { res.status(201).json(db.addOrderItem(Number(req.params.id), req.body as OrderItemInput)); }
+  catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to add item" }); }
 });
 
 router.patch("/:id/status", (req, res) => {
