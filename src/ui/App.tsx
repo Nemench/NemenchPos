@@ -46,7 +46,7 @@ import type {
   WeighInBatchSummary,
   WeighInLine
 } from "../shared/types";
-import { api } from "./api";
+import { api, assetUrl } from "./api";
 import { applyTheme, deriveShades } from "./theme";
 import { tokenStorage } from "./tokenStorage";
 
@@ -63,7 +63,7 @@ const currency = new Intl.NumberFormat(appSettings.locale, { style: "currency", 
 // Updates the browser tab title/favicon to match the admin-configured branding.
 function applyBranding(siteName: string, logoUrl: string) {
   document.title = siteName || "MAXIS";
-  document.querySelector('link[rel="icon"]')?.setAttribute("href", logoUrl || "/logo.jpg");
+  document.querySelector('link[rel="icon"]')?.setAttribute("href", assetUrl(logoUrl || "/logo.jpg"));
 }
 
 // Plain module cache so receipt-building functions (outside the React tree) can
@@ -154,7 +154,7 @@ function LoginScreen({ onLogin, branding }: { onLogin: (user: User) => void; bra
     <div className="login-screen">
       <form className="login-card panel" onSubmit={(e) => void submit(e)}>
         <div className="login-brand">
-          <img src={branding.logoUrl || "/logo.jpg"} alt={branding.siteName} className="login-logo" />
+          <img src={assetUrl(branding.logoUrl || "/logo.jpg")} alt={branding.siteName} className="login-logo" />
           <h1>{branding.siteName}</h1>
         </div>
         <label>Name
@@ -252,7 +252,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <img src={branding.logoUrl || "/logo.jpg"} alt={branding.siteName} className="brand-logo" />
+          <img src={assetUrl(branding.logoUrl || "/logo.jpg")} alt={branding.siteName} className="brand-logo" />
           <div>
             <strong>{branding.siteName}</strong>
             <span>{currentUser.name} · {{ admin: "Admin", cashier: "Cashier", master_cashier: "Master Cashier", kitchen: "Kitchen", counter: "Counter", stock_taker: "Stock Taker" }[currentUser.role]}</span>
@@ -1894,7 +1894,7 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
             <p>Replaces the logo on the login screen, sidebar, and browser tab icon.</p>
           </div>
           <div className="setting-actions">
-            <img src={branding.logoUrl || "/logo.jpg"} alt="Current logo" className="login-logo" style={{ width: 40, height: 40 }} />
+            <img src={assetUrl(branding.logoUrl || "/logo.jpg")} alt="Current logo" className="login-logo" style={{ width: 40, height: 40 }} />
             <input ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/webp" style={{ display: "none" }} onChange={(e) => void handleLogoUpload(e)} />
             <button type="button" className="secondary" disabled={uploadingLogo} onClick={() => logoInputRef.current?.click()}>
               {uploadingLogo ? "Uploading…" : "Upload logo"}
@@ -2095,7 +2095,7 @@ function buildReceiptHtml(order: Order, type: "kitchen" | "counter" | "master", 
   const d = new Date(order.createdAt);
   const dateStr = d.toLocaleDateString(appSettings.locale);
   const timeStr = d.toLocaleTimeString(appSettings.locale, { hour: "2-digit", minute: "2-digit" });
-  const logoUrl = receiptBranding.logoUrl ? `${window.location.origin}${receiptBranding.logoUrl}` : `${window.location.origin}/logo.jpg`;
+  const logoUrl = assetUrl(receiptBranding.logoUrl || "/logo.jpg");
   const siteName = esc(receiptBranding.siteName || "MAXIS");
   const { blue, blueDark } = deriveShades(/^#[0-9a-f]{6}$/i.test(receiptBranding.themeColor) ? receiptBranding.themeColor : "#1a47a0");
 
@@ -2209,7 +2209,7 @@ function esc(s: string): string {
 // preview button, so the printout is visually distinguishable from a real one.
 function buildWeighInSummaryHtml(dateIso: string, lines: WeighInLine[], products: Product[], heading = "WEIGH-IN SUMMARY"): string {
   const siteName = esc(receiptBranding.siteName || "MAXIS");
-  const logoUrl = receiptBranding.logoUrl ? `${window.location.origin}${receiptBranding.logoUrl}` : `${window.location.origin}/logo.jpg`;
+  const logoUrl = assetUrl(receiptBranding.logoUrl || "/logo.jpg");
   const { blue, blueDark } = deriveShades(/^#[0-9a-f]{6}$/i.test(receiptBranding.themeColor) ? receiptBranding.themeColor : "#1a47a0");
   const d = new Date(dateIso);
   const dateStr = d.toLocaleString(appSettings.locale, { dateStyle: "medium", timeStyle: "short" });
