@@ -240,6 +240,12 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
     window.setTimeout(() => setMessage(""), 2500);
   };
 
+  // Confirmed because an accidental tap (easy on the compact mobile/app nav)
+  // would otherwise drop the user straight back to the login screen mid-task.
+  const confirmLogout = () => {
+    if (window.confirm("Sign out?")) onLogout();
+  };
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -290,7 +296,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
               never hidden — .sidebar-footer is dropped by the ≤920px responsive
               breakpoint, which would otherwise leave mobile/app users with no way
               to log out. nav is never hidden at any screen size. */}
-          <button className="nav-signout" onClick={onLogout}><LogOut size={18} /><span>Sign out</span></button>
+          <button className="nav-signout" onClick={confirmLogout}><LogOut size={18} /><span>Sign out</span></button>
         </nav>
       </aside>
 

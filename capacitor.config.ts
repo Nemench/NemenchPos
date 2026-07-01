@@ -8,7 +8,12 @@ const SERVER_URL = 'http://192.168.68.204:3000';
 
 const config: CapacitorConfig = {
   appId: 'com.nemench.maxis',
-  appName: 'MAXIS KOT',
+  // Matches the default site name (server/database.ts's 'siteName' seed).
+  // This is baked into the app at build time (also mirrored in
+  // android/app/src/main/res/values/strings.xml's app_name/title_activity_main) —
+  // if an admin changes the site name in Settings, the launcher label won't
+  // follow automatically; update both here and rebuild to match.
+  appName: 'MAXIS',
   webDir: 'dist',
   server: {
     url: SERVER_URL,
