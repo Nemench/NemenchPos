@@ -92,6 +92,7 @@ export const api = {
     current: () => req<{ batch: WeighInBatch | null; lines: WeighInLine[] }>("GET", "/weigh-in/current"),
     list: () => req<WeighInLine[]>("GET", "/weigh-in"),
     addLine: (data: WeighInLineInput) => req<WeighInLine>("POST", "/weigh-in/lines", data),
+    updateLine: (id: number, data: WeighInLineInput) => req<WeighInLine>("PUT", `/weigh-in/lines/${id}`, data),
     finalize: (batchId?: number) => req<{ batch: WeighInBatch; lines: WeighInLine[] }>("POST", "/weigh-in/finalize", batchId ? { batchId } : {})
   }
 };

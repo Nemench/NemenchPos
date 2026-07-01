@@ -776,6 +776,10 @@ th {
   background: var(--blue-light);
 }
 
+.editing-row td {
+  background: #fff3cd;
+}
+
 .item-dept {
   display: inline-block;
   font-size: 10px;

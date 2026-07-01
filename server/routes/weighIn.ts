@@ -10,6 +10,13 @@ router.use(requireAuth);
 const GRADES: Grade[] = ["A", "B", "C"];
 const canSubmit = (req: AuthRequest) => req.user?.role === "admin" || req.user?.role === "stock_taker";
 
+function validateLineInput(input: WeighInLineInput): string | null {
+  if (!GRADES.includes(input.grade)) return "grade must be 'A', 'B', or 'C'";
+  if (typeof input.piecesReceived !== "number" || input.piecesReceived <= 0) return "piecesReceived must be a positive number";
+  if (typeof input.weightKg !== "number" || input.weightKg <= 0) return "weightKg must be a positive number";
+  return null;
+}
+
 router.get("/current", (_req, res) => {
   const batch = db.getOpenBatch();
   res.json({ batch, lines: batch ? db.listWeighInLines(batch.id) : [] });
@@ -32,22 +39,27 @@ router.post("/lines", (req: AuthRequest, res) => {
     return;
   }
   const input = req.body as WeighInLineInput;
-  if (!GRADES.includes(input.grade)) {
-    res.status(400).json({ message: "grade must be 'A', 'B', or 'C'" });
-    return;
-  }
-  if (typeof input.piecesReceived !== "number" || input.piecesReceived <= 0) {
-    res.status(400).json({ message: "piecesReceived must be a positive number" });
-    return;
-  }
-  if (typeof input.weightKg !== "number" || input.weightKg <= 0) {
-    res.status(400).json({ message: "weightKg must be a positive number" });
-    return;
-  }
+  const error = validateLineInput(input);
+  if (error) { res.status(400).json({ message: error }); return; }
   try {
     res.status(201).json(db.addWeighInLine(input, req.user!.id));
   } catch (err) {
     res.status(400).json({ message: err instanceof Error ? err.message : "Failed to log line" });
+  }
+});
+
+router.put("/lines/:id", (req: AuthRequest, res) => {
+  if (!canSubmit(req)) {
+    res.status(403).json({ message: "Not authorized to edit weigh-in lines" });
+    return;
+  }
+  const input = req.body as WeighInLineInput;
+  const error = validateLineInput(input);
+  if (error) { res.status(400).json({ message: error }); return; }
+  try {
+    res.json(db.updateWeighInLine(Number(req.params.id), input));
+  } catch (err) {
+    res.status(400).json({ message: err instanceof Error ? err.message : "Failed to update line" });
   }
 });
 

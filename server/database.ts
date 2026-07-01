@@ -197,6 +197,33 @@ export class KotDatabase {
       .get(id) as WeighInLine;
   }
 
+  updateWeighInLine(id: number, input: WeighInLineInput): WeighInLine {
+    const update = this.db.transaction(() => {
+      const existing = this.db
+        .prepare("SELECT l.*, b.status as batchStatus FROM weigh_in_lines l JOIN weigh_in_batches b ON l.batchId = b.id WHERE l.id = ?")
+        .get(id) as (WeighInLine & { batchStatus: string }) | null;
+      if (!existing) throw new Error(`Weigh-in line ${id} not found`);
+      if (existing.batchStatus !== "open") throw new Error("Cannot edit a line in a finalized batch");
+
+      // Reverse the old line's stock impact, then apply the new one — handles product changes too
+      this.adjustStock(existing.productId, -existing.piecesReceived);
+      this.adjustStock(input.productId, input.piecesReceived);
+
+      this.db
+        .prepare("UPDATE weigh_in_lines SET productId=?, grade=?, piecesReceived=?, weightKg=?, supplierId=? WHERE id=?")
+        .run(input.productId, input.grade, input.piecesReceived, input.weightKg, input.supplierId, id);
+    });
+    update();
+    return this.db
+      .prepare(`SELECT l.*, p.name as productName, s.name as supplierName, u.name as createdByName
+                FROM weigh_in_lines l
+                LEFT JOIN products p ON l.productId = p.id
+                LEFT JOIN suppliers s ON l.supplierId = s.id
+                LEFT JOIN users u ON l.createdById = u.id
+                WHERE l.id = ?`)
+      .get(id) as WeighInLine;
+  }
+
   listWeighInLines(batchId?: number, limit = 500): WeighInLine[] {
     const base = `SELECT l.*, p.name as productName, s.name as supplierName, u.name as createdByName
                   FROM weigh_in_lines l

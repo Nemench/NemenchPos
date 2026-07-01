@@ -867,8 +867,10 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
   const [supplierId, setSupplierId] = useState<number | "" | "new">("");
   const [newSupplierName, setNewSupplierName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [cooldown, setCooldown] = useState(false);
   const [msg, setMsg] = useState("");
   const [history, setHistory] = useState<WeighInLine[]>([]);
+  const [editingLineId, setEditingLineId] = useState<number | null>(null);
 
   const loadCurrent = () => api.weighIn.current().then((r) => setLines(r.lines)).catch(() => undefined);
   const loadSuppliers = () => api.suppliers.list().then(setSuppliers).catch(() => undefined);
@@ -883,17 +885,38 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
 
   const toggleGrade = (g: Grade) => setGrades((cur) => ({ ...cur, [g]: !cur[g] }));
 
-  const addLine = async (e: FormEvent) => {
+  const startEdit = (line: WeighInLine) => {
+    setEditingLineId(line.id);
+    setProductId(line.productId);
+    setGrades({ A: line.grade === "A", B: line.grade === "B", C: line.grade === "C" });
+    setPieces(line.piecesReceived);
+    setWeightKg(String(line.weightKg));
+    setSupplierId(line.supplierId);
+    setNewSupplierName("");
+    setMsg("");
+  };
+
+  const cancelEdit = () => {
+    setEditingLineId(null);
+    setProductId(""); setGrades({ A: false, B: false, C: false }); setPieces(2); setWeightKg("");
+    setMsg("");
+  };
+
+  const submitLine = async (e: FormEvent) => {
     e.preventDefault();
     const selectedGrades = GRADES.filter((g) => grades[g]);
     const weight = parseFloat(weightKg);
     if (!productId) { setMsg("Pick a product."); return; }
     if (selectedGrades.length === 0) { setMsg("Pick at least one grade."); return; }
+    if (editingLineId && selectedGrades.length > 1) { setMsg("Pick exactly one grade when editing a line."); return; }
     if (!pieces || pieces <= 0) { setMsg("Enter how many pieces were received."); return; }
     if (!weight || weight <= 0) { setMsg("Enter the weight in kg."); return; }
     if (supplierId === "" || (supplierId === "new" && !newSupplierName.trim())) { setMsg("Pick or add a supplier."); return; }
 
+    const wasEditing = editingLineId;
     setBusy(true); setMsg("");
+    setCooldown(true);
+    window.setTimeout(() => setCooldown(false), 5000);
     try {
       let finalSupplierId = supplierId;
       if (finalSupplierId === "new") {
@@ -902,19 +925,28 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
         finalSupplierId = created.id;
         setNewSupplierName("");
       }
-      let savedCount = 0;
-      for (const grade of selectedGrades) {
-        const line = await api.weighIn.addLine({ productId, grade, piecesReceived: pieces, weightKg: weight, supplierId: finalSupplierId as number });
-        setLines((cur) => [...cur, line]);
-        savedCount++;
+
+      if (wasEditing) {
+        const updated = await api.weighIn.updateLine(wasEditing, { productId, grade: selectedGrades[0], piecesReceived: pieces, weightKg: weight, supplierId: finalSupplierId as number });
+        setLines((cur) => cur.map((l) => (l.id === updated.id ? updated : l)));
+        setEditingLineId(null);
+        setProductId(""); setGrades({ A: false, B: false, C: false }); setPieces(2); setWeightKg("");
+        setMsg("Line updated.");
+      } else {
+        let savedCount = 0;
+        for (const grade of selectedGrades) {
+          const line = await api.weighIn.addLine({ productId, grade, piecesReceived: pieces, weightKg: weight, supplierId: finalSupplierId as number });
+          setLines((cur) => [...cur, line]);
+          savedCount++;
+        }
+        // Item and grade stay selected as defaults for the next line — only weight/pieces reset
+        setPieces(defaultPiecesFor(products.find((p) => p.id === productId)?.name)); setWeightKg("");
+        setMsg(savedCount > 1 ? `Logged ${savedCount} grade rows.` : "Logged.");
       }
       setSupplierId(finalSupplierId);
-      // Item and grade stay selected as defaults for the next line — only weight/pieces reset
-      setPieces(defaultPiecesFor(products.find((p) => p.id === productId)?.name)); setWeightKg("");
-      setMsg(savedCount > 1 ? `Logged ${savedCount} grade rows.` : "Logged.");
       await onChanged();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not log entry — check missing grades and retry.");
+      setMsg(err instanceof Error ? err.message : "Could not save — check missing grades and retry.");
     } finally {
       setBusy(false);
       window.setTimeout(() => setMsg(""), 3000);
@@ -940,8 +972,8 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
 
   return (
     <div className="products-layout">
-      <form className="panel product-form" onSubmit={(e) => void addLine(e)}>
-        <h2>Log received stock</h2>
+      <form className="panel product-form" onSubmit={(e) => void submitLine(e)}>
+        <h2>{editingLineId ? "Edit line" : "Log received stock"}</h2>
         <label>
           Item
           <select value={productId} onChange={(e) => {
@@ -988,27 +1020,33 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
         )}
         {msg && <div className="form-message">{msg}</div>}
         <footer className="actions">
-          <button type="submit" disabled={busy}><Save size={18} /> {busy ? "Saving…" : "Add line"}</button>
+          {editingLineId && <button type="button" className="secondary" onClick={cancelEdit}>Cancel</button>}
+          <button type="submit" disabled={busy || cooldown}>
+            <Save size={18} /> {busy ? "Saving…" : cooldown ? "Wait…" : editingLineId ? "Update line" : "Add line"}
+          </button>
         </footer>
       </form>
 
       <div className="panel table-panel">
         <h2>Current batch</h2>
         <table>
-          <thead><tr><th>Date</th><th>Item</th><th>Grade</th><th>Pieces</th><th>Kg</th><th>Supplier</th></tr></thead>
+          <thead><tr><th>Date</th><th>Item</th><th>Grade</th><th>Pieces</th><th>Kg</th><th>Supplier</th><th></th></tr></thead>
           <tbody>
             {lines.map((l) => (
-              <tr key={l.id}>
+              <tr key={l.id} className={l.id === editingLineId ? "editing-row" : ""}>
                 <td>{new Date(l.createdAt).toLocaleString(appSettings.locale, { dateStyle: "medium", timeStyle: "short" })}</td>
                 <td>{l.productName}</td>
                 <td>{l.grade}</td>
                 <td>{l.piecesReceived}</td>
                 <td>{l.weightKg}</td>
                 <td>{l.supplierName}</td>
+                <td className="row-actions">
+                  <button type="button" className="secondary sm" onClick={() => startEdit(l)}>Edit</button>
+                </td>
               </tr>
             ))}
             {lines.length > 0 && (
-              <tr className="totals-row"><td colSpan={3}><b>Total</b></td><td><b>{totals.pieces}</b></td><td><b>{totals.weightKg.toFixed(2)}</b></td><td></td></tr>
+              <tr className="totals-row"><td colSpan={3}><b>Total</b></td><td><b>{totals.pieces}</b></td><td><b>{totals.weightKg.toFixed(2)}</b></td><td></td><td></td></tr>
             )}
           </tbody>
         </table>
@@ -1744,18 +1782,53 @@ function buildWeighInSummaryHtml(dateIso: string, lines: WeighInLine[], products
   const d = new Date(dateIso);
   const dateStr = d.toLocaleString(appSettings.locale, { dateStyle: "medium", timeStyle: "short" });
 
-  const supplierNames = [...new Set(lines.map((l) => l.supplierName).filter(Boolean))].join(", ");
+  const productName = (id: number) => products.find((p) => p.id === id)?.name ?? "—";
 
-  type GroupKey = string;
-  const groups = new Map<GroupKey, { productName: string; grade: string; pieces: number; kg: number }>();
+  // Section by supplier, then item+grade within each supplier, each section subtotaled
+  const bySupplier = new Map<number, { name: string; lines: WeighInLine[] }>();
   for (const l of lines) {
-    const key = `${l.productId}|${l.grade}`;
-    const g = groups.get(key) ?? { productName: l.productName ?? products.find((p) => p.id === l.productId)?.name ?? "—", grade: l.grade, pieces: 0, kg: 0 };
-    g.pieces += l.piecesReceived;
-    g.kg += l.weightKg;
-    groups.set(key, g);
+    const key = l.supplierId;
+    const s = bySupplier.get(key) ?? { name: l.supplierName ?? "— Unknown supplier —", lines: [] };
+    s.lines.push(l);
+    bySupplier.set(key, s);
   }
-  const rows = [...groups.values()].map((g) => `<tr><td>${esc(g.productName)}</td><td>${esc(g.grade)}</td><td>${g.pieces}</td><td>${g.kg.toFixed(2)}</td></tr>`).join("");
+  const supplierSections = [...bySupplier.values()]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((supplier) => {
+      const itemGrades = new Map<string, { productName: string; grade: string; pieces: number; kg: number }>();
+      for (const l of supplier.lines) {
+        const key = `${l.productId}|${l.grade}`;
+        const g = itemGrades.get(key) ?? { productName: l.productName ?? productName(l.productId), grade: l.grade, pieces: 0, kg: 0 };
+        g.pieces += l.piecesReceived;
+        g.kg += l.weightKg;
+        itemGrades.set(key, g);
+      }
+      const rows = [...itemGrades.values()]
+        .sort((a, b) => a.productName.localeCompare(b.productName) || a.grade.localeCompare(b.grade))
+        .map((g) => `<tr><td>${esc(g.productName)}</td><td>${esc(g.grade)}</td><td>${g.pieces}</td><td>${g.kg.toFixed(2)}</td></tr>`)
+        .join("");
+      const subPieces = supplier.lines.reduce((sum, l) => sum + l.piecesReceived, 0);
+      const subKg = supplier.lines.reduce((sum, l) => sum + l.weightKg, 0);
+      return `<h3 class="supplier-hdr">${esc(supplier.name)}</h3>
+<table><thead><tr><th>Item</th><th>Grade</th><th>Pieces</th><th>Kg</th></tr></thead>
+<tbody>${rows}
+<tr class="totals"><td colspan="2">Supplier total</td><td>${subPieces}</td><td>${subKg.toFixed(2)}</td></tr>
+</tbody></table>`;
+    })
+    .join("");
+
+  // Per-item grand totals, regardless of supplier or grade
+  const byItem = new Map<number, { productName: string; pieces: number; kg: number }>();
+  for (const l of lines) {
+    const it = byItem.get(l.productId) ?? { productName: l.productName ?? productName(l.productId), pieces: 0, kg: 0 };
+    it.pieces += l.piecesReceived;
+    it.kg += l.weightKg;
+    byItem.set(l.productId, it);
+  }
+  const itemTotalRows = [...byItem.values()]
+    .sort((a, b) => a.productName.localeCompare(b.productName))
+    .map((it) => `<tr><td>${esc(it.productName)}</td><td>${it.pieces}</td><td>${it.kg.toFixed(2)}</td></tr>`)
+    .join("");
   const grandPieces = lines.reduce((sum, l) => sum + l.piecesReceived, 0);
   const grandKg = lines.reduce((sum, l) => sum + l.weightKg, 0);
 
@@ -1767,6 +1840,8 @@ body{font-family:Inter,'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a1a2e;
 .hdr-right{text-align:right}.logo{width:72px;height:72px;border-radius:50%;object-fit:cover;border:2px solid ${blueDark}}
 .dt{font-size:12px;color:#666;margin-top:2px}
 .meta{font-size:13px;color:#333;margin-bottom:16px}
+.supplier-hdr{font-size:14px;font-weight:700;color:${blueDark};margin:20px 0 8px;padding-bottom:4px;border-bottom:1px solid #c8d5ee}
+.section-hdr{font-size:16px;font-weight:800;color:${blue};margin:28px 0 8px}
 table{width:100%;border-collapse:collapse;margin-bottom:8px}thead tr{background:${blueDark}}
 th{color:#fff;padding:8px 12px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
 td{padding:9px 12px;border-bottom:1px solid #e8eef7;font-size:13px;vertical-align:top}
@@ -1777,10 +1852,11 @@ tr:nth-child(even) td{background:#f8f9fc}
   <div class="hdr-left"><div class="shop">${siteName}</div><div class="type">WEIGH-IN SUMMARY</div></div>
   <div class="hdr-right"><img class="logo" src="${logoUrl}" alt="${siteName}"><div class="dt">${dateStr}</div></div>
 </div>
-<div class="meta">${supplierNames ? `<b>Supplier(s):</b> ${esc(supplierNames)}` : ""}</div>
-<table><thead><tr><th>Item</th><th>Grade</th><th>Pieces</th><th>Kg</th></tr></thead>
-<tbody>${rows}
-<tr class="totals"><td colspan="2">Grand total</td><td>${grandPieces}</td><td>${grandKg.toFixed(2)}</td></tr>
+${supplierSections}
+<h2 class="section-hdr">Item totals — all suppliers</h2>
+<table><thead><tr><th>Item</th><th>Pieces</th><th>Kg</th></tr></thead>
+<tbody>${itemTotalRows}
+<tr class="totals"><td>Grand total</td><td>${grandPieces}</td><td>${grandKg.toFixed(2)}</td></tr>
 </tbody></table>
 </body></html>`;
 }
