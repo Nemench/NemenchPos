@@ -7,11 +7,11 @@ import type { WeighInLineInput, Grade } from "../../src/shared/types.js";
 const router = Router();
 router.use(requireAuth);
 
-const GRADES: Grade[] = ["A", "B", "C"];
+const GRADES: Grade[] = ["A", "B", "C", "A,B", "A,C", "B,C"];
 const canSubmit = (req: AuthRequest) => req.user?.role === "admin" || req.user?.role === "stock_taker";
 
 function validateLineInput(input: WeighInLineInput): string | null {
-  if (!GRADES.includes(input.grade)) return "grade must be 'A', 'B', or 'C'";
+  if (!GRADES.includes(input.grade)) return "grade must be 'A', 'B', 'C', or a pair like 'A,B'";
   if (typeof input.piecesReceived !== "number" || input.piecesReceived <= 0) return "piecesReceived must be a positive number";
   if (typeof input.weightKg !== "number" || input.weightKg <= 0) return "weightKg must be a positive number";
   return null;
@@ -60,6 +60,19 @@ router.put("/lines/:id", (req: AuthRequest, res) => {
     res.json(db.updateWeighInLine(Number(req.params.id), input));
   } catch (err) {
     res.status(400).json({ message: err instanceof Error ? err.message : "Failed to update line" });
+  }
+});
+
+router.delete("/lines/:id", (req: AuthRequest, res) => {
+  if (!canSubmit(req)) {
+    res.status(403).json({ message: "Not authorized to delete weigh-in lines" });
+    return;
+  }
+  try {
+    db.deleteWeighInLine(Number(req.params.id));
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ message: err instanceof Error ? err.message : "Failed to delete line" });
   }
 });
 

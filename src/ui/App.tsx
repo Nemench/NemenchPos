@@ -853,7 +853,7 @@ function StockTakePanel({ products, onChanged }: { products: Product[]; onChange
 
 // ── Weigh-in (batch) ──────────────────────────────────────────────────────────
 
-const GRADES: Grade[] = ["A", "B", "C"];
+const GRADE_LETTERS: ("A" | "B" | "C")[] = ["A", "B", "C"];
 const ITEM_PIECE_DEFAULTS: Record<string, number> = { "beef forequarter": 2, "whole lamb": 8 };
 const defaultPiecesFor = (name: string | undefined) => (name && ITEM_PIECE_DEFAULTS[name.trim().toLowerCase()]) || 2;
 
@@ -861,7 +861,7 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
   const [lines, setLines] = useState<WeighInLine[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [productId, setProductId] = useState<number | "">("");
-  const [grades, setGrades] = useState<Record<Grade, boolean>>({ A: false, B: false, C: false });
+  const [grades, setGrades] = useState<Record<"A" | "B" | "C", boolean>>({ A: false, B: false, C: false });
   const [pieces, setPieces] = useState(2);
   const [weightKg, setWeightKg] = useState("");
   const [supplierId, setSupplierId] = useState<number | "" | "new">("");
@@ -883,12 +883,19 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
     [lines]
   );
 
-  const toggleGrade = (g: Grade) => setGrades((cur) => ({ ...cur, [g]: !cur[g] }));
+  const toggleGrade = (g: "A" | "B" | "C") =>
+    setGrades((cur) => {
+      const next = { ...cur, [g]: !cur[g] };
+      // Cap at 2 grades selected (A+B, A+C, B+C — not all three at once)
+      if (Object.values(next).filter(Boolean).length > 2) return cur;
+      return next;
+    });
 
   const startEdit = (line: WeighInLine) => {
     setEditingLineId(line.id);
     setProductId(line.productId);
-    setGrades({ A: line.grade === "A", B: line.grade === "B", C: line.grade === "C" });
+    const parts = line.grade.split(",");
+    setGrades({ A: parts.includes("A"), B: parts.includes("B"), C: parts.includes("C") });
     setPieces(line.piecesReceived);
     setWeightKg(String(line.weightKg));
     setSupplierId(line.supplierId);
@@ -902,13 +909,31 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
     setMsg("");
   };
 
+  const deleteLine = async () => {
+    if (!editingLineId) return;
+    if (!window.confirm("Delete this line? This cannot be undone and will reverse its stock adjustment.")) return;
+    setBusy(true);
+    try {
+      await api.weighIn.deleteLine(editingLineId);
+      setLines((cur) => cur.filter((l) => l.id !== editingLineId));
+      cancelEdit();
+      setMsg("Line deleted.");
+      await onChanged();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not delete line.");
+    } finally {
+      setBusy(false);
+      window.setTimeout(() => setMsg(""), 3000);
+    }
+  };
+
   const submitLine = async (e: FormEvent) => {
     e.preventDefault();
-    const selectedGrades = GRADES.filter((g) => grades[g]);
+    const selectedGrades = GRADE_LETTERS.filter((g) => grades[g]);
+    const grade = selectedGrades.join(",") as Grade;
     const weight = parseFloat(weightKg);
     if (!productId) { setMsg("Pick a product."); return; }
     if (selectedGrades.length === 0) { setMsg("Pick at least one grade."); return; }
-    if (editingLineId && selectedGrades.length > 1) { setMsg("Pick exactly one grade when editing a line."); return; }
     if (!pieces || pieces <= 0) { setMsg("Enter how many pieces were received."); return; }
     if (!weight || weight <= 0) { setMsg("Enter the weight in kg."); return; }
     if (supplierId === "" || (supplierId === "new" && !newSupplierName.trim())) { setMsg("Pick or add a supplier."); return; }
@@ -926,27 +951,24 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
         setNewSupplierName("");
       }
 
+      const input = { productId, grade, piecesReceived: pieces, weightKg: weight, supplierId: finalSupplierId as number };
       if (wasEditing) {
-        const updated = await api.weighIn.updateLine(wasEditing, { productId, grade: selectedGrades[0], piecesReceived: pieces, weightKg: weight, supplierId: finalSupplierId as number });
+        const updated = await api.weighIn.updateLine(wasEditing, input);
         setLines((cur) => cur.map((l) => (l.id === updated.id ? updated : l)));
         setEditingLineId(null);
         setProductId(""); setGrades({ A: false, B: false, C: false }); setPieces(2); setWeightKg("");
         setMsg("Line updated.");
       } else {
-        let savedCount = 0;
-        for (const grade of selectedGrades) {
-          const line = await api.weighIn.addLine({ productId, grade, piecesReceived: pieces, weightKg: weight, supplierId: finalSupplierId as number });
-          setLines((cur) => [...cur, line]);
-          savedCount++;
-        }
+        const line = await api.weighIn.addLine(input);
+        setLines((cur) => [...cur, line]);
         // Item and grade stay selected as defaults for the next line — only weight/pieces reset
         setPieces(defaultPiecesFor(products.find((p) => p.id === productId)?.name)); setWeightKg("");
-        setMsg(savedCount > 1 ? `Logged ${savedCount} grade rows.` : "Logged.");
+        setMsg("Logged.");
       }
       setSupplierId(finalSupplierId);
       await onChanged();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not save — check missing grades and retry.");
+      setMsg(err instanceof Error ? err.message : "Could not save — please retry.");
     } finally {
       setBusy(false);
       window.setTimeout(() => setMsg(""), 3000);
@@ -955,6 +977,7 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
 
   const finalize = async () => {
     if (lines.length === 0) { setMsg("No lines to finalize."); return; }
+    if (!window.confirm(`Finalize this batch of ${lines.length} line${lines.length === 1 ? "" : "s"}? Lines can no longer be edited once finalized.`)) return;
     setBusy(true);
     try {
       const { batch, lines: finalLines } = await api.weighIn.finalize();
@@ -988,7 +1011,7 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
         <label>
           Grade
           <div className="grade-picker">
-            {GRADES.map((g) => (
+            {GRADE_LETTERS.map((g) => (
               <label key={g} className={`grade-pill ${grades[g] ? "checked" : ""}`}>
                 <input type="checkbox" checked={grades[g]} onChange={() => toggleGrade(g)} /> {g}
               </label>
@@ -1020,6 +1043,7 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
         )}
         {msg && <div className="form-message">{msg}</div>}
         <footer className="actions">
+          {editingLineId && <button type="button" className="secondary danger" onClick={() => void deleteLine()} disabled={busy}>Delete line</button>}
           {editingLineId && <button type="button" className="secondary" onClick={cancelEdit}>Cancel</button>}
           <button type="submit" disabled={busy || cooldown}>
             <Save size={18} /> {busy ? "Saving…" : cooldown ? "Wait…" : editingLineId ? "Update line" : "Add line"}

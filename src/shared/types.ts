@@ -50,7 +50,7 @@ export interface ProductInput {
   lowStockThreshold: number | null;
 }
 
-export type Grade = "A" | "B" | "C";
+export type Grade = "A" | "B" | "C" | "A,B" | "A,C" | "B,C";
 export type BatchStatus = "open" | "finalized";
 
 export interface Supplier {

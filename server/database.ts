@@ -224,6 +224,19 @@ export class KotDatabase {
       .get(id) as WeighInLine;
   }
 
+  deleteWeighInLine(id: number): void {
+    this.db.transaction(() => {
+      const existing = this.db
+        .prepare("SELECT l.*, b.status as batchStatus FROM weigh_in_lines l JOIN weigh_in_batches b ON l.batchId = b.id WHERE l.id = ?")
+        .get(id) as (WeighInLine & { batchStatus: string }) | null;
+      if (!existing) throw new Error(`Weigh-in line ${id} not found`);
+      if (existing.batchStatus !== "open") throw new Error("Cannot delete a line in a finalized batch");
+
+      this.adjustStock(existing.productId, -existing.piecesReceived);
+      this.db.prepare("DELETE FROM weigh_in_lines WHERE id = ?").run(id);
+    })();
+  }
+
   listWeighInLines(batchId?: number, limit = 500): WeighInLine[] {
     const base = `SELECT l.*, p.name as productName, s.name as supplierName, u.name as createdByName
                   FROM weigh_in_lines l
