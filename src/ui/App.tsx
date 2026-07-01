@@ -860,7 +860,7 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [productId, setProductId] = useState<number | "">("");
   const [grades, setGrades] = useState<Record<Grade, boolean>>({ A: false, B: false, C: false });
-  const [pieces, setPieces] = useState(1);
+  const [pieces, setPieces] = useState(2);
   const [weightKg, setWeightKg] = useState("");
   const [supplierId, setSupplierId] = useState<number | "" | "new">("");
   const [newSupplierName, setNewSupplierName] = useState("");
@@ -908,7 +908,7 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
       }
       setSupplierId(finalSupplierId);
       // Item and grade stay selected as defaults for the next line — only weight/pieces reset
-      setPieces(1); setWeightKg("");
+      setPieces(2); setWeightKg("");
       setMsg(savedCount > 1 ? `Logged ${savedCount} grade rows.` : "Logged.");
       await onChanged();
     } catch (err) {
