@@ -1,4 +1,4 @@
-import type { User, UserInput, Product, ProductInput, Order, CreateOrderInput, OrderStatus, Department, DeptStatus } from "../shared/types";
+import type { User, UserInput, Product, ProductInput, Order, CreateOrderInput, OrderStatus, Department, DeptStatus, MeatWeightIncome, MeatWeightIncomeInput } from "../shared/types";
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const token = sessionStorage.getItem("kot-token");
@@ -70,11 +70,22 @@ export const api = {
   },
   settings: {
     get: () => req<Record<string, string>>("GET", "/settings"),
-    set: (data: Record<string, string>) => req<Record<string, string>>("PUT", "/settings", data)
+    set: (data: Record<string, string>) => req<Record<string, string>>("PUT", "/settings", data),
+    public: () => req<{ siteName: string; logoUrl: string; themeColor: string }>("GET", "/settings/public"),
+    uploadLogo: (dataUrl: string) => req<{ logoUrl: string }>("POST", "/settings/logo", { dataUrl })
   },
   printers: {
     list: () => req<string[]>("GET", "/printers")
   },
   print: (printerName: string, html: string) =>
-    req<{ ok: boolean }>("POST", "/print", { printerName, html })
+    req<{ ok: boolean }>("POST", "/print", { printerName, html }),
+  stock: {
+    list: () => req<Product[]>("GET", "/stock"),
+    low: () => req<Product[]>("GET", "/stock/low"),
+    update: (productId: number, onHandQty: number) => req<Product>("PUT", `/stock/${productId}`, { onHandQty })
+  },
+  meatWeight: {
+    list: () => req<MeatWeightIncome[]>("GET", "/meat-weight"),
+    create: (data: MeatWeightIncomeInput) => req<MeatWeightIncome>("POST", "/meat-weight", data)
+  }
 };

@@ -4,6 +4,7 @@ import compression from "compression";
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import path from "node:path";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { KotDatabase } from "./database.js";
@@ -16,6 +17,8 @@ import reportsRouter from "./routes/reports.js";
 import printersRouter from "./routes/printers.js";
 import printRouter from "./routes/print.js";
 import backupRouter from "./routes/backup.js";
+import stockRouter from "./routes/stock.js";
+import meatWeightRouter from "./routes/meatWeight.js";
 
 export const db = new KotDatabase();
 db.initialize();
@@ -56,6 +59,12 @@ if (!isProd) {
 
 app.use(express.json({ limit: "10mb" }));
 
+// Uploaded assets (e.g. custom logo) — served from the persistent data dir, not dist/
+const dataDir = process.env.DATA_DIR ?? path.join(process.cwd(), "data");
+const uploadsDir = path.join(dataDir, "uploads");
+fs.mkdirSync(uploadsDir, { recursive: true });
+app.use("/uploads", express.static(uploadsDir));
+
 // ── Rate limiting ─────────────────────────────────────────────────────────────
 
 // General API limit: 300 requests/min per IP — generous for normal staff use
@@ -91,6 +100,8 @@ app.use("/api/reports",  reportsRouter);
 app.use("/api/printers", printersRouter);
 app.use("/api/print",    printRouter);
 app.use("/api/backup",   backupRouter);
+app.use("/api/stock",    stockRouter);
+app.use("/api/meat-weight", meatWeightRouter);
 
 if (isProd) {
   const dist = path.join(__dirname, "../dist");

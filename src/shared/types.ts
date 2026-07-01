@@ -3,10 +3,12 @@ export type UnitDefault = "kg" | "qty" | "kg_qty";
 export type Department = "kitchen" | "counter";
 export type DeptStatus = "n/a" | "New" | "Received" | "Ready" | "Done";
 
+export type Role = "admin" | "cashier" | "master_cashier" | "counter" | "kitchen" | "stock_taker";
+
 export interface User {
   id: number;
   name: string;
-  role: "admin" | "cashier" | "master_cashier" | "counter" | "kitchen";
+  role: Role;
   department: Department | null;
   isActive: number;
   createdAt: string;
@@ -16,7 +18,7 @@ export interface User {
 export interface UserInput {
   name: string;
   pin: string;
-  role: "admin" | "cashier" | "master_cashier" | "counter" | "kitchen";
+  role: Role;
   department: Department | null;
 }
 
@@ -29,6 +31,10 @@ export interface Product {
   prepNotes: string;
   department: Department;
   isActive: number;
+  lowStockThreshold: number | null;
+  onHandQty: number;
+  lastCountedAt: string | null;
+  lastCountedById: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -41,6 +47,23 @@ export interface ProductInput {
   pricePerUnit: number | null;
   prepNotes: string;
   department: Department;
+  lowStockThreshold: number | null;
+}
+
+export type MeatSpecies = "beef" | "lamb";
+
+export interface MeatWeightIncomeInput {
+  species: MeatSpecies;
+  grade: string;
+  piecesWeighed: number;
+  productId: number | null;
+}
+
+export interface MeatWeightIncome extends MeatWeightIncomeInput {
+  id: number;
+  weighedById: number | null;
+  weighedByName: string | null;
+  createdAt: string;
 }
 
 export interface OrderItemInput {

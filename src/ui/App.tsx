@@ -12,7 +12,8 @@ import {
   Scissors,
   Settings,
   Trash2,
-  Users
+  Users,
+  Weight
 } from "lucide-react";
 import { appSettings } from "../shared/settings";
 import type {
@@ -20,6 +21,9 @@ import type {
   DeliveryAddress,
   Department,
   DeptStatus,
+  MeatSpecies,
+  MeatWeightIncome,
+  MeatWeightIncomeInput,
   Order,
   OrderItemInput,
   OrderStatus,
@@ -29,20 +33,27 @@ import type {
   UserInput
 } from "../shared/types";
 import { api } from "./api";
+import { applyTheme } from "./theme";
 
-type Tab = "orders" | "queue" | "history" | "products" | "users" | "settings" | "reports";
+type Tab = "orders" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "stockTake" | "meatWeight";
 
 const deptStatusFlow: DeptStatus[] = ["New", "Received", "Ready", "Done"];
 const emptyLine: OrderItemInput = { productId: null, name: "", kg: null, quantity: null, notes: "", unitPrice: null, lineTotal: null, department: "counter" };
-const EMPTY_PRODUCT: ProductInput = { name: "", category: "", unitDefault: "kg", pricePerUnit: null, prepNotes: "", department: "counter" };
+const EMPTY_PRODUCT: ProductInput = { name: "", category: "", unitDefault: "kg", pricePerUnit: null, prepNotes: "", department: "counter", lowStockThreshold: null };
 
 const currency = new Intl.NumberFormat(appSettings.locale, { style: "currency", currency: appSettings.currency });
 
 // ── Auth wrapper ──────────────────────────────────────────────────────────────
 
+function applyBranding(siteName: string, logoUrl: string) {
+  document.title = siteName || "MAXIS";
+  document.querySelector('link[rel="icon"]')?.setAttribute("href", logoUrl || "/logo.jpg");
+}
+
 export function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [booting, setBooting] = useState(true);
+  const [branding, setBranding] = useState({ siteName: "MAXIS", logoUrl: "" });
 
   useEffect(() => {
     const token = sessionStorage.getItem("kot-token");
@@ -53,16 +64,25 @@ export function App() {
       .finally(() => setBooting(false));
   }, []);
 
+  // Branding/theme apply on boot — works whether logged in or not, so the login screen is branded too
+  useEffect(() => {
+    api.settings.public().then((s) => {
+      setBranding({ siteName: s.siteName, logoUrl: s.logoUrl });
+      applyBranding(s.siteName, s.logoUrl);
+      if (s.themeColor) applyTheme(s.themeColor);
+    }).catch(() => undefined);
+  }, []);
+
   const logout = () => { sessionStorage.removeItem("kot-token"); setCurrentUser(null); };
 
   if (booting) return <div className="boot-screen"><Scissors size={32} /></div>;
-  if (!currentUser) return <LoginScreen onLogin={setCurrentUser} />;
-  return <MainApp currentUser={currentUser} onLogout={logout} />;
+  if (!currentUser) return <LoginScreen onLogin={setCurrentUser} branding={branding} />;
+  return <MainApp currentUser={currentUser} onLogout={logout} branding={branding} onBrandingChange={setBranding} />;
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 
-function LoginScreen({ onLogin }: { onLogin: (user: User) => void }) {
+function LoginScreen({ onLogin, branding }: { onLogin: (user: User) => void; branding: { siteName: string; logoUrl: string } }) {
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
@@ -84,8 +104,8 @@ function LoginScreen({ onLogin }: { onLogin: (user: User) => void }) {
     <div className="login-screen">
       <form className="login-card panel" onSubmit={(e) => void submit(e)}>
         <div className="login-brand">
-          <img src="/logo.jpg" alt="MAXIS" className="login-logo" />
-          <h1>MAXIS</h1>
+          <img src={branding.logoUrl || "/logo.jpg"} alt={branding.siteName} className="login-logo" />
+          <h1>{branding.siteName}</h1>
         </div>
         <label>Name
           <input value={name} onChange={(e) => setName(e.target.value)} autoFocus required />
@@ -110,8 +130,9 @@ function LoginScreen({ onLogin }: { onLogin: (user: User) => void }) {
 
 // ── Main app ──────────────────────────────────────────────────────────────────
 
-function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () => void }) {
-  const [tab, setTab] = useState<Tab>(currentUser.role === "kitchen" || currentUser.role === "counter" ? "queue" : "orders");
+function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { currentUser: User; onLogout: () => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void }) {
+  const isStockTaker = currentUser.role === "stock_taker";
+  const [tab, setTab] = useState<Tab>(isStockTaker ? "stockTake" : currentUser.role === "kitchen" || currentUser.role === "counter" ? "queue" : "orders");
   const [products, setProducts] = useState<Product[]>([]);
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
   const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
@@ -119,15 +140,18 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
   const [autoPrint, setAutoPrint] = useState(false);
   const [printStyle, setPrintStyle] = useState("thermal");
   const [printerMap, setPrinterMap] = useState({ kitchen: "", counter: "", master: "" });
+  const [lowStockCount, setLowStockCount] = useState(0);
 
   // Full refresh — products + orders. Only on mount and after mutations.
   const refresh = async () => {
-    const [productList, activeList] = await Promise.all([
+    const [productList, activeList, lowStock] = await Promise.all([
       api.products.list(),
       api.orders.list("active"),
+      api.stock.low().catch(() => []),
     ]);
     setProducts(productList);
     setActiveOrders(activeList);
+    setLowStockCount(lowStock.length);
   };
 
   // Lightweight poll — only active orders every 5s (products & history excluded)
@@ -167,29 +191,47 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <img src="/logo.jpg" alt="MAXIS" className="brand-logo" />
+          <img src={branding.logoUrl || "/logo.jpg"} alt={branding.siteName} className="brand-logo" />
           <div>
-            <strong>MAXIS</strong>
-            <span>{currentUser.name} · {{ admin: "Admin", cashier: "Cashier", master_cashier: "Master Cashier", kitchen: "Kitchen", counter: "Counter" }[currentUser.role]}</span>
+            <strong>{branding.siteName}</strong>
+            <span>{currentUser.name} · {{ admin: "Admin", cashier: "Cashier", master_cashier: "Master Cashier", kitchen: "Kitchen", counter: "Counter", stock_taker: "Stock Taker" }[currentUser.role]}</span>
           </div>
         </div>
         <nav>
-          {(currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier") && (
-            <button className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}><Plus size={18} /><span>New</span></button>
-          )}
-          <button className={tab === "queue" ? "active" : ""} onClick={() => setTab("queue")}><ClipboardList size={18} /><span>Queue</span></button>
-          <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}><History size={18} /><span>History</span></button>
-          {currentUser.role === "admin" && (
-            <button className={tab === "products" ? "active" : ""} onClick={() => setTab("products")}><Package size={18} /><span>Stock</span></button>
-          )}
-          {currentUser.role === "admin" && (
-            <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={18} /><span>Users</span></button>
-          )}
-          {currentUser.role === "admin" && (
-            <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Settings size={18} /><span>Settings</span></button>
-          )}
-          {currentUser.role === "admin" && (
-            <button className={tab === "reports" ? "active" : ""} onClick={() => setTab("reports")}><BarChart2 size={18} /><span>Reports</span></button>
+          {isStockTaker ? (
+            <>
+              <button className={tab === "stockTake" ? "active" : ""} onClick={() => setTab("stockTake")}><Package size={18} /><span>Stock Take</span></button>
+              <button className={tab === "meatWeight" ? "active" : ""} onClick={() => setTab("meatWeight")}><Weight size={18} /><span>Meat Weight In</span></button>
+            </>
+          ) : (
+            <>
+              {(currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier") && (
+                <button className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}><Plus size={18} /><span>New</span></button>
+              )}
+              <button className={tab === "queue" ? "active" : ""} onClick={() => setTab("queue")}><ClipboardList size={18} /><span>Queue</span></button>
+              <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}><History size={18} /><span>History</span></button>
+              {currentUser.role === "admin" && (
+                <button className={tab === "products" ? "active" : ""} onClick={() => setTab("products")}>
+                  <Package size={18} /><span>Stock</span>
+                  {lowStockCount > 0 && <span className="badge-count">{lowStockCount}</span>}
+                </button>
+              )}
+              {currentUser.role === "admin" && (
+                <button className={tab === "stockTake" ? "active" : ""} onClick={() => setTab("stockTake")}><Package size={18} /><span>Stock Take</span></button>
+              )}
+              {currentUser.role === "admin" && (
+                <button className={tab === "meatWeight" ? "active" : ""} onClick={() => setTab("meatWeight")}><Weight size={18} /><span>Meat Weight In</span></button>
+              )}
+              {currentUser.role === "admin" && (
+                <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={18} /><span>Users</span></button>
+              )}
+              {currentUser.role === "admin" && (
+                <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Settings size={18} /><span>Settings</span></button>
+              )}
+              {currentUser.role === "admin" && (
+                <button className={tab === "reports" ? "active" : ""} onClick={() => setTab("reports")}><BarChart2 size={18} /><span>Reports</span></button>
+              )}
+            </>
           )}
         </nav>
         <div className="sidebar-footer">
@@ -219,10 +261,12 @@ function MainApp({ currentUser, onLogout }: { currentUser: User; onLogout: () =>
         )}
         {tab === "queue" && <Queue orders={activeOrders} currentUser={currentUser} onChanged={refresh} printStyle={printStyle} printerMap={printerMap} />}
         {tab === "history" && <HistoryView orders={historyOrders} printStyle={printStyle} printerMap={printerMap} />}
-        {tab === "products" && <Products products={products} onChanged={refresh} />}
+        {tab === "products" && currentUser.role === "admin" && <Products products={products} onChanged={refresh} />}
+        {tab === "stockTake" && (currentUser.role === "admin" || isStockTaker) && <StockTakePanel products={products} onChanged={refresh} />}
+        {tab === "meatWeight" && (currentUser.role === "admin" || isStockTaker) && <MeatWeightPanel products={products} currentUser={currentUser} onChanged={refresh} />}
         {tab === "users" && currentUser.role === "admin" && <UsersPanel />}
         {tab === "settings" && currentUser.role === "admin" && (
-          <SettingsPanel autoPrint={autoPrint} onAutoPrintChange={setAutoPrint} printStyle={printStyle} onPrintStyleChange={setPrintStyle} printerMap={printerMap} onPrinterMapChange={setPrinterMap} />
+          <SettingsPanel autoPrint={autoPrint} onAutoPrintChange={setAutoPrint} printStyle={printStyle} onPrintStyleChange={setPrintStyle} printerMap={printerMap} onPrinterMapChange={setPrinterMap} branding={branding} onBrandingChange={onBrandingChange} />
         )}
         {tab === "reports" && currentUser.role === "admin" && <ReportsPanel />}
       </main>
@@ -709,6 +753,10 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
           <input type="number" min="0" step="0.01" value={editing.pricePerUnit ?? ""} onChange={(e) => setEditing({ ...editing, pricePerUnit: e.target.value ? Number(e.target.value) : null })} />
         </label>
         <label>Prep notes<textarea value={editing.prepNotes} onChange={(e) => setEditing({ ...editing, prepNotes: e.target.value })} /></label>
+        <label>
+          Low-stock threshold
+          <input type="number" min="0" step="0.01" placeholder="No warning" value={editing.lowStockThreshold ?? ""} onChange={(e) => setEditing({ ...editing, lowStockThreshold: e.target.value ? Number(e.target.value) : null })} />
+        </label>
         {stockMessage && <div className="form-message">{stockMessage}</div>}
         <footer className="actions">
           {editing.id && <button type="button" className="secondary" onClick={() => { setEditing(EMPTY_PRODUCT); setStockMessage(""); }}>Cancel</button>}
@@ -718,24 +766,180 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
 
       <div className="panel table-panel">
         <table>
-          <thead><tr><th>Name</th><th>Category</th><th>Dept</th><th>R/kg</th><th>Notes</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Category</th><th>Dept</th><th>R/kg</th><th>On hand</th><th>Notes</th><th></th></tr></thead>
           <tbody>
-            {products.map((p) => (
+            {products.map((p) => {
+              const low = p.lowStockThreshold != null && p.onHandQty <= p.lowStockThreshold;
+              return (
               <tr key={p.id}>
                 <td>{p.name}</td>
                 <td>{p.category}</td>
                 <td><span className={`dept-badge ${p.department}`}>{p.department}</span></td>
                 <td>{p.pricePerUnit ? currency.format(p.pricePerUnit) : ""}</td>
+                <td>{p.onHandQty}{low && <span className="low-stock-badge">Low</span>}</td>
                 <td>{p.prepNotes}</td>
                 <td className="row-actions">
                   <button type="button" className="secondary" onClick={() => setEditing(p)}>Edit</button>
                   <button type="button" className="icon-button danger" onClick={() => void remove(p.id, p.name)} title="Delete"><Trash2 size={18} /></button>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+// ── Stock take ────────────────────────────────────────────────────────────────
+
+function StockTakePanel({ products, onChanged }: { products: Product[]; onChanged: () => Promise<void> }) {
+  const [msg, setMsg] = useState("");
+
+  const submit = async (productId: number, value: string) => {
+    const qty = Number(value);
+    if (Number.isNaN(qty) || qty < 0) return;
+    try {
+      await api.stock.update(productId, qty);
+      setMsg("Stock count saved.");
+      await onChanged();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not save count.");
+    } finally {
+      window.setTimeout(() => setMsg(""), 2500);
+    }
+  };
+
+  return (
+    <div className="panel table-panel">
+      <p className="settings-hint">Enter the current on-hand quantity for each item. This replaces the previous count.</p>
+      {msg && <div className="form-message">{msg}</div>}
+      <table>
+        <thead><tr><th>Name</th><th>Category</th><th>On hand</th><th>Threshold</th><th>Last counted</th></tr></thead>
+        <tbody>
+          {products.map((p) => {
+            const low = p.lowStockThreshold != null && p.onHandQty <= p.lowStockThreshold;
+            return (
+              <tr key={p.id}>
+                <td>{p.name}</td>
+                <td>{p.category}</td>
+                <td>
+                  <input
+                    type="number" min="0" step="0.01" defaultValue={p.onHandQty}
+                    key={`${p.id}-${p.onHandQty}`}
+                    onBlur={(e) => void submit(p.id, e.target.value)}
+                  />
+                  {low && <span className="low-stock-badge">Low</span>}
+                </td>
+                <td>{p.lowStockThreshold ?? "—"}</td>
+                <td className="settings-hint">{p.lastCountedAt ? new Date(p.lastCountedAt).toLocaleString(appSettings.locale, { dateStyle: "medium", timeStyle: "short" }) : "Never"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Meat weight income ────────────────────────────────────────────────────────
+
+function MeatWeightPanel({ products, currentUser, onChanged }: { products: Product[]; currentUser: User; onChanged: () => Promise<void> }) {
+  const [species, setSpecies] = useState<MeatSpecies>("beef");
+  const [grade, setGrade] = useState("");
+  const [pieces, setPieces] = useState(2);
+  const [productId, setProductId] = useState<number | "">("");
+  const [defaults, setDefaults] = useState({ beef: 2, lamb: 8 });
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [log, setLog] = useState<MeatWeightIncome[]>([]);
+
+  useEffect(() => {
+    api.settings.get().then((s) => {
+      const d = { beef: Number(s.meatWeightDefaultBeef ?? 2), lamb: Number(s.meatWeightDefaultLamb ?? 8) };
+      setDefaults(d);
+      setPieces(d.beef);
+    }).catch(() => undefined);
+  }, []);
+
+  const loadLog = () => { if (currentUser.role === "admin") api.meatWeight.list().then(setLog).catch(() => undefined); };
+  useEffect(loadLog, [currentUser.role]);
+
+  const changeSpecies = (s: MeatSpecies) => { setSpecies(s); setPieces(defaults[s]); setProductId(""); };
+
+  const matchingProducts = useMemo(
+    () => products.filter((p) => p.category.toLowerCase() === species),
+    [products, species]
+  );
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setMsg("");
+    try {
+      const input: MeatWeightIncomeInput = { species, grade: grade.trim(), piecesWeighed: pieces, productId: productId === "" ? null : productId };
+      await api.meatWeight.create(input);
+      setMsg("Logged.");
+      setPieces(defaults[species]);
+      setGrade("");
+      loadLog();
+      await onChanged();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not log entry.");
+    } finally {
+      setBusy(false);
+      window.setTimeout(() => setMsg(""), 2500);
+    }
+  };
+
+  return (
+    <div className="products-layout">
+      <form className="panel product-form" onSubmit={(e) => void submit(e)}>
+        <h2>Log received meat</h2>
+        <label>
+          Species
+          <select value={species} onChange={(e) => changeSpecies(e.target.value as MeatSpecies)}>
+            <option value="beef">Beef</option>
+            <option value="lamb">Lamb</option>
+          </select>
+        </label>
+        <label>Grade<input value={grade} onChange={(e) => setGrade(e.target.value)} placeholder="e.g. Grade A" /></label>
+        <label>
+          Pieces weighed
+          <input type="number" min="1" step="1" value={pieces} onChange={(e) => setPieces(Number(e.target.value))} required />
+        </label>
+        <label>
+          Add to product stock (optional)
+          <select value={productId} onChange={(e) => setProductId(e.target.value ? Number(e.target.value) : "")}>
+            <option value="">— None (log only) —</option>
+            {matchingProducts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </label>
+        {msg && <div className="form-message">{msg}</div>}
+        <footer className="actions">
+          <button type="submit" disabled={busy}><Save size={18} /> {busy ? "Saving…" : "Log entry"}</button>
+        </footer>
+      </form>
+
+      {currentUser.role === "admin" && (
+        <div className="panel table-panel">
+          <table>
+            <thead><tr><th>Date</th><th>Species</th><th>Grade</th><th>Pieces</th><th>Product</th><th>Weighed by</th></tr></thead>
+            <tbody>
+              {log.map((m) => (
+                <tr key={m.id}>
+                  <td>{new Date(m.createdAt).toLocaleString(appSettings.locale, { dateStyle: "medium", timeStyle: "short" })}</td>
+                  <td>{m.species}</td>
+                  <td>{m.grade}</td>
+                  <td>{m.piecesWeighed}</td>
+                  <td>{products.find((p) => p.id === m.productId)?.name ?? "—"}</td>
+                  <td>{m.weighedByName ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -820,6 +1024,7 @@ function UsersPanel() {
             <option value="master_cashier">Master Cashier</option>
             <option value="counter">Counter</option>
             <option value="kitchen">Kitchen</option>
+            <option value="stock_taker">Stock Taker</option>
             <option value="admin">Admin</option>
           </select>
         </label>
@@ -866,15 +1071,20 @@ function UsersPanel() {
 
 // ── Settings (admin) ──────────────────────────────────────────────────────────
 
-function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleChange, printerMap, onPrinterMapChange }: { autoPrint: boolean; onAutoPrintChange: (v: boolean) => void; printStyle: string; onPrintStyleChange: (v: string) => void; printerMap: Record<string, string>; onPrinterMapChange: (v: { kitchen: string; counter: string; master: string }) => void }) {
+function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleChange, printerMap, onPrinterMapChange, branding, onBrandingChange }: { autoPrint: boolean; onAutoPrintChange: (v: boolean) => void; printStyle: string; onPrintStyleChange: (v: string) => void; printerMap: Record<string, string>; onPrinterMapChange: (v: { kitchen: string; counter: string; master: string }) => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void }) {
   const [msg, setMsg] = useState("");
   const [availablePrinters, setAvailablePrinters] = useState<string[]>([]);
   const [loadingPrinters, setLoadingPrinters] = useState(false);
   const [importing, setImporting] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [historyDays, setHistoryDays] = useState(30);
+  const [siteName, setSiteName] = useState(branding.siteName);
+  const [themeColor, setThemeColor] = useState("#1a47a0");
+  const [meatDefaults, setMeatDefaults] = useState({ beef: "2", lamb: "8" });
+  const [uploadingLogo, setUploadingLogo] = useState(false);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const restoreInputRef = useRef<HTMLInputElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
 
   const fetchPrinters = async () => {
     setLoadingPrinters(true);
@@ -888,6 +1098,8 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
   useEffect(() => {
     api.settings.get().then((s) => {
       setHistoryDays(Number(s.historyDays ?? 30));
+      setThemeColor(s.themeColor || "#1a47a0");
+      setMeatDefaults({ beef: s.meatWeightDefaultBeef ?? "2", lamb: s.meatWeightDefaultLamb ?? "8" });
     }).catch(() => undefined);
   }, []);
 
@@ -895,6 +1107,53 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
     await api.settings.set({ historyDays: String(days) });
     setHistoryDays(days);
     setMsg("History retention saved");
+    window.setTimeout(() => setMsg(""), 2500);
+  };
+
+  const saveSiteName = async (name: string) => {
+    const trimmed = name.trim() || "MAXIS";
+    await api.settings.set({ siteName: trimmed });
+    onBrandingChange({ ...branding, siteName: trimmed });
+    applyBranding(trimmed, branding.logoUrl);
+    setMsg("Site name saved");
+    window.setTimeout(() => setMsg(""), 2500);
+  };
+
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingLogo(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      const { logoUrl } = await api.settings.uploadLogo(dataUrl);
+      onBrandingChange({ ...branding, logoUrl });
+      applyBranding(branding.siteName, logoUrl);
+      setMsg("Logo updated");
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Logo upload failed");
+    } finally {
+      setUploadingLogo(false);
+      if (logoInputRef.current) logoInputRef.current.value = "";
+      window.setTimeout(() => setMsg(""), 2500);
+    }
+  };
+
+  const saveThemeColor = async (hex: string) => {
+    setThemeColor(hex);
+    applyTheme(hex);
+    await api.settings.set({ themeColor: hex });
+  };
+
+  const saveMeatDefault = async (species: "beef" | "lamb", value: string) => {
+    const key = species === "beef" ? "meatWeightDefaultBeef" : "meatWeightDefaultLamb";
+    await api.settings.set({ [key]: value });
+    setMeatDefaults((cur) => ({ ...cur, [species]: value }));
+    setMsg("Meat weight default saved");
     window.setTimeout(() => setMsg(""), 2500);
   };
 
@@ -1073,6 +1332,59 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
             <button type="button" className="secondary danger" disabled={restoring} onClick={() => restoreInputRef.current?.click()}>
               {restoring ? "Restoring…" : "Restore backup"}
             </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Branding</h3>
+        <div className="setting-row">
+          <div className="setting-info">
+            <strong>Site name</strong>
+            <p>Shown in the sidebar, login screen, and browser tab title.</p>
+          </div>
+          <input
+            type="text" value={siteName}
+            onChange={(e) => setSiteName(e.target.value)}
+            onBlur={(e) => void saveSiteName(e.target.value)}
+          />
+        </div>
+        <div className="setting-row">
+          <div className="setting-info">
+            <strong>Logo</strong>
+            <p>Replaces the logo on the login screen, sidebar, and browser tab icon.</p>
+          </div>
+          <div className="setting-actions">
+            <img src={branding.logoUrl || "/logo.jpg"} alt="Current logo" className="login-logo" style={{ width: 40, height: 40 }} />
+            <input ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/webp" style={{ display: "none" }} onChange={(e) => void handleLogoUpload(e)} />
+            <button type="button" className="secondary" disabled={uploadingLogo} onClick={() => logoInputRef.current?.click()}>
+              {uploadingLogo ? "Uploading…" : "Upload logo"}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Theme</h3>
+        <div className="setting-row">
+          <div className="setting-info">
+            <strong>Brand color</strong>
+            <p>Sets the primary color used across buttons, the sidebar, and highlights.</p>
+          </div>
+          <input type="color" value={themeColor} onChange={(e) => void saveThemeColor(e.target.value)} />
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Meat weight income defaults</h3>
+        <div className="setting-row">
+          <div className="setting-info">
+            <strong>Default pieces weighed</strong>
+            <p>Pre-filled count when logging received meat; staff can still override it per entry.</p>
+          </div>
+          <div className="setting-actions">
+            <label>Beef <input type="number" min="1" step="1" style={{ width: 70 }} value={meatDefaults.beef} onChange={(e) => setMeatDefaults((c) => ({ ...c, beef: e.target.value }))} onBlur={(e) => void saveMeatDefault("beef", e.target.value)} /></label>
+            <label>Lamb <input type="number" min="1" step="1" style={{ width: 70 }} value={meatDefaults.lamb} onChange={(e) => setMeatDefaults((c) => ({ ...c, lamb: e.target.value }))} onBlur={(e) => void saveMeatDefault("lamb", e.target.value)} /></label>
           </div>
         </div>
       </section>
@@ -1496,7 +1808,7 @@ function calculateLineTotal(item: OrderItemInput) {
 }
 
 function tabTitle(tab: Tab) {
-  return { orders: "New Order", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings", reports: "Reports" }[tab];
+  return { orders: "New Order", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings", reports: "Reports", stockTake: "Stock Take", meatWeight: "Meat Weight In" }[tab];
 }
 
 function tabSubtitle(tab: Tab) {
@@ -1507,6 +1819,8 @@ function tabSubtitle(tab: Tab) {
     settings: "System configuration.",
     products: "Manage stock items and prices.",
     users: "Manage staff accounts and PINs.",
-    reports: "View and download orders for a date range."
+    reports: "View and download orders for a date range.",
+    stockTake: "Count on-hand stock and flag low items.",
+    meatWeight: "Log received meat and pieces weighed."
   }[tab];
 }

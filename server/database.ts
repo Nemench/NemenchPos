@@ -7,7 +7,8 @@ import type {
   Product, ProductInput,
   Order, OrderItem, CreateOrderInput, OrderStatus,
   User, UserInput,
-  Department, DeptStatus, DeliveryAddress
+  Department, DeptStatus, DeliveryAddress,
+  MeatWeightIncome, MeatWeightIncomeInput
 } from "../src/shared/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -92,7 +93,7 @@ export class KotDatabase {
 
   listProducts(): Product[] {
     return this.db
-      .prepare("SELECT id, name, category, unitDefault, pricePerUnit, prepNotes, department, isActive, createdAt, updatedAt FROM products WHERE isActive = 1 ORDER BY category, name")
+      .prepare("SELECT id, name, category, unitDefault, pricePerUnit, prepNotes, department, isActive, lowStockThreshold, onHandQty, lastCountedAt, lastCountedById, createdAt, updatedAt FROM products WHERE isActive = 1 ORDER BY category, name")
       .all() as Product[];
   }
 
@@ -100,15 +101,56 @@ export class KotDatabase {
     const now = new Date().toISOString();
     if (input.id) {
       this.db
-        .prepare("UPDATE products SET name=?, category=?, unitDefault=?, pricePerUnit=?, prepNotes=?, department=?, updatedAt=? WHERE id=?")
-        .run(input.name.trim(), input.category.trim(), input.unitDefault, input.pricePerUnit ?? null, input.prepNotes.trim(), input.department, now, input.id);
+        .prepare("UPDATE products SET name=?, category=?, unitDefault=?, pricePerUnit=?, prepNotes=?, department=?, lowStockThreshold=?, updatedAt=? WHERE id=?")
+        .run(input.name.trim(), input.category.trim(), input.unitDefault, input.pricePerUnit ?? null, input.prepNotes.trim(), input.department, input.lowStockThreshold ?? null, now, input.id);
       return this.db.prepare("SELECT * FROM products WHERE id = ?").get(input.id) as Product;
     } else {
       const result = this.db
-        .prepare("INSERT INTO products (name, category, unitDefault, pricePerUnit, prepNotes, department, isActive, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)")
-        .run(input.name.trim(), input.category.trim(), input.unitDefault, input.pricePerUnit ?? null, input.prepNotes.trim(), input.department, now, now);
+        .prepare("INSERT INTO products (name, category, unitDefault, pricePerUnit, prepNotes, department, lowStockThreshold, isActive, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)")
+        .run(input.name.trim(), input.category.trim(), input.unitDefault, input.pricePerUnit ?? null, input.prepNotes.trim(), input.department, input.lowStockThreshold ?? null, now, now);
       return this.db.prepare("SELECT * FROM products WHERE id = ?").get(Number(result.lastInsertRowid)) as Product;
     }
+  }
+
+  updateStock(productId: number, onHandQty: number, countedById: number): Product {
+    const now = new Date().toISOString();
+    this.db
+      .prepare("UPDATE products SET onHandQty=?, lastCountedAt=?, lastCountedById=?, updatedAt=? WHERE id=?")
+      .run(onHandQty, now, countedById, now, productId);
+    return this.db.prepare("SELECT * FROM products WHERE id = ?").get(productId) as Product;
+  }
+
+  adjustStock(productId: number, delta: number): void {
+    this.db.prepare("UPDATE products SET onHandQty = MAX(0, onHandQty + ?), updatedAt = ? WHERE id = ?").run(delta, new Date().toISOString(), productId);
+  }
+
+  listLowStock(): Product[] {
+    return this.db
+      .prepare("SELECT id, name, category, unitDefault, pricePerUnit, prepNotes, department, isActive, lowStockThreshold, onHandQty, lastCountedAt, lastCountedById, createdAt, updatedAt FROM products WHERE isActive = 1 AND lowStockThreshold IS NOT NULL AND onHandQty <= lowStockThreshold ORDER BY name")
+      .all() as Product[];
+  }
+
+  // ── Meat weight income ────────────────────────────────────────────────────
+
+  createMeatWeightIncome(input: MeatWeightIncomeInput, weighedById: number): MeatWeightIncome {
+    const now = new Date().toISOString();
+    const insert = this.db.transaction(() => {
+      const result = this.db
+        .prepare("INSERT INTO meat_weight_income (species, grade, piecesWeighed, productId, weighedById, createdAt) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(input.species, input.grade.trim(), input.piecesWeighed, input.productId ?? null, weighedById, now);
+      if (input.productId) this.adjustStock(input.productId, input.piecesWeighed);
+      return Number(result.lastInsertRowid);
+    });
+    const id = insert();
+    return this.db
+      .prepare("SELECT m.*, u.name as weighedByName FROM meat_weight_income m LEFT JOIN users u ON m.weighedById = u.id WHERE m.id = ?")
+      .get(id) as MeatWeightIncome;
+  }
+
+  listMeatWeightIncome(limit = 200): MeatWeightIncome[] {
+    return this.db
+      .prepare("SELECT m.*, u.name as weighedByName FROM meat_weight_income m LEFT JOIN users u ON m.weighedById = u.id ORDER BY m.createdAt DESC LIMIT ?")
+      .all(limit) as MeatWeightIncome[];
   }
 
   importProducts(rows: { name: string; category: string; unitDefault: string; pricePerUnit: string; prepNotes: string; department: string }[]): { imported: number; errors: string[] } {
@@ -155,6 +197,7 @@ export class KotDatabase {
     const users = this.db.prepare("SELECT id, name, pin, role, department, isActive, createdAt FROM users").all();
     const orders = this.db.prepare("SELECT * FROM orders ORDER BY createdAt ASC").all();
     const orderItems = this.db.prepare("SELECT * FROM order_items").all();
+    const meatWeightIncome = this.db.prepare("SELECT * FROM meat_weight_income").all();
     const settings = this.db.prepare("SELECT key, value FROM settings").all() as { key: string; value: string }[];
     return {
       version: 1,
@@ -163,6 +206,7 @@ export class KotDatabase {
       users,
       orders,
       orderItems,
+      meatWeightIncome,
       settings: Object.fromEntries(settings.map((s) => [s.key, s.value]))
     };
   }
@@ -173,26 +217,29 @@ export class KotDatabase {
     const users = (data.users as Record<string, unknown>[]) ?? [];
     const orders = (data.orders as Record<string, unknown>[]) ?? [];
     const orderItems = (data.orderItems as Record<string, unknown>[]) ?? [];
+    const meatWeightIncome = (data.meatWeightIncome as Record<string, unknown>[]) ?? [];
     const settings = (data.settings as Record<string, string>) ?? {};
 
     // FK must be disabled outside transactions in SQLite
     this.db.exec("PRAGMA foreign_keys = OFF");
     try {
       this.db.transaction(() => {
-        this.db.exec("DELETE FROM order_items; DELETE FROM orders; DELETE FROM products; DELETE FROM users;");
+        this.db.exec("DELETE FROM meat_weight_income; DELETE FROM order_items; DELETE FROM orders; DELETE FROM products; DELETE FROM users;");
         for (const u of users) {
           this.db.prepare("INSERT INTO users (id,name,pin,role,department,isActive,createdAt) VALUES (?,?,?,?,?,?,?)")
             .run(u.id ?? null, u.name, u.pin, u.role, u.department ?? null, u.isActive ?? 1, u.createdAt);
         }
         const now = new Date().toISOString();
         for (const p of products) {
-          this.db.prepare("INSERT INTO products (id,name,category,unitDefault,pricePerUnit,prepNotes,department,isActive,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,1,?,?)")
-            .run(p.id ?? null, p.name, p.category, p.unitDefault, p.pricePerUnit ?? null, p.prepNotes, p.department, p.createdAt ?? now, p.updatedAt ?? now);
+          this.db.prepare("INSERT INTO products (id,name,category,unitDefault,pricePerUnit,prepNotes,department,lowStockThreshold,onHandQty,lastCountedAt,lastCountedById,isActive,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)")
+            .run(p.id ?? null, p.name, p.category, p.unitDefault, p.pricePerUnit ?? null, p.prepNotes, p.department, p.lowStockThreshold ?? null, p.onHandQty ?? 0, p.lastCountedAt ?? null, p.lastCountedById ?? null, p.createdAt ?? now, p.updatedAt ?? now);
         }
         const insOrder = this.db.prepare("INSERT INTO orders (id,ticketNumber,customerName,customerPhone,orderType,deliveryAddress,requestedTime,assignedTo,status,kitchenStatus,counterStatus,requestedById,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         for (const o of orders) insOrder.run(o.id,o.ticketNumber,o.customerName,o.customerPhone,o.orderType,o.deliveryAddress,o.requestedTime,o.assignedTo??null,o.status,o.kitchenStatus,o.counterStatus,o.requestedById??null,o.createdAt,o.updatedAt);
         const insItem = this.db.prepare("INSERT INTO order_items (id,orderId,productId,name,kg,quantity,notes,unitPrice,lineTotal,department) VALUES (?,?,?,?,?,?,?,?,?,?)");
         for (const i of orderItems) insItem.run(i.id,i.orderId,i.productId??null,i.name,i.kg??null,i.quantity??null,i.notes,i.unitPrice??null,i.lineTotal??null,i.department);
+        const insMwi = this.db.prepare("INSERT INTO meat_weight_income (id,species,grade,piecesWeighed,productId,weighedById,createdAt) VALUES (?,?,?,?,?,?,?)");
+        for (const m of meatWeightIncome) insMwi.run(m.id,m.species,m.grade,m.piecesWeighed,m.productId??null,m.weighedById??null,m.createdAt);
         for (const [key, value] of Object.entries(settings)) {
           this.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
         }
@@ -396,6 +443,16 @@ export class KotDatabase {
       if (!cols.includes("assignedTo")) this.db.exec("ALTER TABLE orders ADD COLUMN assignedTo TEXT");
     }
 
+    // Add stock-tracking columns to products if missing (existing databases)
+    const productsExists = (this.db.prepare("SELECT COUNT(*) as n FROM sqlite_master WHERE type='table' AND name='products'").get() as { n: number }).n > 0;
+    if (productsExists) {
+      const prodCols = (this.db.prepare("PRAGMA table_info(products)").all() as { name: string }[]).map((c) => c.name);
+      if (!prodCols.includes("lowStockThreshold")) this.db.exec("ALTER TABLE products ADD COLUMN lowStockThreshold REAL");
+      if (!prodCols.includes("onHandQty")) this.db.exec("ALTER TABLE products ADD COLUMN onHandQty REAL NOT NULL DEFAULT 0");
+      if (!prodCols.includes("lastCountedAt")) this.db.exec("ALTER TABLE products ADD COLUMN lastCountedAt TEXT");
+      if (!prodCols.includes("lastCountedById")) this.db.exec("ALTER TABLE products ADD COLUMN lastCountedById INTEGER REFERENCES users(id)");
+    }
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -405,7 +462,8 @@ export class KotDatabase {
         department TEXT,
         isActive INTEGER NOT NULL DEFAULT 1,
         createdAt TEXT NOT NULL,
-        updatedAt TEXT
+        updatedAt TEXT,
+        lastSeenAt TEXT
       );
 
       CREATE TABLE IF NOT EXISTS products (
@@ -417,6 +475,10 @@ export class KotDatabase {
         prepNotes TEXT NOT NULL DEFAULT '',
         department TEXT NOT NULL DEFAULT 'counter',
         isActive INTEGER NOT NULL DEFAULT 1,
+        lowStockThreshold REAL,
+        onHandQty REAL NOT NULL DEFAULT 0,
+        lastCountedAt TEXT,
+        lastCountedById INTEGER REFERENCES users(id),
         createdAt TEXT NOT NULL,
         updatedAt TEXT NOT NULL
       );
@@ -456,10 +518,21 @@ export class KotDatabase {
         value TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS meat_weight_income (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        species TEXT NOT NULL,
+        grade TEXT NOT NULL DEFAULT '',
+        piecesWeighed REAL NOT NULL,
+        productId INTEGER REFERENCES products(id),
+        weighedById INTEGER REFERENCES users(id),
+        createdAt TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_oi_orderId    ON order_items(orderId);
       CREATE INDEX IF NOT EXISTS idx_ord_status    ON orders(status);
       CREATE INDEX IF NOT EXISTS idx_ord_updatedAt ON orders(updatedAt DESC);
       CREATE INDEX IF NOT EXISTS idx_usr_name      ON users(name COLLATE NOCASE);
+      CREATE INDEX IF NOT EXISTS idx_mwi_createdAt ON meat_weight_income(createdAt DESC);
     `);
 
     // Seed default settings
@@ -469,6 +542,11 @@ export class KotDatabase {
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('counterPrinter', '')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('masterPrinter', '')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('historyDays', '30')").run();
+    this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('meatWeightDefaultBeef', '2')").run();
+    this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('meatWeightDefaultLamb', '8')").run();
+    this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('siteName', 'MAXIS')").run();
+    this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('logoUrl', '')").run();
+    this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('themeColor', '')").run();
   }
 
   // ── Settings ───────────────────────────────────────────────────────────────
