@@ -1858,8 +1858,8 @@ function buildWeighInSummaryHtml(dateIso: string, lines: WeighInLine[], products
 
   const productName = (id: number) => products.find((p) => p.id === id)?.name ?? "—";
 
-  // Section by supplier; within each supplier, one row per item (grades merged into a list) so
-  // it's immediately clear how much of each item came from that supplier, each section subtotaled
+  // Section by supplier; within each supplier, group by item — each item shows its individual
+  // weigh-in lines plus a per-item subtotal, then a supplier grand total at the bottom
   const bySupplier = new Map<number, { name: string; lines: WeighInLine[] }>();
   for (const l of lines) {
     const key = l.supplierId;
@@ -1870,23 +1870,30 @@ function buildWeighInSummaryHtml(dateIso: string, lines: WeighInLine[], products
   const supplierSections = [...bySupplier.values()]
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((supplier) => {
-      const items = new Map<number, { productName: string; grades: Set<string>; pieces: number; kg: number }>();
+      const items = new Map<number, { productName: string; lines: WeighInLine[] }>();
       for (const l of supplier.lines) {
-        const it = items.get(l.productId) ?? { productName: l.productName ?? productName(l.productId), grades: new Set<string>(), kg: 0, pieces: 0 };
-        for (const g of l.grade.split(",")) it.grades.add(g);
-        it.pieces += l.piecesReceived;
-        it.kg += l.weightKg;
+        const it = items.get(l.productId) ?? { productName: l.productName ?? productName(l.productId), lines: [] };
+        it.lines.push(l);
         items.set(l.productId, it);
       }
-      const rows = [...items.values()]
+      const itemBlocks = [...items.values()]
         .sort((a, b) => a.productName.localeCompare(b.productName))
-        .map((it) => `<tr><td>${esc(it.productName)}</td><td>${esc([...it.grades].sort().join(", "))}</td><td>${it.pieces}</td><td>${it.kg.toFixed(2)}</td></tr>`)
+        .map((it) => {
+          const lineRows = [...it.lines]
+            .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+            .map((l) => `<tr><td></td><td>${esc(l.grade)}</td><td>${l.piecesReceived}</td><td>${l.weightKg.toFixed(2)}</td></tr>`)
+            .join("");
+          const itPieces = it.lines.reduce((sum, l) => sum + l.piecesReceived, 0);
+          const itKg = it.lines.reduce((sum, l) => sum + l.weightKg, 0);
+          return `<tr class="item-hdr"><td colspan="4">${esc(it.productName)}</td></tr>${lineRows}
+<tr class="item-subtotal"><td colspan="2">${esc(it.productName)} subtotal</td><td>${itPieces}</td><td>${itKg.toFixed(2)}</td></tr>`;
+        })
         .join("");
       const subPieces = supplier.lines.reduce((sum, l) => sum + l.piecesReceived, 0);
       const subKg = supplier.lines.reduce((sum, l) => sum + l.weightKg, 0);
       return `<h3 class="supplier-hdr">${esc(supplier.name)}</h3>
 <table><thead><tr><th>Item</th><th>Grade</th><th>Pieces</th><th>Kg</th></tr></thead>
-<tbody>${rows}
+<tbody>${itemBlocks}
 <tr class="totals"><td colspan="2">Supplier total</td><td>${subPieces}</td><td>${subKg.toFixed(2)}</td></tr>
 </tbody></table>`;
     })
@@ -1921,6 +1928,8 @@ table{width:100%;border-collapse:collapse;margin-bottom:8px}thead tr{background:
 th{color:#fff;padding:8px 12px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
 td{padding:9px 12px;border-bottom:1px solid #e8eef7;font-size:13px;vertical-align:top}
 tr:nth-child(even) td{background:#f8f9fc}
+.item-hdr td{font-weight:700;color:${blueDark};background:#f4f7fd!important;padding-top:12px}
+.item-subtotal td{font-style:italic;color:#555;border-top:1px solid #c8d5ee;background:#fff!important}
 .totals td{font-weight:800;border-top:2px solid ${blueDark};background:#fff}
 </style></head><body>
 <div class="hdr">
