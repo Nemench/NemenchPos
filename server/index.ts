@@ -18,7 +18,8 @@ import printersRouter from "./routes/printers.js";
 import printRouter from "./routes/print.js";
 import backupRouter from "./routes/backup.js";
 import stockRouter from "./routes/stock.js";
-import meatWeightRouter from "./routes/meatWeight.js";
+import suppliersRouter from "./routes/suppliers.js";
+import weighInRouter from "./routes/weighIn.js";
 
 export const db = new KotDatabase();
 db.initialize();
@@ -101,7 +102,8 @@ app.use("/api/printers", printersRouter);
 app.use("/api/print",    printRouter);
 app.use("/api/backup",   backupRouter);
 app.use("/api/stock",    stockRouter);
-app.use("/api/meat-weight", meatWeightRouter);
+app.use("/api/suppliers", suppliersRouter);
+app.use("/api/weigh-in", weighInRouter);
 
 if (isProd) {
   const dist = path.join(__dirname, "../dist");

@@ -737,6 +737,45 @@ th {
   margin-left: 6px;
 }
 
+.grade-picker {
+  display: flex;
+  gap: 8px;
+}
+
+.grade-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 700;
+  user-select: none;
+}
+
+.grade-pill.checked {
+  background: var(--blue-light);
+  border-color: var(--blue);
+  color: var(--blue-dark);
+}
+
+.stepper-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stepper-row input {
+  text-align: center;
+  width: 80px;
+}
+
+.totals-row td {
+  border-top: 2px solid var(--border);
+  background: var(--blue-light);
+}
+
 .item-dept {
   display: inline-block;
   font-size: 10px;

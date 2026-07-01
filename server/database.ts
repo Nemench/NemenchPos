@@ -8,7 +8,7 @@ import type {
   Order, OrderItem, CreateOrderInput, OrderStatus,
   User, UserInput,
   Department, DeptStatus, DeliveryAddress,
-  MeatWeightIncome, MeatWeightIncomeInput
+  Supplier, WeighInBatch, WeighInLine, WeighInLineInput
 } from "../src/shared/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -130,27 +130,83 @@ export class KotDatabase {
       .all() as Product[];
   }
 
-  // ── Meat weight income ────────────────────────────────────────────────────
+  // ── Suppliers ──────────────────────────────────────────────────────────────
 
-  createMeatWeightIncome(input: MeatWeightIncomeInput, weighedById: number): MeatWeightIncome {
-    const now = new Date().toISOString();
-    const insert = this.db.transaction(() => {
-      const result = this.db
-        .prepare("INSERT INTO meat_weight_income (species, grade, piecesWeighed, productId, weighedById, createdAt) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(input.species, input.grade.trim(), input.piecesWeighed, input.productId ?? null, weighedById, now);
-      if (input.productId) this.adjustStock(input.productId, input.piecesWeighed);
-      return Number(result.lastInsertRowid);
-    });
-    const id = insert();
-    return this.db
-      .prepare("SELECT m.*, u.name as weighedByName FROM meat_weight_income m LEFT JOIN users u ON m.weighedById = u.id WHERE m.id = ?")
-      .get(id) as MeatWeightIncome;
+  listSuppliers(): Supplier[] {
+    return this.db.prepare("SELECT * FROM suppliers WHERE isActive = 1 ORDER BY name").all() as Supplier[];
   }
 
-  listMeatWeightIncome(limit = 200): MeatWeightIncome[] {
+  createSupplier(name: string): Supplier {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error("Supplier name is required");
+    const now = new Date().toISOString();
+    this.db.prepare("INSERT OR IGNORE INTO suppliers (name, isActive, createdAt) VALUES (?, 1, ?)").run(trimmed, now);
+    return this.db.prepare("SELECT * FROM suppliers WHERE name = ? COLLATE NOCASE").get(trimmed) as Supplier;
+  }
+
+  // ── Weigh-in batches ───────────────────────────────────────────────────────
+
+  private batchRow(id: number): WeighInBatch {
     return this.db
-      .prepare("SELECT m.*, u.name as weighedByName FROM meat_weight_income m LEFT JOIN users u ON m.weighedById = u.id ORDER BY m.createdAt DESC LIMIT ?")
-      .all(limit) as MeatWeightIncome[];
+      .prepare("SELECT b.*, u.name as createdByName FROM weigh_in_batches b LEFT JOIN users u ON b.createdById = u.id WHERE b.id = ?")
+      .get(id) as WeighInBatch;
+  }
+
+  getOpenBatch(): WeighInBatch | null {
+    const row = this.db.prepare("SELECT id FROM weigh_in_batches WHERE status = 'open' ORDER BY id DESC LIMIT 1").get() as { id: number } | null;
+    return row ? this.batchRow(row.id) : null;
+  }
+
+  getBatch(id: number): WeighInBatch {
+    const batch = this.batchRow(id);
+    if (!batch) throw new Error(`Batch ${id} not found`);
+    return batch;
+  }
+
+  createBatch(createdById: number): WeighInBatch {
+    const now = new Date().toISOString();
+    const result = this.db.prepare("INSERT INTO weigh_in_batches (status, createdById, createdAt) VALUES ('open', ?, ?)").run(createdById, now);
+    return this.batchRow(Number(result.lastInsertRowid));
+  }
+
+  finalizeBatch(id: number): WeighInBatch {
+    const batch = this.getBatch(id);
+    if (batch.status === "finalized") throw new Error("Batch already finalized");
+    this.db.prepare("UPDATE weigh_in_batches SET status = 'finalized', finalizedAt = ? WHERE id = ?").run(new Date().toISOString(), id);
+    return this.getBatch(id);
+  }
+
+  addWeighInLine(input: WeighInLineInput, createdById: number): WeighInLine {
+    const add = this.db.transaction(() => {
+      const batch = this.getOpenBatch() ?? this.createBatch(createdById);
+      const now = new Date().toISOString();
+      const result = this.db
+        .prepare("INSERT INTO weigh_in_lines (batchId, productId, grade, piecesReceived, weightKg, supplierId, createdById, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(batch.id, input.productId, input.grade, input.piecesReceived, input.weightKg, input.supplierId, createdById, now);
+      this.adjustStock(input.productId, input.piecesReceived);
+      return Number(result.lastInsertRowid);
+    });
+    const id = add();
+    return this.db
+      .prepare(`SELECT l.*, p.name as productName, s.name as supplierName, u.name as createdByName
+                FROM weigh_in_lines l
+                LEFT JOIN products p ON l.productId = p.id
+                LEFT JOIN suppliers s ON l.supplierId = s.id
+                LEFT JOIN users u ON l.createdById = u.id
+                WHERE l.id = ?`)
+      .get(id) as WeighInLine;
+  }
+
+  listWeighInLines(batchId?: number, limit = 500): WeighInLine[] {
+    const base = `SELECT l.*, p.name as productName, s.name as supplierName, u.name as createdByName
+                  FROM weigh_in_lines l
+                  LEFT JOIN products p ON l.productId = p.id
+                  LEFT JOIN suppliers s ON l.supplierId = s.id
+                  LEFT JOIN users u ON l.createdById = u.id`;
+    if (batchId != null) {
+      return this.db.prepare(`${base} WHERE l.batchId = ? ORDER BY l.createdAt ASC`).all(batchId) as WeighInLine[];
+    }
+    return this.db.prepare(`${base} ORDER BY l.createdAt DESC LIMIT ?`).all(limit) as WeighInLine[];
   }
 
   importProducts(rows: { name: string; category: string; unitDefault: string; pricePerUnit: string; prepNotes: string; department: string }[]): { imported: number; errors: string[] } {
@@ -197,7 +253,9 @@ export class KotDatabase {
     const users = this.db.prepare("SELECT id, name, pin, role, department, isActive, createdAt FROM users").all();
     const orders = this.db.prepare("SELECT * FROM orders ORDER BY createdAt ASC").all();
     const orderItems = this.db.prepare("SELECT * FROM order_items").all();
-    const meatWeightIncome = this.db.prepare("SELECT * FROM meat_weight_income").all();
+    const suppliers = this.db.prepare("SELECT * FROM suppliers").all();
+    const weighInBatches = this.db.prepare("SELECT * FROM weigh_in_batches").all();
+    const weighInLines = this.db.prepare("SELECT * FROM weigh_in_lines").all();
     const settings = this.db.prepare("SELECT key, value FROM settings").all() as { key: string; value: string }[];
     return {
       version: 1,
@@ -206,7 +264,9 @@ export class KotDatabase {
       users,
       orders,
       orderItems,
-      meatWeightIncome,
+      suppliers,
+      weighInBatches,
+      weighInLines,
       settings: Object.fromEntries(settings.map((s) => [s.key, s.value]))
     };
   }
@@ -217,14 +277,16 @@ export class KotDatabase {
     const users = (data.users as Record<string, unknown>[]) ?? [];
     const orders = (data.orders as Record<string, unknown>[]) ?? [];
     const orderItems = (data.orderItems as Record<string, unknown>[]) ?? [];
-    const meatWeightIncome = (data.meatWeightIncome as Record<string, unknown>[]) ?? [];
+    const suppliers = (data.suppliers as Record<string, unknown>[]) ?? [];
+    const weighInBatches = (data.weighInBatches as Record<string, unknown>[]) ?? [];
+    const weighInLines = (data.weighInLines as Record<string, unknown>[]) ?? [];
     const settings = (data.settings as Record<string, string>) ?? {};
 
     // FK must be disabled outside transactions in SQLite
     this.db.exec("PRAGMA foreign_keys = OFF");
     try {
       this.db.transaction(() => {
-        this.db.exec("DELETE FROM meat_weight_income; DELETE FROM order_items; DELETE FROM orders; DELETE FROM products; DELETE FROM users;");
+        this.db.exec("DELETE FROM weigh_in_lines; DELETE FROM weigh_in_batches; DELETE FROM suppliers; DELETE FROM order_items; DELETE FROM orders; DELETE FROM products; DELETE FROM users;");
         for (const u of users) {
           this.db.prepare("INSERT INTO users (id,name,pin,role,department,isActive,createdAt) VALUES (?,?,?,?,?,?,?)")
             .run(u.id ?? null, u.name, u.pin, u.role, u.department ?? null, u.isActive ?? 1, u.createdAt);
@@ -238,8 +300,12 @@ export class KotDatabase {
         for (const o of orders) insOrder.run(o.id,o.ticketNumber,o.customerName,o.customerPhone,o.orderType,o.deliveryAddress,o.requestedTime,o.assignedTo??null,o.status,o.kitchenStatus,o.counterStatus,o.requestedById??null,o.createdAt,o.updatedAt);
         const insItem = this.db.prepare("INSERT INTO order_items (id,orderId,productId,name,kg,quantity,notes,unitPrice,lineTotal,department) VALUES (?,?,?,?,?,?,?,?,?,?)");
         for (const i of orderItems) insItem.run(i.id,i.orderId,i.productId??null,i.name,i.kg??null,i.quantity??null,i.notes,i.unitPrice??null,i.lineTotal??null,i.department);
-        const insMwi = this.db.prepare("INSERT INTO meat_weight_income (id,species,grade,piecesWeighed,productId,weighedById,createdAt) VALUES (?,?,?,?,?,?,?)");
-        for (const m of meatWeightIncome) insMwi.run(m.id,m.species,m.grade,m.piecesWeighed,m.productId??null,m.weighedById??null,m.createdAt);
+        const insSupplier = this.db.prepare("INSERT INTO suppliers (id,name,isActive,createdAt) VALUES (?,?,?,?)");
+        for (const s of suppliers) insSupplier.run(s.id,s.name,s.isActive??1,s.createdAt);
+        const insBatch = this.db.prepare("INSERT INTO weigh_in_batches (id,status,createdById,createdAt,finalizedAt) VALUES (?,?,?,?,?)");
+        for (const b of weighInBatches) insBatch.run(b.id,b.status,b.createdById??null,b.createdAt,b.finalizedAt??null);
+        const insLine = this.db.prepare("INSERT INTO weigh_in_lines (id,batchId,productId,grade,piecesReceived,weightKg,supplierId,createdById,createdAt) VALUES (?,?,?,?,?,?,?,?,?)");
+        for (const l of weighInLines) insLine.run(l.id,l.batchId,l.productId,l.grade,l.piecesReceived,l.weightKg,l.supplierId??null,l.createdById??null,l.createdAt);
         for (const [key, value] of Object.entries(settings)) {
           this.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
         }
@@ -419,6 +485,13 @@ export class KotDatabase {
   }
 
   private migrate() {
+    // One-time cleanup: the old single-entry meat-weight-income feature was replaced
+    // by the batch weigh-in workflow (suppliers/weigh_in_batches/weigh_in_lines below)
+    this.db.exec("DROP TABLE IF EXISTS meat_weight_income");
+    if ((this.db.prepare("SELECT COUNT(*) as n FROM sqlite_master WHERE type='table' AND name='settings'").get() as { n: number }).n > 0) {
+      this.db.prepare("DELETE FROM settings WHERE key IN ('meatWeightDefaultBeef', 'meatWeightDefaultLamb')").run();
+    }
+
     // One-time migration: "staff" role was split into "cashier" / "counter" / "kitchen"
     const hasStaff = (this.db.prepare("SELECT COUNT(*) as n FROM sqlite_master WHERE type='table' AND name='users'").get() as { n: number }).n > 0
       && (this.db.prepare("SELECT COUNT(*) as n FROM users WHERE role = 'staff'").get() as { n: number }).n > 0;
@@ -518,13 +591,30 @@ export class KotDatabase {
         value TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS meat_weight_income (
+      CREATE TABLE IF NOT EXISTS suppliers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        species TEXT NOT NULL,
-        grade TEXT NOT NULL DEFAULT '',
-        piecesWeighed REAL NOT NULL,
-        productId INTEGER REFERENCES products(id),
-        weighedById INTEGER REFERENCES users(id),
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        isActive INTEGER NOT NULL DEFAULT 1,
+        createdAt TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS weigh_in_batches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        status TEXT NOT NULL DEFAULT 'open',
+        createdById INTEGER REFERENCES users(id),
+        createdAt TEXT NOT NULL,
+        finalizedAt TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS weigh_in_lines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batchId INTEGER NOT NULL REFERENCES weigh_in_batches(id) ON DELETE CASCADE,
+        productId INTEGER NOT NULL REFERENCES products(id),
+        grade TEXT NOT NULL,
+        piecesReceived REAL NOT NULL,
+        weightKg REAL NOT NULL,
+        supplierId INTEGER REFERENCES suppliers(id),
+        createdById INTEGER REFERENCES users(id),
         createdAt TEXT NOT NULL
       );
 
@@ -532,7 +622,9 @@ export class KotDatabase {
       CREATE INDEX IF NOT EXISTS idx_ord_status    ON orders(status);
       CREATE INDEX IF NOT EXISTS idx_ord_updatedAt ON orders(updatedAt DESC);
       CREATE INDEX IF NOT EXISTS idx_usr_name      ON users(name COLLATE NOCASE);
-      CREATE INDEX IF NOT EXISTS idx_mwi_createdAt ON meat_weight_income(createdAt DESC);
+      CREATE INDEX IF NOT EXISTS idx_wil_batchId   ON weigh_in_lines(batchId);
+      CREATE INDEX IF NOT EXISTS idx_wil_createdAt ON weigh_in_lines(createdAt DESC);
+      CREATE INDEX IF NOT EXISTS idx_wib_status    ON weigh_in_batches(status);
     `);
 
     // Seed default settings
@@ -542,8 +634,6 @@ export class KotDatabase {
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('counterPrinter', '')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('masterPrinter', '')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('historyDays', '30')").run();
-    this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('meatWeightDefaultBeef', '2')").run();
-    this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('meatWeightDefaultLamb', '8')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('siteName', 'MAXIS')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('logoUrl', '')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('themeColor', '')").run();

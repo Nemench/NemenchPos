@@ -50,19 +50,40 @@ export interface ProductInput {
   lowStockThreshold: number | null;
 }
 
-export type MeatSpecies = "beef" | "lamb";
+export type Grade = "A" | "B" | "C";
+export type BatchStatus = "open" | "finalized";
 
-export interface MeatWeightIncomeInput {
-  species: MeatSpecies;
-  grade: string;
-  piecesWeighed: number;
-  productId: number | null;
+export interface Supplier {
+  id: number;
+  name: string;
+  isActive: number;
+  createdAt: string;
 }
 
-export interface MeatWeightIncome extends MeatWeightIncomeInput {
+export interface WeighInBatch {
   id: number;
-  weighedById: number | null;
-  weighedByName: string | null;
+  status: BatchStatus;
+  createdById: number | null;
+  createdByName: string | null;
+  createdAt: string;
+  finalizedAt: string | null;
+}
+
+export interface WeighInLineInput {
+  productId: number;
+  grade: Grade;
+  piecesReceived: number;
+  weightKg: number;
+  supplierId: number;
+}
+
+export interface WeighInLine extends WeighInLineInput {
+  id: number;
+  batchId: number;
+  productName: string | null;
+  supplierName: string | null;
+  createdById: number | null;
+  createdByName: string | null;
   createdAt: string;
 }
 

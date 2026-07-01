@@ -21,21 +21,21 @@ import type {
   DeliveryAddress,
   Department,
   DeptStatus,
-  MeatSpecies,
-  MeatWeightIncome,
-  MeatWeightIncomeInput,
+  Grade,
   Order,
   OrderItemInput,
   OrderStatus,
   Product,
   ProductInput,
+  Supplier,
   User,
-  UserInput
+  UserInput,
+  WeighInLine
 } from "../shared/types";
 import { api } from "./api";
-import { applyTheme } from "./theme";
+import { applyTheme, deriveShades } from "./theme";
 
-type Tab = "orders" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "stockTake" | "meatWeight";
+type Tab = "orders" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "stockTake" | "weighIn";
 
 const deptStatusFlow: DeptStatus[] = ["New", "Received", "Ready", "Done"];
 const emptyLine: OrderItemInput = { productId: null, name: "", kg: null, quantity: null, notes: "", unitPrice: null, lineTotal: null, department: "counter" };
@@ -48,6 +48,13 @@ const currency = new Intl.NumberFormat(appSettings.locale, { style: "currency", 
 function applyBranding(siteName: string, logoUrl: string) {
   document.title = siteName || "MAXIS";
   document.querySelector('link[rel="icon"]')?.setAttribute("href", logoUrl || "/logo.jpg");
+}
+
+// Plain module cache so receipt-building functions (outside the React tree) can
+// read live branding without threading it through every print call site.
+let receiptBranding = { siteName: "MAXIS", logoUrl: "", themeColor: "" };
+function setReceiptBranding(patch: Partial<typeof receiptBranding>) {
+  receiptBranding = { ...receiptBranding, ...patch };
 }
 
 export function App() {
@@ -69,6 +76,7 @@ export function App() {
     api.settings.public().then((s) => {
       setBranding({ siteName: s.siteName, logoUrl: s.logoUrl });
       applyBranding(s.siteName, s.logoUrl);
+      setReceiptBranding({ siteName: s.siteName, logoUrl: s.logoUrl, themeColor: s.themeColor });
       if (s.themeColor) applyTheme(s.themeColor);
     }).catch(() => undefined);
   }, []);
@@ -201,7 +209,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
           {isStockTaker ? (
             <>
               <button className={tab === "stockTake" ? "active" : ""} onClick={() => setTab("stockTake")}><Package size={18} /><span>Stock Take</span></button>
-              <button className={tab === "meatWeight" ? "active" : ""} onClick={() => setTab("meatWeight")}><Weight size={18} /><span>Meat Weight In</span></button>
+              <button className={tab === "weighIn" ? "active" : ""} onClick={() => setTab("weighIn")}><Weight size={18} /><span>Weigh-In</span></button>
             </>
           ) : (
             <>
@@ -220,7 +228,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
                 <button className={tab === "stockTake" ? "active" : ""} onClick={() => setTab("stockTake")}><Package size={18} /><span>Stock Take</span></button>
               )}
               {currentUser.role === "admin" && (
-                <button className={tab === "meatWeight" ? "active" : ""} onClick={() => setTab("meatWeight")}><Weight size={18} /><span>Meat Weight In</span></button>
+                <button className={tab === "weighIn" ? "active" : ""} onClick={() => setTab("weighIn")}><Weight size={18} /><span>Weigh-In</span></button>
               )}
               {currentUser.role === "admin" && (
                 <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={18} /><span>Users</span></button>
@@ -263,7 +271,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
         {tab === "history" && <HistoryView orders={historyOrders} printStyle={printStyle} printerMap={printerMap} />}
         {tab === "products" && currentUser.role === "admin" && <Products products={products} onChanged={refresh} />}
         {tab === "stockTake" && (currentUser.role === "admin" || isStockTaker) && <StockTakePanel products={products} onChanged={refresh} />}
-        {tab === "meatWeight" && (currentUser.role === "admin" || isStockTaker) && <MeatWeightPanel products={products} currentUser={currentUser} onChanged={refresh} />}
+        {tab === "weighIn" && (currentUser.role === "admin" || isStockTaker) && <WeighInPanel products={products} currentUser={currentUser} onChanged={refresh} />}
         {tab === "users" && currentUser.role === "admin" && <UsersPanel />}
         {tab === "settings" && currentUser.role === "admin" && (
           <SettingsPanel autoPrint={autoPrint} onAutoPrintChange={setAutoPrint} printStyle={printStyle} onPrintStyleChange={setPrintStyle} printerMap={printerMap} onPrinterMapChange={setPrinterMap} branding={branding} onBrandingChange={onBrandingChange} />
@@ -843,97 +851,180 @@ function StockTakePanel({ products, onChanged }: { products: Product[]; onChange
   );
 }
 
-// ── Meat weight income ────────────────────────────────────────────────────────
+// ── Weigh-in (batch) ──────────────────────────────────────────────────────────
 
-function MeatWeightPanel({ products, currentUser, onChanged }: { products: Product[]; currentUser: User; onChanged: () => Promise<void> }) {
-  const [species, setSpecies] = useState<MeatSpecies>("beef");
-  const [grade, setGrade] = useState("");
-  const [pieces, setPieces] = useState(2);
+const GRADES: Grade[] = ["A", "B", "C"];
+
+function WeighInPanel({ products, currentUser, onChanged }: { products: Product[]; currentUser: User; onChanged: () => Promise<void> }) {
+  const [lines, setLines] = useState<WeighInLine[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [productId, setProductId] = useState<number | "">("");
-  const [defaults, setDefaults] = useState({ beef: 2, lamb: 8 });
-  const [msg, setMsg] = useState("");
+  const [grades, setGrades] = useState<Record<Grade, boolean>>({ A: false, B: false, C: false });
+  const [pieces, setPieces] = useState(1);
+  const [weightKg, setWeightKg] = useState("");
+  const [supplierId, setSupplierId] = useState<number | "" | "new">("");
+  const [newSupplierName, setNewSupplierName] = useState("");
   const [busy, setBusy] = useState(false);
-  const [log, setLog] = useState<MeatWeightIncome[]>([]);
+  const [msg, setMsg] = useState("");
+  const [history, setHistory] = useState<WeighInLine[]>([]);
 
-  useEffect(() => {
-    api.settings.get().then((s) => {
-      const d = { beef: Number(s.meatWeightDefaultBeef ?? 2), lamb: Number(s.meatWeightDefaultLamb ?? 8) };
-      setDefaults(d);
-      setPieces(d.beef);
-    }).catch(() => undefined);
-  }, []);
+  const loadCurrent = () => api.weighIn.current().then((r) => setLines(r.lines)).catch(() => undefined);
+  const loadSuppliers = () => api.suppliers.list().then(setSuppliers).catch(() => undefined);
+  const loadHistory = () => { if (currentUser.role === "admin") api.weighIn.list().then(setHistory).catch(() => undefined); };
 
-  const loadLog = () => { if (currentUser.role === "admin") api.meatWeight.list().then(setLog).catch(() => undefined); };
-  useEffect(loadLog, [currentUser.role]);
+  useEffect(() => { void loadCurrent(); void loadSuppliers(); loadHistory(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const changeSpecies = (s: MeatSpecies) => { setSpecies(s); setPieces(defaults[s]); setProductId(""); };
-
-  const matchingProducts = useMemo(
-    () => products.filter((p) => p.category.toLowerCase() === species),
-    [products, species]
+  const totals = useMemo(
+    () => lines.reduce((acc, l) => ({ pieces: acc.pieces + l.piecesReceived, weightKg: acc.weightKg + l.weightKg }), { pieces: 0, weightKg: 0 }),
+    [lines]
   );
 
-  const submit = async (e: FormEvent) => {
+  const toggleGrade = (g: Grade) => setGrades((cur) => ({ ...cur, [g]: !cur[g] }));
+
+  const addLine = async (e: FormEvent) => {
     e.preventDefault();
+    const selectedGrades = GRADES.filter((g) => grades[g]);
+    const weight = parseFloat(weightKg);
+    if (!productId) { setMsg("Pick a product."); return; }
+    if (selectedGrades.length === 0) { setMsg("Pick at least one grade."); return; }
+    if (!pieces || pieces <= 0) { setMsg("Enter how many pieces were received."); return; }
+    if (!weight || weight <= 0) { setMsg("Enter the weight in kg."); return; }
+    if (supplierId === "" || (supplierId === "new" && !newSupplierName.trim())) { setMsg("Pick or add a supplier."); return; }
+
     setBusy(true); setMsg("");
     try {
-      const input: MeatWeightIncomeInput = { species, grade: grade.trim(), piecesWeighed: pieces, productId: productId === "" ? null : productId };
-      await api.meatWeight.create(input);
-      setMsg("Logged.");
-      setPieces(defaults[species]);
-      setGrade("");
-      loadLog();
+      let finalSupplierId = supplierId;
+      if (finalSupplierId === "new") {
+        const created = await api.suppliers.create(newSupplierName);
+        setSuppliers((cur) => [...cur, created].sort((a, b) => a.name.localeCompare(b.name)));
+        finalSupplierId = created.id;
+        setNewSupplierName("");
+      }
+      let savedCount = 0;
+      for (const grade of selectedGrades) {
+        const line = await api.weighIn.addLine({ productId, grade, piecesReceived: pieces, weightKg: weight, supplierId: finalSupplierId as number });
+        setLines((cur) => [...cur, line]);
+        savedCount++;
+      }
+      setSupplierId(finalSupplierId);
+      setProductId(""); setGrades({ A: false, B: false, C: false }); setPieces(1); setWeightKg("");
+      setMsg(savedCount > 1 ? `Logged ${savedCount} grade rows.` : "Logged.");
       await onChanged();
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not log entry.");
+      setMsg(err instanceof Error ? err.message : "Could not log entry — check missing grades and retry.");
     } finally {
       setBusy(false);
-      window.setTimeout(() => setMsg(""), 2500);
+      window.setTimeout(() => setMsg(""), 3000);
+    }
+  };
+
+  const finalize = async () => {
+    if (lines.length === 0) { setMsg("No lines to finalize."); return; }
+    setBusy(true);
+    try {
+      const { batch, lines: finalLines } = await api.weighIn.finalize();
+      printHtml(buildWeighInSummaryHtml(batch.finalizedAt ?? batch.createdAt, finalLines, products));
+      setLines([]);
+      loadHistory();
+      setMsg("Batch finalized — print/save dialog opened.");
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not finalize batch.");
+    } finally {
+      setBusy(false);
+      window.setTimeout(() => setMsg(""), 3000);
     }
   };
 
   return (
     <div className="products-layout">
-      <form className="panel product-form" onSubmit={(e) => void submit(e)}>
-        <h2>Log received meat</h2>
+      <form className="panel product-form" onSubmit={(e) => void addLine(e)}>
+        <h2>Log received stock</h2>
         <label>
-          Species
-          <select value={species} onChange={(e) => changeSpecies(e.target.value as MeatSpecies)}>
-            <option value="beef">Beef</option>
-            <option value="lamb">Lamb</option>
-          </select>
-        </label>
-        <label>Grade<input value={grade} onChange={(e) => setGrade(e.target.value)} placeholder="e.g. Grade A" /></label>
-        <label>
-          Pieces weighed
-          <input type="number" min="1" step="1" value={pieces} onChange={(e) => setPieces(Number(e.target.value))} required />
-        </label>
-        <label>
-          Add to product stock (optional)
+          Item
           <select value={productId} onChange={(e) => setProductId(e.target.value ? Number(e.target.value) : "")}>
-            <option value="">— None (log only) —</option>
-            {matchingProducts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            <option value="">— Select item —</option>
+            {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </label>
+        <label>
+          Grade
+          <div className="grade-picker">
+            {GRADES.map((g) => (
+              <label key={g} className={`grade-pill ${grades[g] ? "checked" : ""}`}>
+                <input type="checkbox" checked={grades[g]} onChange={() => toggleGrade(g)} /> {g}
+              </label>
+            ))}
+          </div>
+        </label>
+        <label>
+          Pieces received
+          <div className="stepper-row">
+            <button type="button" className="secondary sm" onClick={() => setPieces((p) => Math.max(1, p - 1))}>−</button>
+            <input type="number" inputMode="numeric" min="1" step="1" value={pieces} onChange={(e) => setPieces(Math.max(1, Number(e.target.value)))} />
+            <button type="button" className="secondary sm" onClick={() => setPieces((p) => p + 1)}>+</button>
+          </div>
+        </label>
+        <label>
+          Weight (kg)
+          <input type="number" inputMode="decimal" min="0" step="0.01" value={weightKg} onChange={(e) => setWeightKg(e.target.value)} placeholder="0.00" />
+        </label>
+        <label>
+          Supplier
+          <select value={supplierId} onChange={(e) => setSupplierId(e.target.value === "new" ? "new" : e.target.value ? Number(e.target.value) : "")}>
+            <option value="">— Select supplier —</option>
+            {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            <option value="new">— Add new —</option>
+          </select>
+        </label>
+        {supplierId === "new" && (
+          <label>New supplier name<input value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} placeholder="Supplier name" /></label>
+        )}
         {msg && <div className="form-message">{msg}</div>}
         <footer className="actions">
-          <button type="submit" disabled={busy}><Save size={18} /> {busy ? "Saving…" : "Log entry"}</button>
+          <button type="submit" disabled={busy}><Save size={18} /> {busy ? "Saving…" : "Add line"}</button>
         </footer>
       </form>
 
+      <div className="panel table-panel">
+        <h2>Current batch</h2>
+        <table>
+          <thead><tr><th>Date</th><th>Item</th><th>Grade</th><th>Pieces</th><th>Kg</th><th>Supplier</th></tr></thead>
+          <tbody>
+            {lines.map((l) => (
+              <tr key={l.id}>
+                <td>{new Date(l.createdAt).toLocaleString(appSettings.locale, { dateStyle: "medium", timeStyle: "short" })}</td>
+                <td>{l.productName}</td>
+                <td>{l.grade}</td>
+                <td>{l.piecesReceived}</td>
+                <td>{l.weightKg}</td>
+                <td>{l.supplierName}</td>
+              </tr>
+            ))}
+            {lines.length > 0 && (
+              <tr className="totals-row"><td colSpan={3}><b>Total</b></td><td><b>{totals.pieces}</b></td><td><b>{totals.weightKg.toFixed(2)}</b></td><td></td></tr>
+            )}
+          </tbody>
+        </table>
+        <footer className="actions">
+          <button type="button" onClick={() => void finalize()} disabled={busy || lines.length === 0}><FileDown size={18} /> Finalize batch &amp; print</button>
+        </footer>
+      </div>
+
       {currentUser.role === "admin" && (
         <div className="panel table-panel">
+          <h2>Weigh-in history</h2>
           <table>
-            <thead><tr><th>Date</th><th>Species</th><th>Grade</th><th>Pieces</th><th>Product</th><th>Weighed by</th></tr></thead>
+            <thead><tr><th>Date</th><th>Item</th><th>Grade</th><th>Pieces</th><th>Kg</th><th>Supplier</th><th>Logged by</th></tr></thead>
             <tbody>
-              {log.map((m) => (
-                <tr key={m.id}>
-                  <td>{new Date(m.createdAt).toLocaleString(appSettings.locale, { dateStyle: "medium", timeStyle: "short" })}</td>
-                  <td>{m.species}</td>
-                  <td>{m.grade}</td>
-                  <td>{m.piecesWeighed}</td>
-                  <td>{products.find((p) => p.id === m.productId)?.name ?? "—"}</td>
-                  <td>{m.weighedByName ?? "—"}</td>
+              {history.map((l) => (
+                <tr key={l.id}>
+                  <td>{new Date(l.createdAt).toLocaleString(appSettings.locale, { dateStyle: "medium", timeStyle: "short" })}</td>
+                  <td>{l.productName}</td>
+                  <td>{l.grade}</td>
+                  <td>{l.piecesReceived}</td>
+                  <td>{l.weightKg}</td>
+                  <td>{l.supplierName}</td>
+                  <td>{l.createdByName ?? "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -1080,7 +1171,6 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
   const [historyDays, setHistoryDays] = useState(30);
   const [siteName, setSiteName] = useState(branding.siteName);
   const [themeColor, setThemeColor] = useState("#1a47a0");
-  const [meatDefaults, setMeatDefaults] = useState({ beef: "2", lamb: "8" });
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const restoreInputRef = useRef<HTMLInputElement>(null);
@@ -1099,7 +1189,6 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
     api.settings.get().then((s) => {
       setHistoryDays(Number(s.historyDays ?? 30));
       setThemeColor(s.themeColor || "#1a47a0");
-      setMeatDefaults({ beef: s.meatWeightDefaultBeef ?? "2", lamb: s.meatWeightDefaultLamb ?? "8" });
     }).catch(() => undefined);
   }, []);
 
@@ -1115,6 +1204,7 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
     await api.settings.set({ siteName: trimmed });
     onBrandingChange({ ...branding, siteName: trimmed });
     applyBranding(trimmed, branding.logoUrl);
+    setReceiptBranding({ siteName: trimmed });
     setMsg("Site name saved");
     window.setTimeout(() => setMsg(""), 2500);
   };
@@ -1133,6 +1223,7 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
       const { logoUrl } = await api.settings.uploadLogo(dataUrl);
       onBrandingChange({ ...branding, logoUrl });
       applyBranding(branding.siteName, logoUrl);
+      setReceiptBranding({ logoUrl });
       setMsg("Logo updated");
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "Logo upload failed");
@@ -1146,15 +1237,8 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
   const saveThemeColor = async (hex: string) => {
     setThemeColor(hex);
     applyTheme(hex);
+    setReceiptBranding({ themeColor: hex });
     await api.settings.set({ themeColor: hex });
-  };
-
-  const saveMeatDefault = async (species: "beef" | "lamb", value: string) => {
-    const key = species === "beef" ? "meatWeightDefaultBeef" : "meatWeightDefaultLamb";
-    await api.settings.set({ [key]: value });
-    setMeatDefaults((cur) => ({ ...cur, [species]: value }));
-    setMsg("Meat weight default saved");
-    window.setTimeout(() => setMsg(""), 2500);
   };
 
   const toggle = async () => {
@@ -1376,20 +1460,6 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
       </section>
 
       <section className="settings-section">
-        <h3>Meat weight income defaults</h3>
-        <div className="setting-row">
-          <div className="setting-info">
-            <strong>Default pieces weighed</strong>
-            <p>Pre-filled count when logging received meat; staff can still override it per entry.</p>
-          </div>
-          <div className="setting-actions">
-            <label>Beef <input type="number" min="1" step="1" style={{ width: 70 }} value={meatDefaults.beef} onChange={(e) => setMeatDefaults((c) => ({ ...c, beef: e.target.value }))} onBlur={(e) => void saveMeatDefault("beef", e.target.value)} /></label>
-            <label>Lamb <input type="number" min="1" step="1" style={{ width: 70 }} value={meatDefaults.lamb} onChange={(e) => setMeatDefaults((c) => ({ ...c, lamb: e.target.value }))} onBlur={(e) => void saveMeatDefault("lamb", e.target.value)} /></label>
-          </div>
-        </div>
-      </section>
-
-      <section className="settings-section">
         <h3>Order History</h3>
         <div className="setting-row">
           <div className="setting-info">
@@ -1557,7 +1627,9 @@ function buildReceiptHtml(order: Order, type: "kitchen" | "counter" | "master", 
   const d = new Date(order.createdAt);
   const dateStr = d.toLocaleDateString(appSettings.locale);
   const timeStr = d.toLocaleTimeString(appSettings.locale, { hour: "2-digit", minute: "2-digit" });
-  const logoUrl = `${window.location.origin}/logo.jpg`;
+  const logoUrl = receiptBranding.logoUrl ? `${window.location.origin}${receiptBranding.logoUrl}` : `${window.location.origin}/logo.jpg`;
+  const siteName = esc(receiptBranding.siteName || "MAXIS");
+  const { blue, blueDark } = deriveShades(/^#[0-9a-f]{6}$/i.test(receiptBranding.themeColor) ? receiptBranding.themeColor : "#1a47a0");
 
   const addrLines = order.orderType === "delivery" && order.deliveryAddress?.street
     ? [order.deliveryAddress.street, order.deliveryAddress.area, order.deliveryAddress.buildingType === "building" && order.deliveryAddress.apartment ? `Apt ${order.deliveryAddress.apartment}` : ""].filter(Boolean)
@@ -1574,15 +1646,15 @@ function buildReceiptHtml(order: Order, type: "kitchen" | "counter" | "master", 
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(label)} — ${esc(order.ticketNumber)}</title><style>
 @page{size:A4;margin:0}*{box-sizing:border-box;margin:0;padding:0}
 body{font-family:Inter,'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a1a2e;line-height:1.5;padding:18mm}
-.hdr{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:3px solid #0d2b6b;margin-bottom:20px}
-.hdr-left .shop{font-size:20px;font-weight:800;color:#c41f1f}.hdr-left .type{font-size:15px;font-weight:700;color:#0d2b6b;margin-top:4px}
-.hdr-right{text-align:right}.logo{width:72px;height:72px;border-radius:50%;object-fit:cover;border:2px solid #0d2b6b}
-.tnum{font-size:14px;font-weight:700;color:#0d2b6b;margin-top:6px}.dt{font-size:12px;color:#666;margin-top:2px}
+.hdr{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:3px solid ${blueDark};margin-bottom:20px}
+.hdr-left .shop{font-size:20px;font-weight:800;color:${blue}}.hdr-left .type{font-size:15px;font-weight:700;color:${blueDark};margin-top:4px}
+.hdr-right{text-align:right}.logo{width:72px;height:72px;border-radius:50%;object-fit:cover;border:2px solid ${blueDark}}
+.tnum{font-size:14px;font-weight:700;color:${blueDark};margin-top:6px}.dt{font-size:12px;color:#666;margin-top:2px}
 .cbox{border:1px solid #c8d5ee;border-radius:8px;padding:14px 18px;margin-bottom:20px;background:#f4f7fd}
 .clbl{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#5a6480;font-weight:700;margin-bottom:8px}
-.cname{font-size:16px;font-weight:700;color:#0d2b6b}.cline{font-size:13px;color:#333;margin-top:4px}
-.del{color:#c41f1f;font-weight:700}.ttag{color:#0d2b6b;font-weight:600}
-table{width:100%;border-collapse:collapse;margin-bottom:8px}thead tr{background:#0d2b6b}
+.cname{font-size:16px;font-weight:700;color:${blueDark}}.cline{font-size:13px;color:#333;margin-top:4px}
+.del{color:${blue};font-weight:700}.ttag{color:${blueDark};font-weight:600}
+table{width:100%;border-collapse:collapse;margin-bottom:8px}thead tr{background:${blueDark}}
 th{color:#fff;padding:8px 12px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
 td{padding:9px 12px;border-bottom:1px solid #e8eef7;font-size:13px;vertical-align:top}
 tr:nth-child(even) td{background:#f8f9fc}tr:last-child td{border-bottom:none}
@@ -1590,8 +1662,8 @@ tr:nth-child(even) td{background:#f8f9fc}tr:last-child td{border-bottom:none}
 .footer{margin-top:40px;text-align:center;color:#888;font-size:12px;border-top:1px solid #e0e6f0;padding-top:12px}
 </style></head><body>
 <div class="hdr">
-  <div class="hdr-left"><div class="shop">MAXIS KOSHER BUTCHERY</div><div class="type">${esc(label)}</div></div>
-  <div class="hdr-right"><img class="logo" src="${logoUrl}" alt="MAXIS"><div class="tnum">${esc(order.ticketNumber)}</div><div class="dt">${dateStr} &nbsp; ${timeStr}</div></div>
+  <div class="hdr-left"><div class="shop">${siteName}</div><div class="type">${esc(label)}</div></div>
+  <div class="hdr-right"><img class="logo" src="${logoUrl}" alt="${siteName}"><div class="tnum">${esc(order.ticketNumber)}</div><div class="dt">${dateStr} &nbsp; ${timeStr}</div></div>
 </div>
 <div class="cbox">
   <div class="clbl">Customer Details</div>
@@ -1605,7 +1677,7 @@ tr:nth-child(even) td{background:#f8f9fc}tr:last-child td{border-bottom:none}
 </div>
 <table><thead><tr><th>Item</th><th>Kg</th><th>Qty</th></tr></thead>
 <tbody>${rows}</tbody></table>
-<div class="footer">Thank you for your order — MAXIS Discount Kosher Butchery</div>
+<div class="footer">Thank you for your order — ${siteName}</div>
 </body></html>`;
   }
 
@@ -1620,19 +1692,19 @@ tr:nth-child(even) td{background:#f8f9fc}tr:last-child td{border-bottom:none}
 body{font-family:'Courier New',Courier,monospace;font-size:12px;width:72mm;padding:4mm;margin:0 auto;line-height:1.5;color:#000}
 .center{text-align:center}.sep{border:none;border-top:1px dashed #999;margin:6px 0}
 .logo{width:52px;height:52px;border-radius:50%;object-fit:cover;margin-bottom:4px}
-.shop{font-size:13px;font-weight:bold;color:#c41f1f;letter-spacing:.5px}
-.lbl{font-size:15px;font-weight:bold;letter-spacing:1px;color:#0d2b6b;margin-top:2px}
+.shop{font-size:13px;font-weight:bold;color:${blue};letter-spacing:.5px}
+.lbl{font-size:15px;font-weight:bold;letter-spacing:1px;color:${blueDark};margin-top:2px}
 .tnum{font-size:12px;font-weight:bold;color:#333}.dt{font-size:11px;color:#555}
 .cust{margin:4px 0}.cname{font-size:13px;font-weight:bold}
-.cphone{font-size:12px;color:#333}.del{font-weight:bold;color:#c41f1f}
-.addr{font-size:11px;color:#333;margin-top:2px}.ttag{font-size:11px;font-weight:bold;color:#0d2b6b;margin-top:2px}
+.cphone{font-size:12px;color:#333}.del{font-weight:bold;color:${blue}}
+.addr{font-size:11px;color:#333;margin-top:2px}.ttag{font-size:11px;font-weight:bold;color:${blueDark};margin-top:2px}
 .by{font-size:10px;color:#666;margin-top:2px}
 .item{margin:5px 0}.iname{font-weight:bold}.isub{color:#444;font-size:11px;margin-top:1px}
 .footer{font-size:11px;color:#555}
 </style></head><body>
 <div class="center">
-  <img class="logo" src="${logoUrl}" alt="MAXIS">
-  <div class="shop">MAXIS KOSHER BUTCHERY</div>
+  <img class="logo" src="${logoUrl}" alt="${siteName}">
+  <div class="shop">${siteName}</div>
   <div class="lbl">${esc(label)}</div>
   <div class="tnum">${esc(order.ticketNumber)}</div>
   <div class="dt">${dateStr} &nbsp; ${timeStr}</div>
@@ -1656,6 +1728,54 @@ ${rows}
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function buildWeighInSummaryHtml(dateIso: string, lines: WeighInLine[], products: Product[]): string {
+  const siteName = esc(receiptBranding.siteName || "MAXIS");
+  const logoUrl = receiptBranding.logoUrl ? `${window.location.origin}${receiptBranding.logoUrl}` : `${window.location.origin}/logo.jpg`;
+  const { blue, blueDark } = deriveShades(/^#[0-9a-f]{6}$/i.test(receiptBranding.themeColor) ? receiptBranding.themeColor : "#1a47a0");
+  const d = new Date(dateIso);
+  const dateStr = d.toLocaleString(appSettings.locale, { dateStyle: "medium", timeStyle: "short" });
+
+  const supplierNames = [...new Set(lines.map((l) => l.supplierName).filter(Boolean))].join(", ");
+
+  type GroupKey = string;
+  const groups = new Map<GroupKey, { productName: string; grade: string; pieces: number; kg: number }>();
+  for (const l of lines) {
+    const key = `${l.productId}|${l.grade}`;
+    const g = groups.get(key) ?? { productName: l.productName ?? products.find((p) => p.id === l.productId)?.name ?? "—", grade: l.grade, pieces: 0, kg: 0 };
+    g.pieces += l.piecesReceived;
+    g.kg += l.weightKg;
+    groups.set(key, g);
+  }
+  const rows = [...groups.values()].map((g) => `<tr><td>${esc(g.productName)}</td><td>${esc(g.grade)}</td><td>${g.pieces}</td><td>${g.kg.toFixed(2)}</td></tr>`).join("");
+  const grandPieces = lines.reduce((sum, l) => sum + l.piecesReceived, 0);
+  const grandKg = lines.reduce((sum, l) => sum + l.weightKg, 0);
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Weigh-In Summary — ${dateStr}</title><style>
+@page{size:A4;margin:0}*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a1a2e;line-height:1.5;padding:18mm}
+.hdr{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:3px solid ${blueDark};margin-bottom:20px}
+.hdr-left .shop{font-size:20px;font-weight:800;color:${blue}}.hdr-left .type{font-size:15px;font-weight:700;color:${blueDark};margin-top:4px}
+.hdr-right{text-align:right}.logo{width:72px;height:72px;border-radius:50%;object-fit:cover;border:2px solid ${blueDark}}
+.dt{font-size:12px;color:#666;margin-top:2px}
+.meta{font-size:13px;color:#333;margin-bottom:16px}
+table{width:100%;border-collapse:collapse;margin-bottom:8px}thead tr{background:${blueDark}}
+th{color:#fff;padding:8px 12px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+td{padding:9px 12px;border-bottom:1px solid #e8eef7;font-size:13px;vertical-align:top}
+tr:nth-child(even) td{background:#f8f9fc}
+.totals td{font-weight:800;border-top:2px solid ${blueDark};background:#fff}
+</style></head><body>
+<div class="hdr">
+  <div class="hdr-left"><div class="shop">${siteName}</div><div class="type">WEIGH-IN SUMMARY</div></div>
+  <div class="hdr-right"><img class="logo" src="${logoUrl}" alt="${siteName}"><div class="dt">${dateStr}</div></div>
+</div>
+<div class="meta">${supplierNames ? `<b>Supplier(s):</b> ${esc(supplierNames)}` : ""}</div>
+<table><thead><tr><th>Item</th><th>Grade</th><th>Pieces</th><th>Kg</th></tr></thead>
+<tbody>${rows}
+<tr class="totals"><td colspan="2">Grand total</td><td>${grandPieces}</td><td>${grandKg.toFixed(2)}</td></tr>
+</tbody></table>
+</body></html>`;
 }
 
 function printHtml(html: string): void {
@@ -1808,7 +1928,7 @@ function calculateLineTotal(item: OrderItemInput) {
 }
 
 function tabTitle(tab: Tab) {
-  return { orders: "New Order", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings", reports: "Reports", stockTake: "Stock Take", meatWeight: "Meat Weight In" }[tab];
+  return { orders: "New Order", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings", reports: "Reports", stockTake: "Stock Take", weighIn: "Weigh-In" }[tab];
 }
 
 function tabSubtitle(tab: Tab) {
@@ -1821,6 +1941,6 @@ function tabSubtitle(tab: Tab) {
     users: "Manage staff accounts and PINs.",
     reports: "View and download orders for a date range.",
     stockTake: "Count on-hand stock and flag low items.",
-    meatWeight: "Log received meat and pieces weighed."
+    weighIn: "Log received stock by weight, batch by batch."
   }[tab];
 }
