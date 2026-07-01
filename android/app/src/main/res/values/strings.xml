@@ -4,4 +4,12 @@
     <string name="title_activity_main">MAXIS</string>
     <string name="package_name">com.nemench.maxis</string>
     <string name="custom_url_scheme">com.nemench.maxis</string>
+
+    <!-- Per-variant launcher labels for the activity-alias icon/name switcher
+         (see AndroidManifest.xml's <activity-alias> entries and IconSwitcher.java).
+         Add a matching values-<locale>/strings.xml override for each of these
+         if/when the app supports more than one language. -->
+    <string name="app_name_default">MAXIS</string>
+    <string name="app_name_alt1">MAXIS Alt 1</string>
+    <string name="app_name_alt2">MAXIS Alt 2</string>
 </resources>
