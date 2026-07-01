@@ -9,6 +9,8 @@
 // document string for a separate print tab/iframe rather than rendering
 // into this app's own DOM.
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
+import { App as CapacitorApp } from "@capacitor/app";
 import {
   BarChart2,
   ClipboardList,
@@ -69,6 +71,12 @@ function setReceiptBranding(patch: Partial<typeof receiptBranding>) {
   receiptBranding = { ...receiptBranding, ...patch };
 }
 
+// Set while the native app's in-app print preview overlay (see printHtml)
+// is open, so the hardware back-button handler below can close it instead
+// of minimizing/exiting the app. Module-level because printHtml is a plain
+// function, not a component, and can be called from many places.
+let closeActivePrintPreview: (() => void) | null = null;
+
 // Top-level component: resolves the boot/login/logged-in state before
 // deciding what to render, and applies branding for both the login screen
 // and the logged-in app.
@@ -96,6 +104,20 @@ export function App() {
       setReceiptBranding({ siteName: s.siteName, logoUrl: s.logoUrl, themeColor: s.themeColor });
       if (s.themeColor) applyTheme(s.themeColor);
     }).catch(() => undefined);
+  }, []);
+
+  // In the native Android app, the hardware/gesture back button otherwise
+  // does nothing useful for content opened outside normal page navigation
+  // (e.g. the print preview overlay) — without this, the only way out was
+  // force-closing the app. Close the preview if one is open; otherwise
+  // background the app rather than letting Android exit it outright.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const handle = CapacitorApp.addListener("backButton", () => {
+      if (closeActivePrintPreview) { closeActivePrintPreview(); return; }
+      void CapacitorApp.minimizeApp();
+    });
+    return () => { void handle.then((h) => h.remove()); };
   }, []);
 
   const logout = () => { tokenStorage.clear(); setCurrentUser(null); };
@@ -264,10 +286,12 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
               )}
             </>
           )}
+          {/* Sign out lives in nav itself (not just .sidebar-footer below) so it's
+              never hidden — .sidebar-footer is dropped by the ≤920px responsive
+              breakpoint, which would otherwise leave mobile/app users with no way
+              to log out. nav is never hidden at any screen size. */}
+          <button className="nav-signout" onClick={onLogout}><LogOut size={18} /><span>Sign out</span></button>
         </nav>
-        <div className="sidebar-footer">
-          <button className="secondary" onClick={onLogout}><LogOut size={16} /> Sign out</button>
-        </div>
       </aside>
 
       <main className="workspace">
@@ -276,10 +300,6 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
             <h1>{tabTitle(tab)}</h1>
             <p>{tabSubtitle(tab)}</p>
           </div>
-          {/* Also reachable via .sidebar-footer on desktop, but that's hidden
-              on mobile/tablet breakpoints (≤920px) — this is the only sign-out
-              entry point on phones and the Android app, so it stays visible always. */}
-          <button className="icon-button" onClick={onLogout} title="Sign out"><LogOut size={18} /></button>
         </header>
 
         {message && <div className="toast">{message}</div>}
@@ -958,6 +978,19 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
     [lines]
   );
 
+  // Beef Forequarter and Whole Lamb are the highest-volume items — always
+  // pin them first (in that order) in the Item dropdown, ahead of the rest
+  // in their normal catalog order, regardless of how many other items exist.
+  const orderedItemOptions = useMemo(() => {
+    const pinnedNames = Object.keys(ITEM_PIECE_DEFAULTS);
+    const byLowerName = (n: string) => n.trim().toLowerCase();
+    const pinned = pinnedNames
+      .map((name) => products.find((p) => byLowerName(p.name) === name))
+      .filter((p): p is Product => Boolean(p));
+    const pinnedIds = new Set(pinned.map((p) => p.id));
+    return [...pinned, ...products.filter((p) => !pinnedIds.has(p.id))];
+  }, [products]);
+
   const toggleGrade = (g: "A" | "B" | "C") =>
     setGrades((cur) => {
       const next = { ...cur, [g]: !cur[g] };
@@ -1097,7 +1130,7 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
             setPieces(defaultPiecesFor(products.find((p) => p.id === id)?.name));
           }}>
             <option value="">— Select item —</option>
-            {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {orderedItemOptions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </label>
         <label>
@@ -2050,12 +2083,19 @@ ${supplierSections}
 </body></html>`;
 }
 
-// Opens a built HTML document for printing. Mobile browsers (including the
-// Capacitor Android app's WebView) can't print the contents of a hidden
-// iframe, so on mobile this opens a new tab instead and injects a
-// window.print() call that fires once the tab finishes loading; desktop
-// uses a hidden iframe so no extra tab/window is visible to the user.
+// Opens a built HTML document for printing. Three paths:
+// - Native Android app: an in-app overlay (see showInAppPrintPreview) —
+//   window.open() there would launch a separate browser activity outside
+//   the app's own back-stack, which the hardware back button can't escape.
+// - Mobile browsers: open a new tab and auto-print (browsers handle their
+//   own tab back-navigation fine, unlike the native app's WebView).
+// - Desktop: a hidden iframe, so no extra tab/window is ever visible.
 function printHtml(html: string): void {
+  if (Capacitor.isNativePlatform()) {
+    showInAppPrintPreview(html);
+    return;
+  }
+
   const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
   if (isMobile) {
@@ -2075,6 +2115,46 @@ function printHtml(html: string): void {
   doc.open(); doc.write(html); doc.close();
   iframe.contentWindow!.onafterprint = () => { document.body.removeChild(iframe); };
   setTimeout(() => { iframe.contentWindow?.print(); }, 150);
+}
+
+// Full-screen in-app preview with explicit Print and Close buttons — the
+// native app's substitute for the browser tab used elsewhere, so leaving a
+// print preview never requires the hardware back button (also wired up as
+// a shortcut via closeActivePrintPreview + the backButton listener in App()).
+function showInAppPrintPreview(html: string): void {
+  const overlay = document.createElement("div");
+  overlay.className = "print-preview-overlay";
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "print-preview-toolbar";
+
+  const printBtn = document.createElement("button");
+  printBtn.type = "button";
+  printBtn.textContent = "Print / Save PDF";
+
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "secondary";
+  closeBtn.textContent = "Close";
+
+  toolbar.append(printBtn, closeBtn);
+
+  const iframe = document.createElement("iframe");
+  iframe.className = "print-preview-frame";
+
+  overlay.append(toolbar, iframe);
+  document.body.appendChild(overlay);
+
+  const doc = iframe.contentDocument!;
+  doc.open(); doc.write(html); doc.close();
+
+  const close = () => {
+    document.body.removeChild(overlay);
+    closeActivePrintPreview = null;
+  };
+  closeBtn.onclick = close;
+  printBtn.onclick = () => iframe.contentWindow?.print();
+  closeActivePrintPreview = close;
 }
 
 // Resolves which layout (thermal/A4) a given receipt type should use based

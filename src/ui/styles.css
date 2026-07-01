@@ -564,7 +564,6 @@ th {
   }
 
   .brand { margin-bottom: 8px; padding-bottom: 10px; }
-  .sidebar-footer { display: none; }
 
   nav { grid-template-columns: repeat(auto-fit, minmax(60px, 1fr)); }
   nav button { justify-content: center; font-size: 12px; padding: 0 8px; gap: 4px; }
@@ -670,22 +669,19 @@ th {
   color: #fff;
 }
 
-/* ── Sidebar footer ── */
-.sidebar-footer {
-  margin-top: auto;
-  padding-top: 14px;
-  border-top: 1px solid rgba(255,255,255,0.1);
-}
-
-.sidebar-footer button {
+/* ── Sign out ── */
+/* Lives inside nav itself (see App.tsx) so it's visible at every screen
+   size, unlike the old .sidebar-footer this replaced (dropped entirely by
+   the ≤920px breakpoint, which left mobile/app users with no way to log out). */
+.nav-signout {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255,255,255,0.12);
   background: transparent;
   color: #a8c0e8;
-  width: 100%;
-  justify-content: flex-start;
-  padding: 0 12px;
 }
 
-.sidebar-footer button:hover:not(:disabled) {
+.nav-signout:hover:not(:disabled) {
   background: rgba(255,255,255,0.08);
   color: #fff;
 }
@@ -1262,4 +1258,30 @@ button.sm {
 .search-clear:hover:not(:disabled) {
   background: var(--border);
   color: var(--text);
+}
+
+/* ── In-app print preview (native Android app only — see showInAppPrintPreview) ── */
+.print-preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+}
+
+.print-preview-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+
+.print-preview-frame {
+  flex: 1;
+  width: 100%;
+  border: none;
 }
