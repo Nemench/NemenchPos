@@ -1,8 +1,12 @@
+// SQLite data access layer. One class wraps the whole schema — every query
+// the server needs lives here, grouped by domain (users/products/suppliers/
+// weigh-ins/orders/settings) with `migrate()` handling both fresh installs
+// (CREATE TABLE IF NOT EXISTS) and upgrading existing databases in place
+// (guarded ALTER TABLE, checked via PRAGMA table_info before running).
 import BetterSqlite3 from "better-sqlite3";
 import bcrypt from "bcryptjs";
 import path from "node:path";
 import fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import type {
   Product, ProductInput,
   Order, OrderItem, CreateOrderInput, OrderStatus,
@@ -11,11 +15,11 @@ import type {
   Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput
 } from "../src/shared/types.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 export class KotDatabase {
   private db!: BetterSqlite3.Database;
 
+  // Opens (or creates) the SQLite file under DATA_DIR, then brings the
+  // schema up to date and seeds default data on a first run.
   initialize() {
     const dataDir = process.env.DATA_DIR ?? path.join(process.cwd(), "data");
     fs.mkdirSync(dataDir, { recursive: true });
@@ -112,6 +116,7 @@ export class KotDatabase {
     }
   }
 
+  // Sets on-hand quantity directly — a physical recount from the Stock Take screen.
   updateStock(productId: number, onHandQty: number, countedById: number): Product {
     const now = new Date().toISOString();
     this.db
@@ -120,6 +125,9 @@ export class KotDatabase {
     return this.db.prepare("SELECT * FROM products WHERE id = ?").get(productId) as Product;
   }
 
+  // Applies an incremental change (e.g. +pieces from a weigh-in line, or the
+  // negative of that when a line is edited/deleted). Clamped at 0 so a bad
+  // delta can never push stock negative.
   adjustStock(productId: number, delta: number): void {
     this.db.prepare("UPDATE products SET onHandQty = MAX(0, onHandQty + ?), updatedAt = ? WHERE id = ?").run(delta, new Date().toISOString(), productId);
   }
@@ -145,6 +153,9 @@ export class KotDatabase {
   }
 
   // ── Weigh-in batches ───────────────────────────────────────────────────────
+  // A batch groups the lines logged in one stock-taking session. At most one
+  // batch is "open" at a time (auto-created by addWeighInLine on first use);
+  // finalizing it locks all its lines against further edits/deletes.
 
   private batchRow(id: number): WeighInBatch {
     return this.db
@@ -176,6 +187,9 @@ export class KotDatabase {
     return this.getBatch(id);
   }
 
+  // Adds one line to the open batch, auto-opening a new batch if none is
+  // in progress. Wrapped in a transaction so the line insert and the stock
+  // adjustment it triggers either both happen or neither does.
   addWeighInLine(input: WeighInLineInput, createdById: number): WeighInLine {
     const add = this.db.transaction(() => {
       const batch = this.getOpenBatch() ?? this.createBatch(createdById);
@@ -197,6 +211,10 @@ export class KotDatabase {
       .get(id) as WeighInLine;
   }
 
+  // Edits an existing line (only while its batch is still open). Stock is
+  // reconciled by reversing the old delta and applying the new one, which
+  // correctly handles a product/pieces change in one step without needing
+  // a separate "diff" calculation.
   updateWeighInLine(id: number, input: WeighInLineInput): WeighInLine {
     const update = this.db.transaction(() => {
       const existing = this.db
@@ -224,6 +242,7 @@ export class KotDatabase {
       .get(id) as WeighInLine;
   }
 
+  // Removes a line and reverses its stock impact (only while its batch is open).
   deleteWeighInLine(id: number): void {
     this.db.transaction(() => {
       const existing = this.db
@@ -237,6 +256,8 @@ export class KotDatabase {
     })();
   }
 
+  // With a batchId: every line in that batch, oldest first (matches entry order).
+  // Without one: most recent lines across all batches, for general auditing.
   listWeighInLines(batchId?: number, limit = 500): WeighInLine[] {
     const base = `SELECT l.*, p.name as productName, s.name as supplierName, u.name as createdByName
                   FROM weigh_in_lines l
@@ -249,6 +270,9 @@ export class KotDatabase {
     return this.db.prepare(`${base} ORDER BY l.createdAt DESC LIMIT ?`).all(limit) as WeighInLine[];
   }
 
+  // Finalized batches with aggregated totals per batch (line count, total
+  // pieces/kg, and a comma list of the suppliers/products involved) — the
+  // dataset behind the admin history panel and its date-range filter.
   listFinalizedBatches(from?: string, to?: string): WeighInBatchSummary[] {
     const where = from && to ? "WHERE b.status = 'finalized' AND substr(b.finalizedAt, 1, 10) >= ? AND substr(b.finalizedAt, 1, 10) <= ?" : "WHERE b.status = 'finalized'";
     const sql = `
@@ -270,6 +294,8 @@ export class KotDatabase {
     return this.db.prepare(sql).all(...params) as WeighInBatchSummary[];
   }
 
+  // Upserts products by case-insensitive name match (existing products are
+  // updated in place rather than duplicated) from parsed CSV rows.
   importProducts(rows: { name: string; category: string; unitDefault: string; pricePerUnit: string; prepNotes: string; department: string }[]): { imported: number; errors: string[] } {
     const now = new Date().toISOString();
     let imported = 0;
@@ -309,6 +335,9 @@ export class KotDatabase {
     return [header, ...rows].join("\n");
   }
 
+  // Snapshots every table into one plain object for the admin's downloadable
+  // backup file. Kept in sync with importBackup below — any new table added
+  // to the schema needs to be added to both.
   exportBackup(): object {
     const products = this.db.prepare("SELECT * FROM products WHERE isActive = 1").all();
     const users = this.db.prepare("SELECT id, name, pin, role, department, isActive, createdAt FROM users").all();
@@ -332,6 +361,11 @@ export class KotDatabase {
     };
   }
 
+  // Wipes and replaces every table from a backup file, preserving original
+  // row IDs (so foreign keys between orders/order_items etc. stay valid).
+  // Runs with foreign_keys temporarily OFF because SQLite requires that
+  // outside of a transaction, and a mid-restore state would otherwise
+  // violate FK constraints (e.g. order_items inserted before their order).
   importBackup(data: Record<string, unknown>): { products: number; users: number; orders: number } {
     if (!data.version || !Array.isArray(data.products)) throw new Error("Invalid backup file");
     const products = data.products as Record<string, unknown>[];
@@ -405,6 +439,13 @@ export class KotDatabase {
     return this.getOrder(orderId);
   }
 
+  // scope="active": open tickets (New/Received/Ready) for the live queue.
+  // scope="history": completed tickets within the configurable retention
+  //   window (settings.historyDays), newest first.
+  // scope="all": everything, newest first — used by admin/reporting views.
+  // `limit * 20` on the raw SQL fetches enough joined rows to cover `limit`
+  // distinct orders even when some have many line items, before buildOrderMap
+  // collapses rows into orders and caps at `limit`.
   listOrders(scope: "active" | "history" | "all", department?: Department | null, limit = 50): Order[] {
     // Single JOIN query — avoids N+1 (one query per order for items)
     const base = `
@@ -473,6 +514,10 @@ export class KotDatabase {
     return this.getOrder(id);
   }
 
+  // Updates one department's status, then recomputes the order's overall
+  // status from both department statuses (an order with only kitchen items
+  // has counterStatus="n/a", which is excluded from the "active" list below
+  // so a department that was never involved can't block completion).
   updateDeptStatus(id: number, department: Department, status: DeptStatus): Order {
     if (department !== "kitchen" && department !== "counter") throw new Error("Invalid department");
     const now = new Date().toISOString();
@@ -496,6 +541,12 @@ export class KotDatabase {
 
   // ── Private ────────────────────────────────────────────────────────────────
 
+  // Collapses flat JOIN rows (one row per order_item, order fields repeated)
+  // into a Map of orderId -> Order with a nested items array. Insertion
+  // order into the Map matches the SQL's ORDER BY. Relies on all of one
+  // order's item rows being contiguous (guaranteed by the ORDER BY on the
+  // caller's SQL) so that once `limit` distinct orders have been seen, the
+  // loop can stop immediately without truncating an order's item list mid-way.
   private buildOrderMap(rows: Record<string, unknown>[], limit?: number): Map<number, Order> {
     const map = new Map<number, Order>();
     for (const row of rows) {
@@ -536,6 +587,8 @@ export class KotDatabase {
       .all(orderId) as OrderItem[];
   }
 
+  // Generates tickets like "20260701-001": a YYYYMMDD date stamp plus a
+  // per-day sequence number, so numbering naturally resets each day.
   private nextTicketNumber(): string {
     const d = new Date();
     const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
@@ -545,6 +598,13 @@ export class KotDatabase {
     return `${prefix}${String(next).padStart(3, "0")}`;
   }
 
+  // Brings the schema up to date on every startup. Runs in three phases:
+  // (1) one-time data cleanups/migrations for features that changed shape,
+  // (2) guarded ALTER TABLEs for columns added after a table already existed
+  //     in the wild (checked via PRAGMA table_info so they only run once),
+  // (3) CREATE TABLE IF NOT EXISTS for the full current schema, which is
+  //     what a brand-new install actually runs. Phases 1–2 are no-ops on a
+  //     fresh database since the tables/columns won't exist yet to check.
   private migrate() {
     // One-time cleanup: the old single-entry meat-weight-income feature was replaced
     // by the batch weigh-in workflow (suppliers/weigh_in_batches/weigh_in_lines below)
@@ -711,6 +771,10 @@ export class KotDatabase {
     this.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
   }
 
+  // Populates a brand-new database with a default admin login (Admin/0000
+  // — meant to be changed immediately) and a starter product catalog, so
+  // the app is usable right after install without manual setup. No-ops on
+  // any database that already has at least one user.
   private seed() {
     const { count } = this.db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number };
     if (count > 0) return;

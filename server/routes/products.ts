@@ -1,3 +1,4 @@
+// Product catalog CRUD, plus bulk CSV import/export for the admin menu editor.
 import { Router } from "express";
 import { db } from "../index.js";
 import { requireAuth, requireAdmin } from "../auth.js";
@@ -24,6 +25,10 @@ router.delete("/:id", requireAdmin, (req, res) => {
   catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to delete product" }); }
 });
 
+// Bulk-creates/updates products from a CSV upload. Column order is
+// flexible — matched by header name (case-insensitive, punctuation-stripped)
+// rather than position, and a few columns accept common alias names
+// (e.g. "price" or "priceperunit").
 router.post("/import", requireAdmin, (req, res) => {
   try {
     const { csv } = req.body as { csv: string };
@@ -31,6 +36,10 @@ router.post("/import", requireAdmin, (req, res) => {
     const lines = csv.split(/\r?\n/).filter((l) => l.trim());
     if (lines.length < 2) { res.status(400).json({ message: "CSV must have a header row and at least one data row" }); return; }
 
+    // Minimal CSV row parser: splits on commas outside of double-quoted
+    // spans. Good enough for the simple exports this import is meant to
+    // round-trip with; not a full RFC 4180 implementation (no escaped
+    // quotes within a quoted field).
     const parseRow = (line: string): string[] => {
       const cols: string[] = [];
       let cur = "", inQuote = false;

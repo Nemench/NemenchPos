@@ -1,3 +1,13 @@
+// Single-file React SPA for the whole client UI. One component per screen/
+// panel (Login, OrderEntry, Queue, HistoryView, Products, StockTakePanel,
+// WeighInPanel, UsersPanel, SettingsPanel, ReportsPanel), switched by the
+// `tab` state in MainApp and gated per-role both here (nav visibility) and
+// on the server (route middleware) — client-side gating is a UX nicety,
+// never the actual security boundary. Printing (buildReceiptHtml /
+// buildWeighInSummaryHtml / printHtml) lives at the bottom as plain
+// functions, not components, since they build a full standalone HTML
+// document string for a separate print tab/iframe rather than rendering
+// into this app's own DOM.
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   BarChart2,
@@ -24,7 +34,6 @@ import type {
   Grade,
   Order,
   OrderItemInput,
-  OrderStatus,
   Product,
   ProductInput,
   Supplier,
@@ -47,6 +56,7 @@ const currency = new Intl.NumberFormat(appSettings.locale, { style: "currency", 
 
 // ── Auth wrapper ──────────────────────────────────────────────────────────────
 
+// Updates the browser tab title/favicon to match the admin-configured branding.
 function applyBranding(siteName: string, logoUrl: string) {
   document.title = siteName || "MAXIS";
   document.querySelector('link[rel="icon"]')?.setAttribute("href", logoUrl || "/logo.jpg");
@@ -59,11 +69,16 @@ function setReceiptBranding(patch: Partial<typeof receiptBranding>) {
   receiptBranding = { ...receiptBranding, ...patch };
 }
 
+// Top-level component: resolves the boot/login/logged-in state before
+// deciding what to render, and applies branding for both the login screen
+// and the logged-in app.
 export function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [booting, setBooting] = useState(true);
   const [branding, setBranding] = useState({ siteName: "MAXIS", logoUrl: "" });
 
+  // Validate any stored token against the server on load, rather than
+  // trusting it blindly — also picks up server-side role changes.
   useEffect(() => {
     const token = tokenStorage.get();
     if (!token) { setBooting(false); return; }
@@ -92,6 +107,7 @@ export function App() {
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 
+// Name + PIN login form, shown when there's no valid session.
 function LoginScreen({ onLogin, branding }: { onLogin: (user: User) => void; branding: { siteName: string; logoUrl: string } }) {
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
@@ -140,7 +156,12 @@ function LoginScreen({ onLogin, branding }: { onLogin: (user: User) => void; bra
 
 // ── Main app ──────────────────────────────────────────────────────────────────
 
+// The logged-in shell: sidebar nav (gated per role) + whichever panel the
+// current tab selects. Owns the shared data (products/orders) that multiple
+// panels need, refreshed on mount and lightly polled while on the Queue tab.
 function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { currentUser: User; onLogout: () => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void }) {
+  // stock_taker gets a completely separate, minimal nav (Stock Take +
+  // Weigh-In only) — everything else below the ternary is for other roles.
   const isStockTaker = currentUser.role === "stock_taker";
   const [tab, setTab] = useState<Tab>(isStockTaker ? "stockTake" : currentUser.role === "kitchen" || currentUser.role === "counter" ? "queue" : "orders");
   const [products, setProducts] = useState<Product[]>([]);
@@ -286,6 +307,9 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
 
 // ── Order entry ───────────────────────────────────────────────────────────────
 
+// "New order" form: customer details, pickup/delivery, one or more line
+// items. On submit, optionally auto-prints kitchen/counter/master receipts
+// per-department based on which departments actually have items.
 function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, onCreated }: { products: Product[]; currentUser: User; autoPrint: boolean; printStyle: string; printerMap: Record<string, string>; onCreated: (order: Order) => void }) {
   const defaultDept: Department = currentUser.department ?? "counter";
   const [customerName, setCustomerName] = useState("");
@@ -435,6 +459,9 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
 
 // ── Product combobox ──────────────────────────────────────────────────────────
 
+// Autocomplete input for picking a catalog product on an order line, while
+// still allowing arbitrary free text for one-off items not in the catalog
+// (isFreeText tracks whether the line currently has no productId attached).
 function ProductCombobox({ products, productId, itemName, onSelect, onNameChange }: {
   products: Product[];
   productId: string;
@@ -508,6 +535,9 @@ function ProductCombobox({ products, productId, itemName, onSelect, onNameChange
 
 // ── Queue ─────────────────────────────────────────────────────────────────────
 
+// Live queue of active tickets, sorted by urgency. A search filter re-sorts
+// (rather than hides) so matching tickets float to the top without losing
+// sight of the rest of the queue.
 function Queue({ orders, currentUser, onChanged, printStyle, printerMap }: { orders: Order[]; currentUser: User; onChanged: () => Promise<void>; printStyle: string; printerMap: Record<string, string> }) {
   const [search, setSearch] = useState("");
   const sorted = useMemo(() => sortByUrgency(orders), [orders]);
@@ -538,7 +568,11 @@ function Queue({ orders, currentUser, onChanged, printStyle, printerMap }: { ord
 
 // ── Ticket card ───────────────────────────────────────────────────────────────
 
+// One order's card in the Queue. Kitchen/counter roles only see and act on
+// their own department's items/status; admin/master_cashier see and can
+// advance both independently, or use Accept All/Complete All as a shortcut.
 function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: { order: Order; currentUser: User; onChanged: () => Promise<void>; printStyle: string; printerMap: Record<string, string> }) {
+  // Kitchen/counter staff only ever see their own department's line items.
   const visibleItems =
     currentUser.role === "kitchen" ? order.items.filter((i) => i.department === "kitchen") :
     currentUser.role === "counter" ? order.items.filter((i) => i.department === "counter") :
@@ -666,6 +700,7 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
 
 // ── History ───────────────────────────────────────────────────────────────────
 
+// Table of completed ("Done") orders within the configured retention window.
 function HistoryView({ orders, printStyle, printerMap }: { orders: Order[]; printStyle: string; printerMap: Record<string, string> }) {
   const [search, setSearch] = useState("");
   const displayed = useMemo(() => {
@@ -713,6 +748,8 @@ function HistoryView({ orders, printStyle, printerMap }: { orders: Order[]; prin
 
 // ── Products ──────────────────────────────────────────────────────────────────
 
+// Admin product catalog editor: add/edit/delete products, set price and
+// low-stock threshold. CSV import/export lives in SettingsPanel, not here.
 function Products({ products, onChanged }: { products: Product[]; onChanged: () => Promise<void> }) {
   const [editing, setEditing] = useState<ProductInput>(EMPTY_PRODUCT);
   const [stockMessage, setStockMessage] = useState("");
@@ -804,6 +841,8 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
 
 // ── Stock take ────────────────────────────────────────────────────────────────
 
+// Physical stock recount screen: one input per product to overwrite
+// onHandQty directly (as opposed to the incremental weigh-in deltas).
 function StockTakePanel({ products, onChanged }: { products: Product[]; onChanged: () => Promise<void> }) {
   const [msg, setMsg] = useState("");
 
@@ -854,11 +893,18 @@ function StockTakePanel({ products, onChanged }: { products: Product[]; onChange
 }
 
 // ── Weigh-in (batch) ──────────────────────────────────────────────────────────
+// Stock-in workflow: the stock taker logs incoming deliveries one line at a
+// time into an open batch, then finalizes it to lock the batch and print a
+// summary. See buildWeighInSummaryHtml below for how the printout is built.
 
 const GRADE_LETTERS: ("A" | "B" | "C")[] = ["A", "B", "C"];
+// Per-item defaults for "pieces received", matched by exact lowercased name;
+// anything not listed falls back to 2 (defaultPiecesFor's `|| 2`).
 const ITEM_PIECE_DEFAULTS: Record<string, number> = { "beef forequarter": 2, "whole lamb": 8 };
 const defaultPiecesFor = (name: string | undefined) => (name && ITEM_PIECE_DEFAULTS[name.trim().toLowerCase()]) || 2;
 
+// Log-received-stock form + current in-progress batch table + (admin-only)
+// finalized-batch history with a printable summary per batch.
 function WeighInPanel({ products, currentUser, onChanged }: { products: Product[]; currentUser: User; onChanged: () => Promise<void> }) {
   const [lines, setLines] = useState<WeighInLine[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -879,6 +925,11 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
 
   const loadCurrent = () => api.weighIn.current().then((r) => setLines(r.lines)).catch(() => undefined);
   const loadSuppliers = () => api.suppliers.list().then(setSuppliers).catch(() => undefined);
+  // Takes explicit from/to (defaulting to current state) rather than reading
+  // historyFrom/historyTo directly, so the Clear button can pass "" for both
+  // and refetch immediately without waiting on React's async state update
+  // (calling loadHistory() right after setHistoryFrom("") would otherwise
+  // still see the old value due to stale closures).
   const loadHistory = (from = historyFrom, to = historyTo) => {
     if (currentUser.role !== "admin") return;
     setHistoryLoading(true);
@@ -911,6 +962,10 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
       return next;
     });
 
+  // Loads an existing line's values into the form for editing. The delete
+  // button in the footer only appears once a line is being edited (see the
+  // "editingLineId &&" gate below), so deletion is always a deliberate
+  // two-step action, not a stray click.
   const startEdit = (line: WeighInLine) => {
     setEditingLineId(line.id);
     setProductId(line.productId);
@@ -947,6 +1002,9 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
     }
   };
 
+  // Adds a new line or (if editingLineId is set) updates an existing one.
+  // Two or more checked grades are combined into one line with a comma-
+  // joined grade ("A,B") rather than creating a separate line per grade.
   const submitLine = async (e: FormEvent) => {
     e.preventDefault();
     const selectedGrades = GRADE_LETTERS.filter((g) => grades[g]);
@@ -960,6 +1018,7 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
 
     const wasEditing = editingLineId;
     setBusy(true); setMsg("");
+    // 5s cooldown on the Add/Update button to prevent accidental double-submits.
     setCooldown(true);
     window.setTimeout(() => setCooldown(false), 5000);
     try {
@@ -995,11 +1054,15 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
     }
   };
 
+  // Opens the same summary layout as finalize's printout, but without
+  // locking the batch — lets the stock taker sanity-check totals first.
   const previewBatch = () => {
     if (lines.length === 0) { setMsg("No lines to preview."); window.setTimeout(() => setMsg(""), 3000); return; }
     printHtml(buildWeighInSummaryHtml(new Date().toISOString(), lines, products, "WEIGH-IN SUMMARY — PREVIEW"));
   };
 
+  // Locks the current batch (no further edits/deletes) and opens the
+  // printable summary — the batch's one-shot "close out and print" action.
   const finalize = async () => {
     if (lines.length === 0) { setMsg("No lines to finalize."); return; }
     if (!window.confirm(`Finalize this batch of ${lines.length} line${lines.length === 1 ? "" : "s"}? Lines can no longer be edited once finalized.`)) return;
@@ -1158,9 +1221,12 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
 // ── Users (admin) ─────────────────────────────────────────────────────────────
 
 const EMPTY_USER: UserInput = { name: "", pin: "", role: "cashier", department: null };
+// Kitchen/counter roles are tied to that department; every other role has no department.
 const roleDept = (role: UserInput["role"]): Department | null =>
   role === "kitchen" ? "kitchen" : role === "counter" ? "counter" : null;
 
+// Admin-only staff account management: create/edit users, set roles/PINs,
+// activate/deactivate (soft — see database.ts's admin-lockout guard).
 function UsersPanel() {
   const [users, setUsers] = useState<User[]>([]);
   const [form, setForm] = useState<UserInput>(EMPTY_USER);
@@ -1181,6 +1247,8 @@ function UsersPanel() {
     try {
       const payload = { ...form, department: roleDept(form.role) };
       if (editingId) {
+        // PIN field starts blank on edit (see startEdit) — only include it
+        // in the patch if the admin actually typed a new one.
         const patch: Partial<UserInput> = { name: payload.name, role: payload.role, department: payload.department };
         if (form.pin) patch.pin = form.pin;
         await api.users.update(editingId, patch);
@@ -1282,6 +1350,10 @@ function UsersPanel() {
 
 // ── Settings (admin) ──────────────────────────────────────────────────────────
 
+// Admin control panel: printing config, branding (site name/logo/theme
+// color — also pushed live into buildReceiptHtml via setReceiptBranding so
+// printed receipts match immediately), product CSV import/export, and
+// full-database backup/restore.
 function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleChange, printerMap, onPrinterMapChange, branding, onBrandingChange }: { autoPrint: boolean; onAutoPrintChange: (v: boolean) => void; printStyle: string; onPrintStyleChange: (v: string) => void; printerMap: Record<string, string>; onPrinterMapChange: (v: { kitchen: string; counter: string; master: string }) => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void }) {
   const [msg, setMsg] = useState("");
   const [availablePrinters, setAvailablePrinters] = useState<string[]>([]);
@@ -1354,6 +1426,9 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
     }
   };
 
+  // Applies the new theme color immediately (live UI + future receipts via
+  // the branding cache) before the save request even resolves, so the
+  // color-picker feels instant rather than waiting on a round-trip.
   const saveThemeColor = async (hex: string) => {
     setThemeColor(hex);
     applyTheme(hex);
@@ -1401,6 +1476,9 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
     }
   };
 
+  // Destructive — wipes and replaces the entire database from a backup
+  // file (see database.ts's importBackup), so this is confirmed explicitly
+  // rather than firing on file selection alone.
   const handleRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1607,6 +1685,8 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
 
 // ── Reports (admin) ───────────────────────────────────────────────────────────
 
+// Admin sales reporting: date-range order lookup with a per-line-item CSV
+// export (one row per order item, order fields repeated on each row).
 function ReportsPanel() {
   const today = new Date().toISOString().slice(0, 10);
   const [from, setFrom] = useState(today);
@@ -1655,6 +1735,8 @@ function ReportsPanel() {
     }
 
     const csv = rows.map((r) => r.map((c) => `"${c.replace(/"/g, '""')}"`).join(",")).join("\n");
+    // UTF-8 BOM prefix so Excel opens the file with correct encoding instead
+    // of misreading special characters (e.g. currency symbols) as Latin-1.
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1740,7 +1822,16 @@ function ReportsPanel() {
 }
 
 // ── Print ─────────────────────────────────────────────────────────────────────
+// These are plain functions (not React components) because they build a
+// complete standalone HTML document string — CSS inlined in a <style> tag,
+// no dependency on this app's own stylesheet — which printHtml() then opens
+// in its own tab/iframe for the browser's native print-to-PDF/printer flow.
+// Reads branding from the module-level `receiptBranding` cache (set by
+// App's boot effect and SettingsPanel) rather than a prop, since these
+// functions are called from many places outside the component tree.
 
+// Builds a per-department or master order receipt, in either thermal
+// (80mm, for receipt printers) or A4 (full-page) layout.
 function buildReceiptHtml(order: Order, type: "kitchen" | "counter" | "master", style: "thermal" | "a4"): string {
   const items = type === "master" ? order.items : order.items.filter((i) => i.department === type);
   const label = type === "kitchen" ? "KITCHEN ORDER" : type === "counter" ? "COUNTER ORDER" : "RECEIPT";
@@ -1846,10 +1937,19 @@ ${rows}
 </body></html>`;
 }
 
+// Escapes user-supplied text before interpolating into the HTML strings
+// built throughout this file — every dynamic value in a receipt/summary
+// goes through this to prevent a customer/product/supplier name from
+// breaking the markup (or injecting script into the print window).
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// Builds the printable weigh-in batch summary: grouped by supplier, then by
+// item within each supplier (showing every individual line plus a per-item
+// subtotal), then a final grand-total table across all suppliers. `heading`
+// is overridden to "... — PREVIEW" when called from the non-finalizing
+// preview button, so the printout is visually distinguishable from a real one.
 function buildWeighInSummaryHtml(dateIso: string, lines: WeighInLine[], products: Product[], heading = "WEIGH-IN SUMMARY"): string {
   const siteName = esc(receiptBranding.siteName || "MAXIS");
   const logoUrl = receiptBranding.logoUrl ? `${window.location.origin}${receiptBranding.logoUrl}` : `${window.location.origin}/logo.jpg`;
@@ -1946,6 +2046,11 @@ ${supplierSections}
 </body></html>`;
 }
 
+// Opens a built HTML document for printing. Mobile browsers (including the
+// Capacitor Android app's WebView) can't print the contents of a hidden
+// iframe, so on mobile this opens a new tab instead and injects a
+// window.print() call that fires once the tab finishes loading; desktop
+// uses a hidden iframe so no extra tab/window is visible to the user.
 function printHtml(html: string): void {
   const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
@@ -1968,6 +2073,10 @@ function printHtml(html: string): void {
   setTimeout(() => { iframe.contentWindow?.print(); }, 150);
 }
 
+// Resolves which layout (thermal/A4) a given receipt type should use based
+// on the admin's chosen printStyle, builds it, and either sends it straight
+// to a named server-side printer (server/routes/print.ts) or falls back to
+// the browser print flow if no printer is assigned (or the print API fails).
 async function printReceipt(order: Order, type: "kitchen" | "counter" | "master", printStyle = "thermal", printerName = "") {
   const items = type === "master" ? order.items : order.items.filter((i) => i.department === type);
   if (items.length === 0) return;
@@ -1984,6 +2093,8 @@ async function printReceipt(order: Order, type: "kitchen" | "counter" | "master"
   printHtml(html);
 }
 
+// Sends a throwaway test ticket to confirm a configured printer actually
+// works, used by the "Test" button next to each printer assignment in Settings.
 async function printTestPage(printerName: string): Promise<void> {
   const ts = new Date().toLocaleString(appSettings.locale);
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
@@ -2009,6 +2120,9 @@ hr{border:none;border-top:1px dashed #999;margin:6px 0}
 }
 
 // ── Urgency helpers ───────────────────────────────────────────────────────────
+// Classifies an order's requested pickup/delivery time into an urgency tier
+// (0 = due within the hour, 4 = a week+ away) so the Queue can sort by what
+// needs attention soonest and show a colored countdown badge.
 
 const URGENCY = [
   { label: "Critical",  color: "#c41f1f" },
@@ -2085,6 +2199,7 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
   );
 }
 
+// Next stage in New → Received → Ready → Done, or null once already Done.
 function nextDeptStatus(status: DeptStatus): DeptStatus | null {
   const i = deptStatusFlow.indexOf(status);
   return i === -1 ? null : (deptStatusFlow[i + 1] ?? null);

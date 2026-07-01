@@ -1,3 +1,7 @@
+// Express app entry point: security middleware, rate limiting, route
+// mounting, and (in production) serving the built SPA + its client-side
+// routing fallback. Run via `npm run start` (prod) or `npm run dev` (with
+// Vite's dev server proxying to this on PORT, default 3001).
 import express from "express";
 import cors from "cors";
 import compression from "compression";
@@ -106,6 +110,8 @@ app.use("/api/suppliers", suppliersRouter);
 app.use("/api/weigh-in", weighInRouter);
 
 if (isProd) {
+  // Serve the Vite-built SPA and fall back to index.html for any
+  // non-API route so client-side routing (React) can take over.
   const dist = path.join(__dirname, "../dist");
   app.use(express.static(dist));
   app.get("*", (_req, res) => res.sendFile(path.join(dist, "index.html")));

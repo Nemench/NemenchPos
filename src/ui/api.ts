@@ -1,6 +1,10 @@
+// Thin typed wrapper around the backend REST API. Every call goes through
+// req()/download(), which attach the JWT and centrally handle a 401 (token
+// missing/expired) by clearing it and forcing a reload back to the login screen.
 import type { User, UserInput, Product, ProductInput, Order, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput } from "../shared/types";
 import { tokenStorage } from "./tokenStorage";
 
+// JSON request/response helper used by nearly every endpoint below.
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const token = tokenStorage.get();
   const res = await fetch(`/api${path}`, {
@@ -20,6 +24,8 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   return res.json() as Promise<T>;
 }
 
+// Fetches a binary response (CSV/JSON export) and triggers a browser
+// download via a throwaway object URL + anchor click.
 async function download(path: string, filename: string): Promise<void> {
   const token = tokenStorage.get();
   const res = await fetch(`/api${path}`, {

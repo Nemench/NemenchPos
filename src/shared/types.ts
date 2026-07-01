@@ -1,7 +1,15 @@
+// Shared type definitions, imported by both the Express server and the React
+// client so request/response shapes can never drift between the two.
+
 export type OrderStatus = "New" | "Received" | "Ready" | "Done";
 export type UnitDefault = "kg" | "qty" | "kg_qty";
 export type Department = "kitchen" | "counter";
+// Per-department status; "n/a" marks a department an order never touched
+// (e.g. counterStatus is "n/a" for an order with only kitchen items), which
+// keeps it from blocking that order's overall status computation.
 export type DeptStatus = "n/a" | "New" | "Received" | "Ready" | "Done";
+
+// ── Users ────────────────────────────────────────────────────────────────────
 
 export type Role = "admin" | "cashier" | "master_cashier" | "counter" | "kitchen" | "stock_taker";
 
@@ -21,6 +29,8 @@ export interface UserInput {
   role: Role;
   department: Department | null;
 }
+
+// ── Products & stock ─────────────────────────────────────────────────────────
 
 export interface Product {
   id: number;
@@ -50,6 +60,9 @@ export interface ProductInput {
   lowStockThreshold: number | null;
 }
 
+// ── Weigh-in (stock-taking) ──────────────────────────────────────────────────
+// A single grade, or a combined pair for pieces weighed together as one lot.
+// All three grades combined ("A,B,C") is intentionally not a valid value.
 export type Grade = "A" | "B" | "C" | "A,B" | "A,C" | "B,C";
 export type BatchStatus = "open" | "finalized";
 
@@ -94,6 +107,8 @@ export interface WeighInLine extends WeighInLineInput {
   createdByName: string | null;
   createdAt: string;
 }
+
+// ── Orders (KOT tickets) ─────────────────────────────────────────────────────
 
 export interface OrderItemInput {
   productId?: number | null;

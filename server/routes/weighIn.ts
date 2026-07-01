@@ -1,3 +1,7 @@
+// Stock-in "weigh-in" workflow: the stock taker logs incoming deliveries as
+// batches (one open batch at a time, auto-created on the first line added).
+// Each line is one product/grade/supplier entry; finalizing a batch locks it
+// and produces the numbers for the printed summary.
 import { Router } from "express";
 import { db } from "../index.js";
 import { requireAuth, requireAdmin } from "../auth.js";
@@ -7,6 +11,8 @@ import type { WeighInLineInput, Grade } from "../../src/shared/types.js";
 const router = Router();
 router.use(requireAuth);
 
+// A line can be a single grade or a combined pair (e.g. mixed A/B pieces
+// weighed together) — but never all three at once, so only pairs are listed.
 const GRADES: Grade[] = ["A", "B", "C", "A,B", "A,C", "B,C"];
 const canSubmit = (req: AuthRequest) => req.user?.role === "admin" || req.user?.role === "stock_taker";
 
@@ -17,11 +23,15 @@ function validateLineInput(input: WeighInLineInput): string | null {
   return null;
 }
 
+// The batch currently being built (not yet finalized), if any — drives the
+// stock taker's in-progress "current batch" table.
 router.get("/current", (_req, res) => {
   const batch = db.getOpenBatch();
   res.json({ batch, lines: batch ? db.listWeighInLines(batch.id) : [] });
 });
 
+// History of finalized batches, optionally filtered to a date range —
+// admin-only (individual stock takers only need the current in-progress batch).
 router.get("/", requireAdmin, (req, res) => {
   const from = req.query.from as string | undefined;
   const to = req.query.to as string | undefined;
@@ -83,6 +93,9 @@ router.delete("/lines/:id", (req: AuthRequest, res) => {
   }
 });
 
+// Locks the batch (no further line edits/deletes) and returns its final
+// lines for the printed summary. Defaults to the currently open batch if
+// no batchId is given, since that's the only batch the stock taker can see.
 router.post("/finalize", (req: AuthRequest, res) => {
   if (!canSubmit(req)) {
     res.status(403).json({ message: "Not authorized to finalize a batch" });

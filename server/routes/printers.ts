@@ -1,3 +1,5 @@
+// Discovers printers installed/visible on the machine running the server,
+// so the admin can pick one from a dropdown instead of typing a driver name.
 import { Router } from "express";
 import { exec } from "node:child_process";
 import { requireAuth, requireAdmin } from "../auth.js";
@@ -5,12 +7,18 @@ import { requireAuth, requireAdmin } from "../auth.js";
 const router = Router();
 router.use(requireAuth, requireAdmin);
 
+// Runs a shell command and resolves with stdout, swallowing errors — printer
+// discovery is best-effort, so a failed probe should just yield no results
+// rather than failing the whole request.
 function run(cmd: string, timeout = 6000): Promise<string> {
   return new Promise((resolve) => {
     exec(cmd, { timeout }, (_err, stdout) => resolve(stdout ?? ""));
   });
 }
 
+// GET /api/printers — merges results from whichever printing subsystem is
+// available for the current OS (Windows uses wmic; Linux/macOS use CUPS +
+// mDNS network discovery).
 router.get("/", async (_req, res) => {
   const names = new Set<string>();
 

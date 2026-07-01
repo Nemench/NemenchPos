@@ -1,3 +1,4 @@
+// Login (name + PIN, not a password) and "who am I" endpoints.
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { db } from "../index.js";
@@ -6,7 +7,9 @@ import type { AuthRequest } from "../auth.js";
 
 const router = Router();
 
-// Track failed login attempts per IP: max 10 failures per 15 minutes
+// Per-IP brute-force guard: max 10 failed PIN attempts per 15 minutes.
+// In-memory only (resets on server restart) — acceptable for a single-shop
+// kiosk deployment where a restart already interrupts everyone's session.
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 
 router.post("/login", (req, res) => {
@@ -37,10 +40,13 @@ router.post("/login", (req, res) => {
   // Clear rate limit counter on successful login
   loginAttempts.delete(ip);
 
+  // Never send the hashed PIN back to the client.
   const { pin: _pin, ...safeUser } = user;
   res.json({ token: signToken(safeUser), user: safeUser });
 });
 
+// Used on app boot to validate a stored token and refresh user info
+// (e.g. role changes made by an admin take effect without re-login).
 router.get("/me", requireAuth, (req: AuthRequest, res) => {
   if (req.user?.id) db.touchLastSeen(req.user.id);
   res.json(req.user);

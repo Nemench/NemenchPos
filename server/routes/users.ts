@@ -1,3 +1,5 @@
+// Staff account management (create/list/edit). Admin-only across the board —
+// PINs and roles are sensitive, so nothing here is exposed to other roles.
 import { Router } from "express";
 import { db } from "../index.js";
 import { requireAuth, requireAdmin } from "../auth.js";

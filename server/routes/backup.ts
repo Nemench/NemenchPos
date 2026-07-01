@@ -1,3 +1,5 @@
+// Full-database export/import as a downloadable JSON snapshot. Admin-only —
+// a restore overwrites live data, so this is a deliberately narrow surface.
 import { Router } from "express";
 import { db } from "../index.js";
 import { requireAuth, requireAdmin } from "../auth.js";
@@ -5,6 +7,8 @@ import { requireAuth, requireAdmin } from "../auth.js";
 const router = Router();
 router.use(requireAuth, requireAdmin);
 
+// Downloads every table (orders, products, users, suppliers, weigh-ins, ...)
+// as one JSON file, named with today's date.
 router.get("/", (_req, res) => {
   try {
     const data = db.exportBackup();
@@ -17,6 +21,8 @@ router.get("/", (_req, res) => {
   }
 });
 
+// Restores from a previously exported JSON file. `version` presence is used
+// as a cheap sanity check that this is actually a MAXIS backup file.
 router.post("/restore", (req, res) => {
   try {
     const data = req.body as Record<string, unknown>;

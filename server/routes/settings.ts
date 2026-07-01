@@ -1,3 +1,6 @@
+// Site-wide branding/config: site name, logo, theme color, and any other
+// admin-editable key/value settings. Read by both the live UI and the
+// printed-receipt builders (see receiptBranding in src/ui/App.tsx).
 import { Router } from "express";
 import fs from "node:fs";
 import path from "node:path";
@@ -24,6 +27,7 @@ router.get("/", requireAuth, (_req, res) => {
   res.json(db.getAllSettings());
 });
 
+// Generic settings bag: any key/value pairs (siteName, themeColor, etc).
 router.put("/", requireAuth, requireAdmin, (req: AuthRequest, res) => {
   const updates = req.body as Record<string, string>;
   for (const [key, value] of Object.entries(updates)) {
@@ -32,6 +36,9 @@ router.put("/", requireAuth, requireAdmin, (req: AuthRequest, res) => {
   res.json(db.getAllSettings());
 });
 
+// Uploads a new logo from a base64 data URL (as produced by a <input
+// type=file> + FileReader on the client) and stores it on disk under
+// DATA_DIR/uploads, served statically at /uploads/* (see server/index.ts).
 router.post("/logo", requireAuth, requireAdmin, (req, res) => {
   const { dataUrl } = req.body as { dataUrl: string };
   const match = /^data:image\/(png|jpe?g|webp);base64,(.+)$/i.exec(dataUrl ?? "");
@@ -41,6 +48,8 @@ router.post("/logo", requireAuth, requireAdmin, (req, res) => {
   }
   const ext = ALLOWED_LOGO_TYPES[match[1].toLowerCase()];
   fs.mkdirSync(uploadsDir, { recursive: true });
+  // Remove any previous logo files first so stale ones don't accumulate
+  // (also avoids serving an old logo if the new upload has a different extension).
   for (const f of fs.readdirSync(uploadsDir)) {
     if (f.startsWith("logo.")) fs.unlinkSync(path.join(uploadsDir, f));
   }

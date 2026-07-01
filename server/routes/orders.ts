@@ -1,3 +1,5 @@
+// Core order (KOT ticket) lifecycle: create, list, fetch one, and update
+// status per-department (kitchen/counter) or overall.
 import { Router } from "express";
 import { db } from "../index.js";
 import { requireAuth } from "../auth.js";
@@ -7,6 +9,9 @@ import type { CreateOrderInput, OrderStatus, Department, DeptStatus } from "../.
 const router = Router();
 router.use(requireAuth);
 
+// GET /api/orders?scope=active|history|all
+// Kitchen/counter roles are implicitly scoped to their own department's
+// orders (dept), everyone else (admin/cashier) sees all departments.
 router.get("/", (req: AuthRequest, res) => {
   if (req.user?.id) db.touchLastSeen(req.user.id);
   const rawScope = req.query.scope as string;

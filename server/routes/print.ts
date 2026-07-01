@@ -1,3 +1,10 @@
+// Server-side "silent print": writes a receipt/summary HTML document to a
+// temp file and hands it to the OS's native print path (CUPS `lp` on
+// Linux/macOS, PowerShell + default browser on Windows), so a receipt
+// printer can produce a ticket without a user manually hitting Ctrl+P.
+// This is separate from the browser print-to-PDF path used elsewhere
+// (buildReceiptHtml/printHtml in src/ui/App.tsx) — that path is for
+// on-screen preview/PDF, this one is for direct-to-printer kitchen tickets.
 import { Router } from "express";
 import { exec, execFile } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
