@@ -854,6 +854,8 @@ function StockTakePanel({ products, onChanged }: { products: Product[]; onChange
 // ── Weigh-in (batch) ──────────────────────────────────────────────────────────
 
 const GRADES: Grade[] = ["A", "B", "C"];
+const ITEM_PIECE_DEFAULTS: Record<string, number> = { "beef forequarter": 2, "whole lamb": 8 };
+const defaultPiecesFor = (name: string | undefined) => (name && ITEM_PIECE_DEFAULTS[name.trim().toLowerCase()]) || 2;
 
 function WeighInPanel({ products, currentUser, onChanged }: { products: Product[]; currentUser: User; onChanged: () => Promise<void> }) {
   const [lines, setLines] = useState<WeighInLine[]>([]);
@@ -908,7 +910,7 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
       }
       setSupplierId(finalSupplierId);
       // Item and grade stay selected as defaults for the next line — only weight/pieces reset
-      setPieces(2); setWeightKg("");
+      setPieces(defaultPiecesFor(products.find((p) => p.id === productId)?.name)); setWeightKg("");
       setMsg(savedCount > 1 ? `Logged ${savedCount} grade rows.` : "Logged.");
       await onChanged();
     } catch (err) {
@@ -942,7 +944,11 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
         <h2>Log received stock</h2>
         <label>
           Item
-          <select value={productId} onChange={(e) => setProductId(e.target.value ? Number(e.target.value) : "")}>
+          <select value={productId} onChange={(e) => {
+            const id = e.target.value ? Number(e.target.value) : "";
+            setProductId(id);
+            setPieces(defaultPiecesFor(products.find((p) => p.id === id)?.name));
+          }}>
             <option value="">— Select item —</option>
             {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
