@@ -1,14 +1,15 @@
 import type { User, UserInput, Product, ProductInput, Order, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput } from "../shared/types";
+import { tokenStorage } from "./tokenStorage";
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const token = sessionStorage.getItem("kot-token");
+  const token = tokenStorage.get();
   const res = await fetch(`/api${path}`, {
     method,
     headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined
   });
   if (res.status === 401) {
-    sessionStorage.removeItem("kot-token");
+    tokenStorage.clear();
     window.location.reload();
     throw new Error("Unauthorized");
   }
@@ -20,11 +21,11 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 }
 
 async function download(path: string, filename: string): Promise<void> {
-  const token = sessionStorage.getItem("kot-token");
+  const token = tokenStorage.get();
   const res = await fetch(`/api${path}`, {
     headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }
   });
-  if (res.status === 401) { sessionStorage.removeItem("kot-token"); window.location.reload(); return; }
+  if (res.status === 401) { tokenStorage.clear(); window.location.reload(); return; }
   if (!res.ok) {
     const err = await res.json().catch(() => ({})) as { message?: string };
     throw new Error(err.message ?? res.statusText);

@@ -35,6 +35,7 @@ import type {
 } from "../shared/types";
 import { api } from "./api";
 import { applyTheme, deriveShades } from "./theme";
+import { tokenStorage } from "./tokenStorage";
 
 type Tab = "orders" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "stockTake" | "weighIn";
 
@@ -64,11 +65,11 @@ export function App() {
   const [branding, setBranding] = useState({ siteName: "MAXIS", logoUrl: "" });
 
   useEffect(() => {
-    const token = sessionStorage.getItem("kot-token");
+    const token = tokenStorage.get();
     if (!token) { setBooting(false); return; }
     api.auth.me()
       .then(setCurrentUser)
-      .catch(() => sessionStorage.removeItem("kot-token"))
+      .catch(() => tokenStorage.clear())
       .finally(() => setBooting(false));
   }, []);
 
@@ -82,7 +83,7 @@ export function App() {
     }).catch(() => undefined);
   }, []);
 
-  const logout = () => { sessionStorage.removeItem("kot-token"); setCurrentUser(null); };
+  const logout = () => { tokenStorage.clear(); setCurrentUser(null); };
 
   if (booting) return <div className="boot-screen"><Scissors size={32} /></div>;
   if (!currentUser) return <LoginScreen onLogin={setCurrentUser} branding={branding} />;
@@ -102,7 +103,7 @@ function LoginScreen({ onLogin, branding }: { onLogin: (user: User) => void; bra
     setBusy(true); setError("");
     try {
       const { token, user } = await api.auth.login(name, pin);
-      sessionStorage.setItem("kot-token", token);
+      tokenStorage.set(token);
       onLogin(user);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");

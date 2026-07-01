@@ -10,7 +10,10 @@
     "start": "NODE_ENV=production tsx server/index.ts",
     "lint": "eslint .",
     "build:win": "npm run build && npx tsup && npx electron-builder --win --publish never",
-    "electron:preview": "npm run build && npx tsup && npx electron ."
+    "electron:preview": "npm run build && npx tsup && npx electron .",
+    "cap:sync": "npm run build && npx cap sync android",
+    "android:open": "npm run cap:sync && npx cap open android",
+    "android:assets": "npx capacitor-assets generate --android"
   },
   "keywords": [],
   "author": "",
@@ -30,6 +33,10 @@
     "tsx": "^4.19.0"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.4.1",
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^8.4.1",
+    "@capacitor/core": "^8.4.1",
     "@electron/rebuild": "^3.7.0",
     "@eslint/js": "^9.0.0",
     "@types/bcryptjs": "^2.4.6",

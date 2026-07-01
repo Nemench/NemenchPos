@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Allows plain HTTP (no TLS) to the MAXIS server's LAN address only — Android 9+
+  blocks cleartext traffic by default. Keep this scoped to just that one host;
+  update it if capacitor.config.ts's SERVER_URL host changes.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">192.168.1.50</domain>
+    </domain-config>
+</network-security-config>
