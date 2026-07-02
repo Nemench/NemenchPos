@@ -24,6 +24,7 @@ import backupRouter from "./routes/backup.js";
 import stockRouter from "./routes/stock.js";
 import suppliersRouter from "./routes/suppliers.js";
 import weighInRouter from "./routes/weighIn.js";
+import statisticsRouter from "./routes/statistics.js";
 
 export const db = new KotDatabase();
 db.initialize();
@@ -112,6 +113,7 @@ app.use("/api/backup",   backupRouter);
 app.use("/api/stock",    stockRouter);
 app.use("/api/suppliers", suppliersRouter);
 app.use("/api/weigh-in", weighInRouter);
+app.use("/api/statistics", statisticsRouter);
 
 if (isProd) {
   // Serve the Vite-built SPA and fall back to index.html for any

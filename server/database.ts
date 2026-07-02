@@ -13,7 +13,7 @@ import type {
   User, UserInput,
   Department, DeptStatus, DeliveryAddress,
   Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput,
-  StockLocation, ProductStockRow
+  StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat
 } from "../src/shared/types.js";
 
 export class KotDatabase {
@@ -632,6 +632,47 @@ export class KotDatabase {
       LIMIT 100000`;
 
     return Array.from(this.buildOrderMap(this.db.prepare(sql).all(from, to) as Record<string, unknown>[]).values());
+  }
+
+  // Sales performance per item within a date range, for the admin
+  // Statistics screen. Grouped by item name rather than productId, since
+  // free-text order lines (no catalog product picked) never have one —
+  // this way every item that's ever actually been sold shows up, not just
+  // ones still in the catalog.
+  salesByItem(from: string, to: string): ItemSalesStat[] {
+    return this.db
+      .prepare(`
+        SELECT oi.name as name,
+               COALESCE(SUM(oi.quantity), 0) as totalQty,
+               COALESCE(SUM(oi.kg), 0) as totalKg,
+               COALESCE(SUM(oi.lineTotal), 0) as totalRevenue,
+               COUNT(DISTINCT oi.orderId) as orderCount
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.orderId
+        WHERE substr(o.createdAt, 1, 10) >= ? AND substr(o.createdAt, 1, 10) <= ?
+        GROUP BY lower(oi.name)
+        ORDER BY totalRevenue DESC`)
+      .all(from, to) as ItemSalesStat[];
+  }
+
+  // How much of each raw-intake item was received (Weigh-In) within a date
+  // range, alongside its live current on-hand total — only raw-intake items
+  // have anything to show here, since they're the only things Weigh-In ever
+  // receives (see isRawIntake).
+  stockMovementByItem(from: string, to: string): ItemStockMovementStat[] {
+    return this.db
+      .prepare(`
+        SELECT p.id as productId, p.name as productName,
+               COALESCE(SUM(wl.piecesReceived), 0) as totalPiecesReceived,
+               COALESCE(SUM(wl.weightKg), 0) as totalKgReceived,
+               COALESCE((SELECT SUM(qty) FROM product_stock ps WHERE ps.productId = p.id), 0) as currentOnHand,
+               p.lowStockThreshold
+        FROM products p
+        LEFT JOIN weigh_in_lines wl ON wl.productId = p.id AND substr(wl.createdAt, 1, 10) >= ? AND substr(wl.createdAt, 1, 10) <= ?
+        WHERE p.isActive = 1 AND p.isRawIntake = 1
+        GROUP BY p.id
+        ORDER BY totalKgReceived DESC`)
+      .all(from, to) as ItemStockMovementStat[];
   }
 
   getOrder(id: number): Order {

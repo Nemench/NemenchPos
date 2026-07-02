@@ -608,6 +608,9 @@ th {
   .ticket-actions { flex-wrap: wrap; gap: 6px; }
   .settings-panel { padding: 14px; }
   .setting-row { padding: 12px 14px; }
+
+  .bar-chart-row { grid-template-columns: 1fr; gap: 2px; }
+  .bar-chart-value { justify-self: end; }
 }
 
 /* ── Form message / error ── */
@@ -783,6 +786,62 @@ th {
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
+}
+
+/* ── Statistics ── */
+.stats-section-title {
+  margin: 24px 0 12px;
+}
+
+.bar-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.bar-chart-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 160px) 1fr auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.bar-chart-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.bar-chart-track {
+  height: 16px;
+  border-radius: 4px;
+  background: var(--blue-light);
+  overflow: hidden;
+}
+
+.bar-chart-fill {
+  height: 100%;
+  background: var(--blue);
+  border-radius: 4px;
+  transition: width 0.2s;
+}
+
+.bar-chart-value {
+  font-weight: 700;
+  color: var(--blue-dark);
+  white-space: nowrap;
+}
+
+.sortable-th {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sortable-th:hover {
+  color: #fff;
 }
 
 .grade-pill {

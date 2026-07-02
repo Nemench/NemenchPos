@@ -210,3 +210,28 @@ export interface Order {
   updatedAt: string;
   items: OrderItem[];
 }
+
+// ── Statistics (admin) ───────────────────────────────────────────────────────
+
+// One item's sales performance within a date range — aggregated across
+// order_items by name (not productId, since free-text order lines never
+// have one) so it covers every item that's ever been sold, catalog or not.
+export interface ItemSalesStat {
+  name: string;
+  totalQty: number;
+  totalKg: number;
+  totalRevenue: number;
+  orderCount: number;
+}
+
+// One raw-intake item's received quantity within a date range (from
+// Weigh-In), alongside its live current on-hand total — "how much came in
+// vs. what's actually here now."
+export interface ItemStockMovementStat {
+  productId: number;
+  productName: string;
+  totalPiecesReceived: number;
+  totalKgReceived: number;
+  currentOnHand: number;
+  lowStockThreshold: number | null;
+}

@@ -13,6 +13,7 @@ import { Capacitor } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
 import {
   BarChart2,
+  TrendingUp,
   ClipboardList,
   FileDown,
   History,
@@ -36,6 +37,8 @@ import type {
   Department,
   DeptStatus,
   Grade,
+  ItemSalesStat,
+  ItemStockMovementStat,
   Order,
   OrderItemInput,
   Product,
@@ -52,7 +55,7 @@ import { api, assetUrl } from "./api";
 import { applyTheme, deriveShades } from "./theme";
 import { tokenStorage } from "./tokenStorage";
 
-type Tab = "orders" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "stockTake" | "weighIn";
+type Tab = "orders" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "stockTake" | "weighIn" | "statistics";
 
 const deptStatusFlow: DeptStatus[] = ["New", "Received", "Ready", "Done"];
 const emptyLine: OrderItemInput = { productId: null, name: "", kg: null, quantity: null, notes: "", unitPrice: null, lineTotal: null, department: "counter" };
@@ -294,6 +297,9 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
               {currentUser.role === "admin" && (
                 <button className={tab === "reports" ? "active" : ""} onClick={() => setTab("reports")}><BarChart2 size={18} /><span>Reports</span></button>
               )}
+              {currentUser.role === "admin" && (
+                <button className={tab === "statistics" ? "active" : ""} onClick={() => setTab("statistics")}><TrendingUp size={18} /><span>Statistics</span></button>
+              )}
             </>
           )}
           {/* Sign out lives in nav itself (not just .sidebar-footer below) so it's
@@ -334,6 +340,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
           <SettingsPanel autoPrint={autoPrint} onAutoPrintChange={setAutoPrint} printStyle={printStyle} onPrintStyleChange={setPrintStyle} printerMap={printerMap} onPrinterMapChange={setPrinterMap} branding={branding} onBrandingChange={onBrandingChange} />
         )}
         {tab === "reports" && currentUser.role === "admin" && <ReportsPanel />}
+        {tab === "statistics" && currentUser.role === "admin" && <StatisticsPanel />}
       </main>
     </div>
   );
@@ -2231,6 +2238,197 @@ function ReportsPanel() {
   );
 }
 
+// ── Statistics (admin) ───────────────────────────────────────────────────────
+// Per-item sales performance (from orders) and stock movement (from
+// Weigh-In receiving vs. live on-hand totals), over a date range — either
+// a quick preset or a custom from/to, same pattern as Reports.
+
+type SortDir = "asc" | "desc";
+type SalesSortKey = "name" | "orderCount" | "totalQty" | "totalKg" | "totalRevenue";
+type MoveSortKey = "productName" | "totalPiecesReceived" | "totalKgReceived" | "currentOnHand";
+
+function StatisticsPanel() {
+  const today = new Date().toISOString().slice(0, 10);
+  const [from, setFrom] = useState(today);
+  const [to, setTo] = useState(today);
+  const [sales, setSales] = useState<ItemSalesStat[] | null>(null);
+  const [movement, setMovement] = useState<ItemStockMovementStat[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [salesSort, setSalesSort] = useState<{ key: SalesSortKey; dir: SortDir }>({ key: "totalRevenue", dir: "desc" });
+  const [moveSort, setMoveSort] = useState<{ key: MoveSortKey; dir: SortDir }>({ key: "totalKgReceived", dir: "desc" });
+
+  const applyPreset = (preset: "today" | "week" | "month" | "all") => {
+    const now = new Date();
+    const iso = (d: Date) => d.toISOString().slice(0, 10);
+    if (preset === "today") { setFrom(iso(now)); setTo(iso(now)); }
+    else if (preset === "week") {
+      const start = new Date(now); start.setDate(now.getDate() - now.getDay());
+      setFrom(iso(start)); setTo(iso(now));
+    } else if (preset === "month") {
+      setFrom(iso(new Date(now.getFullYear(), now.getMonth(), 1))); setTo(iso(now));
+    } else {
+      setFrom("2000-01-01"); setTo(iso(now));
+    }
+  };
+
+  const load = async () => {
+    if (from > to) { setError("'From' must be on or before 'To'"); return; }
+    setLoading(true); setError("");
+    try {
+      const [s, m] = await Promise.all([api.statistics.sales(from, to), api.statistics.stockMovement(from, to)]);
+      setSales(s); setMovement(m);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load statistics");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const sortedSales = useMemo(() => {
+    const dir = salesSort.dir === "asc" ? 1 : -1;
+    return [...(sales ?? [])].sort((a, b) =>
+      salesSort.key === "name" ? a.name.localeCompare(b.name) * dir : (a[salesSort.key] - b[salesSort.key]) * dir
+    );
+  }, [sales, salesSort]);
+
+  const sortedMovement = useMemo(() => {
+    const dir = moveSort.dir === "asc" ? 1 : -1;
+    return [...(movement ?? [])].sort((a, b) =>
+      moveSort.key === "productName" ? a.productName.localeCompare(b.productName) * dir : (a[moveSort.key] - b[moveSort.key]) * dir
+    );
+  }, [movement, moveSort]);
+
+  const toggleSalesSort = (key: SalesSortKey) =>
+    setSalesSort((cur) => (cur.key === key ? { key, dir: cur.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
+  const toggleMoveSort = (key: MoveSortKey) =>
+    setMoveSort((cur) => (cur.key === key ? { key, dir: cur.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
+
+  const salesChartData = (sales ?? []).slice(0, 10).map((s) => ({ label: s.name, value: s.totalRevenue }));
+  const movementChartData = (movement ?? []).filter((m) => m.totalKgReceived > 0).slice(0, 10).map((m) => ({ label: m.productName, value: m.totalKgReceived }));
+
+  return (
+    <div className="panel reports-panel">
+      <h2>Statistics</h2>
+      <div className="report-controls">
+        <button type="button" className="secondary sm" onClick={() => applyPreset("today")}>Today</button>
+        <button type="button" className="secondary sm" onClick={() => applyPreset("week")}>This Week</button>
+        <button type="button" className="secondary sm" onClick={() => applyPreset("month")}>This Month</button>
+        <button type="button" className="secondary sm" onClick={() => applyPreset("all")}>All Time</button>
+        <label>From<input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
+        <label>To<input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></label>
+        <button type="button" onClick={() => void load()} disabled={loading}>{loading ? "Loading…" : "View"}</button>
+      </div>
+      {error && <div className="form-message">{error}</div>}
+
+      {sales && (
+        <>
+          <h3 className="stats-section-title">Sales by item</h3>
+          {salesChartData.length === 0 ? (
+            <p className="report-empty">No sales in this range.</p>
+          ) : (
+            <>
+              <SimpleBarChart data={salesChartData} valueFormatter={(v) => currency.format(v)} />
+              <div className="table-panel">
+                <table>
+                  <thead>
+                    <tr>
+                      <SortableTh label="Item" active={salesSort.key === "name"} dir={salesSort.dir} onClick={() => toggleSalesSort("name")} />
+                      <SortableTh label="Orders" active={salesSort.key === "orderCount"} dir={salesSort.dir} onClick={() => toggleSalesSort("orderCount")} />
+                      <SortableTh label="Qty" active={salesSort.key === "totalQty"} dir={salesSort.dir} onClick={() => toggleSalesSort("totalQty")} />
+                      <SortableTh label="Kg" active={salesSort.key === "totalKg"} dir={salesSort.dir} onClick={() => toggleSalesSort("totalKg")} />
+                      <SortableTh label="Revenue" active={salesSort.key === "totalRevenue"} dir={salesSort.dir} onClick={() => toggleSalesSort("totalRevenue")} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedSales.map((s) => (
+                      <tr key={s.name}>
+                        <td>{s.name}</td>
+                        <td>{s.orderCount}</td>
+                        <td>{s.totalQty || "—"}</td>
+                        <td>{s.totalKg ? s.totalKg.toFixed(2) : "—"}</td>
+                        <td>{currency.format(s.totalRevenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {movement && (
+        <>
+          <h3 className="stats-section-title">Stock movement (raw intake items)</h3>
+          {movement.length === 0 ? (
+            <p className="report-empty">No raw-intake items configured yet.</p>
+          ) : (
+            <>
+              {movementChartData.length > 0 && <SimpleBarChart data={movementChartData} valueFormatter={(v) => `${v.toFixed(1)} kg`} />}
+              <div className="table-panel">
+                <table>
+                  <thead>
+                    <tr>
+                      <SortableTh label="Item" active={moveSort.key === "productName"} dir={moveSort.dir} onClick={() => toggleMoveSort("productName")} />
+                      <SortableTh label="Pieces received" active={moveSort.key === "totalPiecesReceived"} dir={moveSort.dir} onClick={() => toggleMoveSort("totalPiecesReceived")} />
+                      <SortableTh label="Kg received" active={moveSort.key === "totalKgReceived"} dir={moveSort.dir} onClick={() => toggleMoveSort("totalKgReceived")} />
+                      <SortableTh label="Current on hand" active={moveSort.key === "currentOnHand"} dir={moveSort.dir} onClick={() => toggleMoveSort("currentOnHand")} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedMovement.map((m) => {
+                      const low = m.lowStockThreshold != null && m.currentOnHand <= m.lowStockThreshold;
+                      return (
+                        <tr key={m.productId}>
+                          <td>{m.productName}</td>
+                          <td>{m.totalPiecesReceived || "—"}</td>
+                          <td>{m.totalKgReceived ? m.totalKgReceived.toFixed(2) : "—"}</td>
+                          <td>{m.currentOnHand}{low && <span className="low-stock-badge">Low</span>}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function SortableTh({ label, active, dir, onClick }: { label: string; active: boolean; dir: SortDir; onClick: () => void }) {
+  return (
+    <th className="sortable-th" onClick={onClick}>
+      {label}{active && (dir === "asc" ? " ▲" : " ▼")}
+    </th>
+  );
+}
+
+// Minimal horizontal bar chart — plain divs/CSS rather than a charting
+// library, since the need here (rank the top N items by one number) doesn't
+// warrant the extra dependency weight.
+function SimpleBarChart({ data, valueFormatter }: { data: { label: string; value: number }[]; valueFormatter?: (v: number) => string }) {
+  const max = Math.max(1, ...data.map((d) => d.value));
+  return (
+    <div className="bar-chart">
+      {data.map((d) => (
+        <div className="bar-chart-row" key={d.label}>
+          <span className="bar-chart-label">{d.label}</span>
+          <div className="bar-chart-track">
+            <div className="bar-chart-fill" style={{ width: `${Math.max(2, (d.value / max) * 100)}%` }} />
+          </div>
+          <span className="bar-chart-value">{valueFormatter ? valueFormatter(d.value) : d.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Print ─────────────────────────────────────────────────────────────────────
 // These are plain functions (not React components) because they build a
 // complete standalone HTML document string — CSS inlined in a <style> tag,
@@ -2668,7 +2866,7 @@ function calculateLineTotal(item: OrderItemInput) {
 }
 
 function tabTitle(tab: Tab) {
-  return { orders: "New Order", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings", reports: "Reports", stockTake: "Stock Take", weighIn: "Weigh-In" }[tab];
+  return { orders: "New Order", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings", reports: "Reports", stockTake: "Stock Take", weighIn: "Weigh-In", statistics: "Statistics" }[tab];
 }
 
 function tabSubtitle(tab: Tab) {
@@ -2681,6 +2879,7 @@ function tabSubtitle(tab: Tab) {
     users: "Manage staff accounts and PINs.",
     reports: "View and download orders for a date range.",
     stockTake: "Count on-hand stock and flag low items.",
-    weighIn: "Log received stock by weight, batch by batch."
+    weighIn: "Log received stock by weight, batch by batch.",
+    statistics: "Sales performance and stock movement per item."
   }[tab];
 }
