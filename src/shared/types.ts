@@ -21,6 +21,7 @@ export interface User {
   isActive: number;
   createdAt: string;
   lastSeenAt: string | null;
+  themeMode: "light" | "dark" | null;
 }
 
 export interface UserInput {
@@ -238,4 +239,23 @@ export interface ItemStockMovementStat {
   totalKgReceived: number;
   currentOnHand: number;
   lowStockThreshold: number | null;
+}
+
+// Headline KPIs + breakdowns for the Statistics overview dashboard.
+// `prev*` figures cover the immediately preceding period of equal length
+// (e.g. asking for the last 7 days also compares against the 7 days before
+// that), so the client can show a %-change per KPI without a second round trip.
+export interface StatisticsOverview {
+  totalRevenue: number;
+  totalOrders: number;
+  avgOrderValue: number;
+  totalKg: number;
+  totalQty: number;
+  prevRevenue: number;
+  prevOrders: number;
+  prevAvgOrderValue: number;
+  revenueByDay: { date: string; revenue: number; orders: number }[];
+  revenueByDept: { department: string; revenue: number }[];
+  revenueByOrderType: { orderType: string; revenue: number }[];
+  ordersByStatus: { status: string; count: number }[];
 }

@@ -12,12 +12,16 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
 import {
+  ArrowDown,
+  ArrowUp,
   BarChart2,
   TrendingUp,
   ClipboardList,
   FileDown,
   History,
   LogOut,
+  Minus,
+  Moon,
   Package,
   Plus,
   Printer,
@@ -25,6 +29,7 @@ import {
   ScanLine,
   Scissors,
   Settings,
+  Sun,
   Trash2,
   Users,
   Weight,
@@ -39,6 +44,7 @@ import type {
   Grade,
   ItemSalesStat,
   ItemStockMovementStat,
+  StatisticsOverview,
   Order,
   OrderItemInput,
   Product,
@@ -52,10 +58,14 @@ import type {
   WeighInLine
 } from "../shared/types";
 import { api, assetUrl } from "./api";
-import { applyTheme, deriveShades } from "./theme";
+import { applyTheme, applyThemeMode, deriveShades, initThemeMode, ThemeMode } from "./theme";
 import { tokenStorage } from "./tokenStorage";
 
 type Tab = "orders" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "weighIn" | "statistics";
+
+// Applied at module load (before React's first render) so there's no flash
+// of the wrong theme — reads the stored preference (or system default).
+initThemeMode();
 
 const deptStatusFlow: DeptStatus[] = ["New", "Received", "Ready", "Done"];
 const emptyLine: OrderItemInput = { productId: null, name: "", kg: null, quantity: null, notes: "", unitPrice: null, lineTotal: null, wantedPrice: null, department: "counter" };
@@ -91,6 +101,27 @@ export function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [booting, setBooting] = useState(true);
   const [branding, setBranding] = useState({ siteName: "MAXIS", logoUrl: "" });
+  // initThemeMode() already applied the stored/system preference to <html>
+  // before this component's first render (see module scope above) — this
+  // state just needs to agree with it so the toggle button shows the right icon.
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => (document.documentElement.getAttribute("data-theme") as ThemeMode) || "light");
+  // The user's own choice (saved server-side to their account) always wins
+  // over the per-device fallback, so the same login shows the same theme on
+  // any terminal.
+  const applyUserThemeMode = (user: User) => {
+    if (user.themeMode === "light" || user.themeMode === "dark") {
+      applyThemeMode(user.themeMode);
+      setThemeMode(user.themeMode);
+    }
+  };
+  const toggleThemeMode = () => {
+    const next: ThemeMode = themeMode === "dark" ? "light" : "dark";
+    applyThemeMode(next);
+    setThemeMode(next);
+    api.auth.setThemeMode(next)
+      .then(({ token }) => tokenStorage.set(token))
+      .catch(() => undefined);
+  };
 
   // Validate any stored token against the server on load, rather than
   // trusting it blindly — also picks up server-side role changes.
@@ -98,7 +129,7 @@ export function App() {
     const token = tokenStorage.get();
     if (!token) { setBooting(false); return; }
     api.auth.me()
-      .then(setCurrentUser)
+      .then((user) => { setCurrentUser(user); applyUserThemeMode(user); })
       .catch(() => tokenStorage.clear())
       .finally(() => setBooting(false));
   }, []);
@@ -130,8 +161,8 @@ export function App() {
   const logout = () => { tokenStorage.clear(); setCurrentUser(null); };
 
   if (booting) return <div className="boot-screen"><Scissors size={32} /></div>;
-  if (!currentUser) return <LoginScreen onLogin={setCurrentUser} branding={branding} />;
-  return <MainApp currentUser={currentUser} onLogout={logout} branding={branding} onBrandingChange={setBranding} />;
+  if (!currentUser) return <LoginScreen onLogin={(user) => { setCurrentUser(user); applyUserThemeMode(user); }} branding={branding} />;
+  return <MainApp currentUser={currentUser} onLogout={logout} branding={branding} onBrandingChange={setBranding} themeMode={themeMode} onToggleTheme={toggleThemeMode} />;
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
@@ -188,7 +219,7 @@ function LoginScreen({ onLogin, branding }: { onLogin: (user: User) => void; bra
 // The logged-in shell: sidebar nav (gated per role) + whichever panel the
 // current tab selects. Owns the shared data (products/orders) that multiple
 // panels need, refreshed on mount and lightly polled while on the Queue tab.
-function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { currentUser: User; onLogout: () => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void }) {
+function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode, onToggleTheme }: { currentUser: User; onLogout: () => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void; themeMode: ThemeMode; onToggleTheme: () => void }) {
   // stock_taker gets a completely separate, minimal nav (Stock Take +
   // Weigh-In only) — everything else below the ternary is for other roles.
   const isStockTaker = currentUser.role === "stock_taker";
@@ -313,6 +344,14 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
             <h1>{tabTitle(tab)}</h1>
             <p>{tabSubtitle(tab)}</p>
           </div>
+          <button
+            type="button" className="icon-button secondary theme-toggle"
+            onClick={onToggleTheme}
+            title={themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            aria-label="Toggle dark mode"
+          >
+            {themeMode === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
         </header>
 
         {message && <div className="toast">{message}</div>}
@@ -2286,6 +2325,7 @@ function StatisticsPanel() {
   const [to, setTo] = useState(today);
   const [sales, setSales] = useState<ItemSalesStat[] | null>(null);
   const [movement, setMovement] = useState<ItemStockMovementStat[] | null>(null);
+  const [overview, setOverview] = useState<StatisticsOverview | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [salesSort, setSalesSort] = useState<{ key: SalesSortKey; dir: SortDir }>({ key: "totalRevenue", dir: "desc" });
@@ -2309,8 +2349,8 @@ function StatisticsPanel() {
     if (from > to) { setError("'From' must be on or before 'To'"); return; }
     setLoading(true); setError("");
     try {
-      const [s, m] = await Promise.all([api.statistics.sales(from, to), api.statistics.stockMovement(from, to)]);
-      setSales(s); setMovement(m);
+      const [s, m, o] = await Promise.all([api.statistics.sales(from, to), api.statistics.stockMovement(from, to), api.statistics.overview(from, to)]);
+      setSales(s); setMovement(m); setOverview(o);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load statistics");
     } finally {
@@ -2340,6 +2380,7 @@ function StatisticsPanel() {
     setMoveSort((cur) => (cur.key === key ? { key, dir: cur.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
 
   const salesChartData = (sales ?? []).slice(0, 10).map((s) => ({ label: s.name, value: s.totalRevenue }));
+  const salesRevenueTotal = (sales ?? []).reduce((sum, s) => sum + s.totalRevenue, 0);
   const movementChartData = (movement ?? []).filter((m) => m.totalKgReceived > 0).slice(0, 10).map((m) => ({ label: m.productName, value: m.totalKgReceived }));
 
   return (
@@ -2355,6 +2396,48 @@ function StatisticsPanel() {
         <button type="button" onClick={() => void load()} disabled={loading}>{loading ? "Loading…" : "View"}</button>
       </div>
       {error && <div className="form-message">{error}</div>}
+
+      {overview && (
+        <>
+          <div className="kpi-row">
+            <KpiCard label="Revenue" value={overview.totalRevenue} prevValue={overview.prevRevenue} formatter={(v) => currency.format(v)} />
+            <KpiCard label="Orders" value={overview.totalOrders} prevValue={overview.prevOrders} formatter={(v) => String(Math.round(v))} />
+            <KpiCard label="Avg order value" value={overview.avgOrderValue} prevValue={overview.prevAvgOrderValue} formatter={(v) => currency.format(v)} />
+            <KpiCard label="Kg sold" value={overview.totalKg} prevValue={null} formatter={(v) => `${v.toFixed(1)} kg`} />
+          </div>
+
+          <h3 className="stats-section-title">Revenue over time</h3>
+          {overview.revenueByDay.every((d) => d.revenue === 0) ? (
+            <p className="report-empty">No revenue in this range.</p>
+          ) : (
+            <RevenueTrendChart data={overview.revenueByDay} />
+          )}
+
+          <div className="stats-breakdown-grid">
+            <div>
+              <h3 className="stats-section-title">Revenue by department</h3>
+              <BreakdownBars
+                items={overview.revenueByDept.map((d) => ({ label: capitalize(d.department || "Unassigned"), value: d.revenue }))}
+                valueFormatter={(v) => currency.format(v)}
+              />
+            </div>
+            <div>
+              <h3 className="stats-section-title">Revenue by order type</h3>
+              <BreakdownBars
+                items={overview.revenueByOrderType.map((d) => ({ label: capitalize(d.orderType || "Unspecified"), value: d.revenue }))}
+                valueFormatter={(v) => currency.format(v)}
+              />
+            </div>
+            <div>
+              <h3 className="stats-section-title">Orders by status</h3>
+              <BreakdownBars
+                items={overview.ordersByStatus.map((d) => ({ label: d.status, value: d.count }))}
+                valueFormatter={(v) => String(v)}
+              />
+            </div>
+          </div>
+        </>
+      )}
 
       {sales && (
         <>
@@ -2373,6 +2456,7 @@ function StatisticsPanel() {
                       <SortableTh label="Qty" active={salesSort.key === "totalQty"} dir={salesSort.dir} onClick={() => toggleSalesSort("totalQty")} />
                       <SortableTh label="Kg" active={salesSort.key === "totalKg"} dir={salesSort.dir} onClick={() => toggleSalesSort("totalKg")} />
                       <SortableTh label="Revenue" active={salesSort.key === "totalRevenue"} dir={salesSort.dir} onClick={() => toggleSalesSort("totalRevenue")} />
+                      <th>% of revenue</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2383,6 +2467,7 @@ function StatisticsPanel() {
                         <td>{s.totalQty || "—"}</td>
                         <td>{s.totalKg ? s.totalKg.toFixed(2) : "—"}</td>
                         <td>{currency.format(s.totalRevenue)}</td>
+                        <td>{salesRevenueTotal > 0 ? `${((s.totalRevenue / salesRevenueTotal) * 100).toFixed(1)}%` : "—"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -2458,6 +2543,120 @@ function SimpleBarChart({ data, valueFormatter }: { data: { label: string; value
           <span className="bar-chart-value">{valueFormatter ? valueFormatter(d.value) : d.value}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+function capitalize(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+// Same look as SimpleBarChart, plus a %-of-total next to each value — used
+// for the category breakdowns (department/order type/status) on the
+// Statistics overview, where "how big a slice" matters as much as the raw number.
+function BreakdownBars({ items, valueFormatter }: { items: { label: string; value: number }[]; valueFormatter: (v: number) => string }) {
+  const max = Math.max(1, ...items.map((i) => i.value));
+  const total = items.reduce((sum, i) => sum + i.value, 0);
+  if (items.length === 0 || total === 0) return <p className="report-empty">No data in this range.</p>;
+  return (
+    <div className="bar-chart">
+      {items.map((i) => (
+        <div className="bar-chart-row" key={i.label}>
+          <span className="bar-chart-label">{i.label}</span>
+          <div className="bar-chart-track">
+            <div className="bar-chart-fill" style={{ width: `${Math.max(2, (i.value / max) * 100)}%` }} />
+          </div>
+          <span className="bar-chart-value">{valueFormatter(i.value)} <span className="bar-chart-pct">({((i.value / total) * 100).toFixed(1)}%)</span></span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// A single headline KPI with a %-change chip vs. the immediately preceding
+// period of equal length (server-computed — see statisticsOverview). A null
+// prevValue (kg sold has no meaningful "previous" comparison shown) just
+// omits the chip; a zero previous value with a nonzero current one shows
+// "New" rather than a meaningless (or infinite) percentage.
+function KpiCard({ label, value, prevValue, formatter }: { label: string; value: number; prevValue: number | null; formatter: (v: number) => string }) {
+  let chip: { text: string; dir: "up" | "down" | "flat" } | null = null;
+  if (prevValue != null) {
+    if (prevValue === 0) {
+      chip = value === 0 ? null : { text: "New", dir: "up" };
+    } else {
+      const pct = ((value - prevValue) / Math.abs(prevValue)) * 100;
+      chip = { text: `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%`, dir: Math.abs(pct) < 0.05 ? "flat" : pct > 0 ? "up" : "down" };
+    }
+  }
+  const Icon = chip?.dir === "up" ? ArrowUp : chip?.dir === "down" ? ArrowDown : Minus;
+  return (
+    <div className="kpi-card">
+      <div className="kpi-label">{label}</div>
+      <div className="kpi-value">{formatter(value)}</div>
+      {chip && (
+        <div className={`kpi-chip kpi-chip-${chip.dir}`}>
+          <Icon size={13} /> {chip.text} <span className="kpi-chip-sub">vs previous period</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// SVG line/area chart for revenue-by-day, with a hover crosshair + tooltip
+// (date, revenue, order count) — the one series here doesn't need a legend,
+// its axis/title already name it.
+function RevenueTrendChart({ data }: { data: { date: string; revenue: number; orders: number }[] }) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const width = 760, height = 220, padL = 8, padR = 8, padT = 16, padB = 24;
+  const innerW = width - padL - padR, innerH = height - padT - padB;
+  const n = data.length;
+  const maxVal = Math.max(1, ...data.map((d) => d.revenue));
+  const x = (i: number) => padL + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+  const y = (v: number) => padT + innerH - (v / maxVal) * innerH;
+  const linePoints = data.map((d, i) => `${x(i)},${y(d.revenue)}`).join(" ");
+  const areaPoints = `${x(0)},${padT + innerH} ${linePoints} ${x(n - 1)},${padT + innerH}`;
+
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * width;
+    let closest = 0, best = Infinity;
+    for (let i = 0; i < n; i++) {
+      const d = Math.abs(x(i) - px);
+      if (d < best) { best = d; closest = i; }
+    }
+    setHoverIdx(closest);
+  };
+
+  const hovered = hoverIdx != null ? data[hoverIdx] : null;
+
+  return (
+    <div className="trend-chart">
+      <svg viewBox={`0 0 ${width} ${height}`} className="trend-chart-svg"
+        onMouseMove={onMove} onMouseLeave={() => setHoverIdx(null)}>
+        <line x1={padL} y1={padT + innerH} x2={width - padR} y2={padT + innerH} className="trend-chart-axis" />
+        <polygon points={areaPoints} className="trend-chart-area" />
+        <polyline points={linePoints} className="trend-chart-line" />
+        {hovered && hoverIdx != null && (
+          <>
+            <line x1={x(hoverIdx)} y1={padT} x2={x(hoverIdx)} y2={padT + innerH} className="trend-chart-crosshair" />
+            <circle cx={x(hoverIdx)} cy={y(hovered.revenue)} r={4} className="trend-chart-dot" />
+          </>
+        )}
+      </svg>
+      {hovered && hoverIdx != null && (
+        <div
+          className="trend-chart-tooltip"
+          style={{ left: `${(x(hoverIdx) / width) * 100}%` }}
+        >
+          <div className="trend-chart-tooltip-date">{new Date(`${hovered.date}T00:00:00`).toLocaleDateString(appSettings.locale, { month: "short", day: "numeric" })}</div>
+          <div>{currency.format(hovered.revenue)}</div>
+          <div className="trend-chart-tooltip-sub">{hovered.orders} order{hovered.orders === 1 ? "" : "s"}</div>
+        </div>
+      )}
+      <div className="trend-chart-labels">
+        <span>{new Date(`${data[0].date}T00:00:00`).toLocaleDateString(appSettings.locale, { month: "short", day: "numeric" })}</span>
+        <span>{new Date(`${data[n - 1].date}T00:00:00`).toLocaleDateString(appSettings.locale, { month: "short", day: "numeric" })}</span>
+      </div>
     </div>
   );
 }
@@ -2680,7 +2879,7 @@ tr:nth-child(even) td{background:#f8f9fc}
 .item-hdr td{font-weight:700;color:${blueDark};background:#f4f7fd!important;padding-top:12px}
 .item-subtotal td{font-style:italic;color:#555;border-top:1px solid #c8d5ee;background:#fff!important}
 .totals td{font-weight:800;border-top:2px solid ${blueDark};background:#fff}
-.weigh-page{page-break-before:always;page-break-inside:avoid}
+.weigh-page{page-break-inside:avoid}.weigh-page+.weigh-page{page-break-before:always}
 </style></head><body>
 <div class="hdr">
   <div class="hdr-left"><div class="shop">${siteName}</div><div class="type">${esc(heading)}</div></div>

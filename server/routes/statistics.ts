@@ -30,4 +30,11 @@ router.get("/stock-movement", (req, res) => {
   res.json(db.stockMovementByItem(...range));
 });
 
+// GET /api/statistics/overview?from=YYYY-MM-DD&to=YYYY-MM-DD
+router.get("/overview", (req, res) => {
+  const range = parseRange(req);
+  if (!range) { res.status(400).json({ message: "from and to are required (YYYY-MM-DD)" }); return; }
+  res.json(db.statisticsOverview(...range));
+});
+
 export default router;

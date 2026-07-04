@@ -2,7 +2,7 @@
 // req()/download(), which attach the JWT and centrally handle a 401 (token
 // missing/expired) by clearing it and forcing a reload back to the login screen.
 import { Capacitor } from "@capacitor/core";
-import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput, StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat } from "../shared/types";
+import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput, StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview } from "../shared/types";
 import { tokenStorage } from "./tokenStorage";
 import { NATIVE_SERVER_URL } from "../shared/nativeServer";
 
@@ -63,7 +63,9 @@ async function download(path: string, filename: string): Promise<void> {
 export const api = {
   auth: {
     login: (name: string, pin: string) => req<{ token: string; user: User }>("POST", "/auth/login", { name, pin }),
-    me: () => req<User>("GET", "/auth/me")
+    me: () => req<User>("GET", "/auth/me"),
+    setThemeMode: (themeMode: "light" | "dark") =>
+      req<{ token: string; user: User }>("PATCH", "/auth/theme-mode", { themeMode })
   },
   users: {
     list: () => req<User[]>("GET", "/users"),
@@ -135,6 +137,7 @@ export const api = {
   },
   statistics: {
     sales: (from: string, to: string) => req<ItemSalesStat[]>("GET", `/statistics/sales?from=${from}&to=${to}`),
-    stockMovement: (from: string, to: string) => req<ItemStockMovementStat[]>("GET", `/statistics/stock-movement?from=${from}&to=${to}`)
+    stockMovement: (from: string, to: string) => req<ItemStockMovementStat[]>("GET", `/statistics/stock-movement?from=${from}&to=${to}`),
+    overview: (from: string, to: string) => req<StatisticsOverview>("GET", `/statistics/overview?from=${from}&to=${to}`)
   }
 };

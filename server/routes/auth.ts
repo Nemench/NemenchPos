@@ -52,4 +52,18 @@ router.get("/me", requireAuth, (req: AuthRequest, res) => {
   res.json(req.user);
 });
 
+// Lets the logged-in user set their own light/dark preference — saved to
+// their account (not the device) so it follows them to any terminal they
+// log into. Re-issues the token so the new preference sticks for the rest
+// of this session without forcing a re-login.
+router.patch("/theme-mode", requireAuth, (req: AuthRequest, res) => {
+  const { themeMode } = req.body as { themeMode: string };
+  if (themeMode !== "light" && themeMode !== "dark") {
+    res.status(400).json({ message: "themeMode must be 'light' or 'dark'" });
+    return;
+  }
+  const user = db.setUserThemeMode(req.user!.id, themeMode);
+  res.json({ token: signToken(user), user });
+});
+
 export default router;

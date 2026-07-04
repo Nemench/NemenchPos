@@ -13,7 +13,7 @@ import type {
   User, UserInput,
   Department, DeptStatus, DeliveryAddress,
   Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput,
-  StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat
+  StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview
 } from "../src/shared/types.js";
 
 export class KotDatabase {
@@ -35,7 +35,7 @@ export class KotDatabase {
 
   listUsers(): User[] {
     return this.db
-      .prepare("SELECT id, name, role, department, isActive, createdAt, lastSeenAt FROM users ORDER BY name")
+      .prepare("SELECT id, name, role, department, isActive, createdAt, lastSeenAt, themeMode FROM users ORDER BY name")
       .all() as User[];
   }
 
@@ -45,14 +45,19 @@ export class KotDatabase {
 
   getUser(id: number): User | null {
     return this.db
-      .prepare("SELECT id, name, role, department, isActive, createdAt FROM users WHERE id = ?")
+      .prepare("SELECT id, name, role, department, isActive, createdAt, themeMode FROM users WHERE id = ?")
       .get(id) as User | null;
   }
 
   getUserByName(name: string): (User & { pin: string }) | null {
     return this.db
-      .prepare("SELECT id, name, pin, role, department, isActive, createdAt FROM users WHERE lower(name) = lower(?) AND isActive = 1")
+      .prepare("SELECT id, name, pin, role, department, isActive, createdAt, themeMode FROM users WHERE lower(name) = lower(?) AND isActive = 1")
       .get(name) as (User & { pin: string }) | null;
+  }
+
+  setUserThemeMode(id: number, themeMode: "light" | "dark"): User {
+    this.db.prepare("UPDATE users SET themeMode = ? WHERE id = ?").run(themeMode, id);
+    return this.getUser(id)!;
   }
 
   createUser(input: UserInput): User {
@@ -675,6 +680,79 @@ export class KotDatabase {
       .all(from, to) as ItemStockMovementStat[];
   }
 
+  // Headline KPIs + breakdowns for the Statistics overview dashboard, plus
+  // the immediately-preceding period of equal length (for %-change) so the
+  // client doesn't need a second request just to compute deltas.
+  statisticsOverview(from: string, to: string): StatisticsOverview {
+    const totals = (f: string, t: string) => this.db
+      .prepare(`
+        SELECT COALESCE(SUM(oi.lineTotal), 0) as totalRevenue,
+               COALESCE(SUM(oi.kg), 0) as totalKg,
+               COALESCE(SUM(oi.quantity), 0) as totalQty,
+               COUNT(DISTINCT oi.orderId) as totalOrders
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.orderId
+        WHERE substr(o.createdAt, 1, 10) >= ? AND substr(o.createdAt, 1, 10) <= ?`)
+      .get(f, t) as { totalRevenue: number; totalKg: number; totalQty: number; totalOrders: number };
+
+    const days = Math.round((new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) / 86400000) + 1;
+    const shift = (d: string, n: number) => new Date(new Date(`${d}T00:00:00Z`).getTime() + n * 86400000).toISOString().slice(0, 10);
+    const prevTo = shift(from, -1);
+    const prevFrom = shift(prevTo, -(days - 1));
+
+    const current = totals(from, to);
+    const previous = totals(prevFrom, prevTo);
+
+    const revenueByDay = this.db
+      .prepare(`
+        SELECT substr(o.createdAt, 1, 10) as date,
+               COALESCE(SUM(oi.lineTotal), 0) as revenue,
+               COUNT(DISTINCT o.id) as orders
+        FROM orders o
+        LEFT JOIN order_items oi ON oi.orderId = o.id
+        WHERE substr(o.createdAt, 1, 10) >= ? AND substr(o.createdAt, 1, 10) <= ?
+        GROUP BY date ORDER BY date ASC`)
+      .all(from, to) as { date: string; revenue: number; orders: number }[];
+
+    const revenueByDept = this.db
+      .prepare(`
+        SELECT oi.department as department, COALESCE(SUM(oi.lineTotal), 0) as revenue
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.orderId
+        WHERE substr(o.createdAt, 1, 10) >= ? AND substr(o.createdAt, 1, 10) <= ?
+        GROUP BY oi.department`)
+      .all(from, to) as { department: string; revenue: number }[];
+
+    const revenueByOrderType = this.db
+      .prepare(`
+        SELECT o.orderType as orderType, COALESCE(SUM(oi.lineTotal), 0) as revenue
+        FROM orders o
+        LEFT JOIN order_items oi ON oi.orderId = o.id
+        WHERE substr(o.createdAt, 1, 10) >= ? AND substr(o.createdAt, 1, 10) <= ?
+        GROUP BY o.orderType`)
+      .all(from, to) as { orderType: string; revenue: number }[];
+
+    const ordersByStatus = this.db
+      .prepare(`
+        SELECT status, COUNT(*) as count
+        FROM orders
+        WHERE substr(createdAt, 1, 10) >= ? AND substr(createdAt, 1, 10) <= ?
+        GROUP BY status`)
+      .all(from, to) as { status: string; count: number }[];
+
+    return {
+      totalRevenue: current.totalRevenue,
+      totalOrders: current.totalOrders,
+      avgOrderValue: current.totalOrders ? current.totalRevenue / current.totalOrders : 0,
+      totalKg: current.totalKg,
+      totalQty: current.totalQty,
+      prevRevenue: previous.totalRevenue,
+      prevOrders: previous.totalOrders,
+      prevAvgOrderValue: previous.totalOrders ? previous.totalRevenue / previous.totalOrders : 0,
+      revenueByDay, revenueByDept, revenueByOrderType, ordersByStatus
+    };
+  }
+
   getOrder(id: number): Order {
     const order = this.db
       .prepare("SELECT o.*, u.name as requestedByName FROM orders o LEFT JOIN users u ON o.requestedById = u.id WHERE o.id = ?")
@@ -814,6 +892,7 @@ export class KotDatabase {
     if ((this.db.prepare("SELECT COUNT(*) as n FROM sqlite_master WHERE type='table' AND name='users'").get() as { n: number }).n > 0) {
       const userCols = (this.db.prepare("PRAGMA table_info(users)").all() as { name: string }[]).map((c) => c.name);
       if (!userCols.includes("lastSeenAt")) this.db.exec("ALTER TABLE users ADD COLUMN lastSeenAt TEXT");
+      if (!userCols.includes("themeMode")) this.db.exec("ALTER TABLE users ADD COLUMN themeMode TEXT");
     }
 
     // Add columns to orders if missing (existing databases)
@@ -881,7 +960,8 @@ export class KotDatabase {
         isActive INTEGER NOT NULL DEFAULT 1,
         createdAt TEXT NOT NULL,
         updatedAt TEXT,
-        lastSeenAt TEXT
+        lastSeenAt TEXT,
+        themeMode TEXT
       );
 
       CREATE TABLE IF NOT EXISTS products (

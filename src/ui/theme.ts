@@ -52,3 +52,36 @@ export function applyTheme(hex: string): void {
   root.setProperty("--blue-hover", shades.blueHover);
   root.setProperty("--blue-light", shades.blueLight);
 }
+
+// ── Light/dark mode ──────────────────────────────────────────────────────────
+// The authoritative preference is saved per-account on the server (see
+// auth.setThemeMode/applyUserThemeMode in App.tsx), so it follows a user to
+// any terminal they log into. localStorage here is only the pre-login/
+// no-account fallback (login screen, or before /auth/me resolves) — kept
+// separate from the brand color above, which every device should share.
+
+export type ThemeMode = "light" | "dark";
+const THEME_MODE_KEY = "maxis-theme-mode";
+
+function systemPrefersDark(): boolean {
+  return typeof window !== "undefined" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+}
+
+function getStoredThemeMode(): ThemeMode {
+  const stored = localStorage.getItem(THEME_MODE_KEY);
+  return stored === "light" || stored === "dark" ? stored : (systemPrefersDark() ? "dark" : "light");
+}
+
+export function applyThemeMode(mode: ThemeMode): void {
+  document.documentElement.setAttribute("data-theme", mode);
+  localStorage.setItem(THEME_MODE_KEY, mode);
+}
+
+// Resolves the mode to use on first load (stored preference, else system) and
+// applies it immediately — called once at module scope in App.tsx so there's
+// no flash of the wrong theme before React's first render.
+export function initThemeMode(): ThemeMode {
+  const mode = getStoredThemeMode();
+  document.documentElement.setAttribute("data-theme", mode);
+  return mode;
+}
