@@ -522,8 +522,8 @@ export class KotDatabase {
         }
         const insOrder = this.db.prepare("INSERT INTO orders (id,ticketNumber,customerName,customerPhone,orderType,deliveryAddress,requestedTime,assignedTo,status,kitchenStatus,counterStatus,requestedById,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         for (const o of orders) insOrder.run(o.id,o.ticketNumber,o.customerName,o.customerPhone,o.orderType,o.deliveryAddress,o.requestedTime,o.assignedTo??null,o.status,o.kitchenStatus,o.counterStatus,o.requestedById??null,o.createdAt,o.updatedAt);
-        const insItem = this.db.prepare("INSERT INTO order_items (id,orderId,productId,name,kg,quantity,notes,unitPrice,lineTotal,department) VALUES (?,?,?,?,?,?,?,?,?,?)");
-        for (const i of orderItems) insItem.run(i.id,i.orderId,i.productId??null,i.name,i.kg??null,i.quantity??null,i.notes,i.unitPrice??null,i.lineTotal??null,i.department);
+        const insItem = this.db.prepare("INSERT INTO order_items (id,orderId,productId,name,kg,quantity,notes,unitPrice,lineTotal,wantedPrice,department) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+        for (const i of orderItems) insItem.run(i.id,i.orderId,i.productId??null,i.name,i.kg??null,i.quantity??null,i.notes,i.unitPrice??null,i.lineTotal??null,i.wantedPrice??null,i.department);
         const insSupplier = this.db.prepare("INSERT INTO suppliers (id,name,isActive,createdAt) VALUES (?,?,?,?)");
         for (const s of suppliers) insSupplier.run(s.id,s.name,s.isActive??1,s.createdAt);
         const insBatch = this.db.prepare("INSERT INTO weigh_in_batches (id,status,createdById,createdAt,finalizedAt) VALUES (?,?,?,?,?)");
@@ -564,10 +564,10 @@ export class KotDatabase {
 
     const orderId = Number(result.lastInsertRowid);
     const insertItem = this.db.prepare(
-      "INSERT INTO order_items (orderId, productId, name, kg, quantity, notes, unitPrice, lineTotal, department) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO order_items (orderId, productId, name, kg, quantity, notes, unitPrice, lineTotal, wantedPrice, department) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
     for (const item of input.items) {
-      insertItem.run(orderId, item.productId ?? null, item.name.trim(), item.kg ?? null, item.quantity ?? null, item.notes.trim(), item.unitPrice ?? null, item.lineTotal ?? null, item.department);
+      insertItem.run(orderId, item.productId ?? null, item.name.trim(), item.kg ?? null, item.quantity ?? null, item.notes.trim(), item.unitPrice ?? null, item.lineTotal ?? null, item.wantedPrice ?? null, item.department);
     }
     return this.getOrder(orderId);
   }
@@ -587,7 +587,7 @@ export class KotDatabase {
              o.requestedById, o.createdAt, o.updatedAt, u.name as requestedByName,
              oi.id as oi_id, oi.productId as oi_productId, oi.name as oi_name,
              oi.kg as oi_kg, oi.quantity as oi_quantity, oi.notes as oi_notes,
-             oi.unitPrice as oi_unitPrice, oi.lineTotal as oi_lineTotal, oi.department as oi_dept
+             oi.unitPrice as oi_unitPrice, oi.lineTotal as oi_lineTotal, oi.wantedPrice as oi_wantedPrice, oi.department as oi_dept
       FROM orders o
       LEFT JOIN users u ON o.requestedById = u.id
       LEFT JOIN order_items oi ON o.id = oi.orderId`;
@@ -623,7 +623,7 @@ export class KotDatabase {
              o.requestedById, o.createdAt, o.updatedAt, u.name as requestedByName,
              oi.id as oi_id, oi.productId as oi_productId, oi.name as oi_name,
              oi.kg as oi_kg, oi.quantity as oi_quantity, oi.notes as oi_notes,
-             oi.unitPrice as oi_unitPrice, oi.lineTotal as oi_lineTotal, oi.department as oi_dept
+             oi.unitPrice as oi_unitPrice, oi.lineTotal as oi_lineTotal, oi.wantedPrice as oi_wantedPrice, oi.department as oi_dept
       FROM orders o
       LEFT JOIN users u ON o.requestedById = u.id
       LEFT JOIN order_items oi ON o.id = oi.orderId
@@ -696,8 +696,8 @@ export class KotDatabase {
     const order = this.getOrder(orderId);
     if (order.status === "Done") throw new Error("Cannot add items to a completed order");
     this.db
-      .prepare("INSERT INTO order_items (orderId, productId, name, kg, quantity, notes, unitPrice, lineTotal, department) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(orderId, item.productId ?? null, item.name.trim(), item.kg ?? null, item.quantity ?? null, item.notes.trim(), item.unitPrice ?? null, item.lineTotal ?? null, item.department);
+      .prepare("INSERT INTO order_items (orderId, productId, name, kg, quantity, notes, unitPrice, lineTotal, wantedPrice, department) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(orderId, item.productId ?? null, item.name.trim(), item.kg ?? null, item.quantity ?? null, item.notes.trim(), item.unitPrice ?? null, item.lineTotal ?? null, item.wantedPrice ?? null, item.department);
     this.db.prepare("UPDATE orders SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), orderId);
     return this.getOrder(orderId);
   }
@@ -756,6 +756,7 @@ export class KotDatabase {
           notes: row.oi_notes as string,
           unitPrice: row.oi_unitPrice as number | null,
           lineTotal: row.oi_lineTotal as number | null,
+          wantedPrice: row.oi_wantedPrice as number | null,
           department: row.oi_dept as Department,
         });
       }
@@ -771,7 +772,7 @@ export class KotDatabase {
 
   private listOrderItems(orderId: number): OrderItem[] {
     return this.db
-      .prepare("SELECT id, orderId, productId, name, kg, quantity, notes, unitPrice, lineTotal, department FROM order_items WHERE orderId = ? ORDER BY id ASC")
+      .prepare("SELECT id, orderId, productId, name, kg, quantity, notes, unitPrice, lineTotal, wantedPrice, department FROM order_items WHERE orderId = ? ORDER BY id ASC")
       .all(orderId) as OrderItem[];
   }
 
@@ -856,6 +857,14 @@ export class KotDatabase {
       if (!wilCols.includes("locationId")) this.db.exec("ALTER TABLE weigh_in_lines ADD COLUMN locationId INTEGER REFERENCES stock_locations(id)");
     }
 
+    // Add wantedPrice to order_items if missing (existing databases) — nullable,
+    // since historical lines predate the "wanted price instead of weight" feature.
+    const orderItemsExists = (this.db.prepare("SELECT COUNT(*) as n FROM sqlite_master WHERE type='table' AND name='order_items'").get() as { n: number }).n > 0;
+    if (orderItemsExists) {
+      const oiCols = (this.db.prepare("PRAGMA table_info(order_items)").all() as { name: string }[]).map((c) => c.name);
+      if (!oiCols.includes("wantedPrice")) this.db.exec("ALTER TABLE order_items ADD COLUMN wantedPrice REAL");
+    }
+
     // Needed before the CREATE TABLE below runs (which would otherwise make
     // product_stock exist unconditionally) — decides whether the one-time
     // "migrate onHandQty into a default location" step at the bottom of this
@@ -921,6 +930,7 @@ export class KotDatabase {
         notes TEXT NOT NULL DEFAULT '',
         unitPrice REAL,
         lineTotal REAL,
+        wantedPrice REAL,
         department TEXT NOT NULL DEFAULT 'counter'
       );
 

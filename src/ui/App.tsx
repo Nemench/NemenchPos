@@ -1,6 +1,6 @@
 // Single-file React SPA for the whole client UI. One component per screen/
-// panel (Login, OrderEntry, Queue, HistoryView, Products, StockTakePanel,
-// WeighInPanel, UsersPanel, SettingsPanel, ReportsPanel), switched by the
+// panel (Login, OrderEntry, Queue, HistoryView, StockPanel (Products +
+// StockTakePanel), WeighInPanel, UsersPanel, SettingsPanel, ReportsPanel), switched by the
 // `tab` state in MainApp and gated per-role both here (nav visibility) and
 // on the server (route middleware) — client-side gating is a UX nicety,
 // never the actual security boundary. Printing (buildReceiptHtml /
@@ -55,10 +55,10 @@ import { api, assetUrl } from "./api";
 import { applyTheme, deriveShades } from "./theme";
 import { tokenStorage } from "./tokenStorage";
 
-type Tab = "orders" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "stockTake" | "weighIn" | "statistics";
+type Tab = "orders" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "weighIn" | "statistics";
 
 const deptStatusFlow: DeptStatus[] = ["New", "Received", "Ready", "Done"];
-const emptyLine: OrderItemInput = { productId: null, name: "", kg: null, quantity: null, notes: "", unitPrice: null, lineTotal: null, department: "counter" };
+const emptyLine: OrderItemInput = { productId: null, name: "", kg: null, quantity: null, notes: "", unitPrice: null, lineTotal: null, wantedPrice: null, department: "counter" };
 const EMPTY_PRODUCT: ProductInput = { name: "", category: "", unitDefault: "kg", pricePerUnit: null, prepNotes: "", department: "counter", lowStockThreshold: null, barcode: null, isRawIntake: 0 };
 
 const currency = new Intl.NumberFormat(appSettings.locale, { style: "currency", currency: appSettings.currency });
@@ -192,7 +192,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
   // stock_taker gets a completely separate, minimal nav (Stock Take +
   // Weigh-In only) — everything else below the ternary is for other roles.
   const isStockTaker = currentUser.role === "stock_taker";
-  const [tab, setTab] = useState<Tab>(isStockTaker ? "stockTake" : currentUser.role === "kitchen" || currentUser.role === "counter" ? "queue" : "orders");
+  const [tab, setTab] = useState<Tab>(isStockTaker ? "products" : currentUser.role === "kitchen" || currentUser.role === "counter" ? "queue" : "orders");
   const [products, setProducts] = useState<Product[]>([]);
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
   const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
@@ -266,7 +266,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
         <nav>
           {isStockTaker ? (
             <>
-              <button className={tab === "stockTake" ? "active" : ""} onClick={() => setTab("stockTake")}><Package size={18} /><span>Stock Take</span></button>
+              <button className={tab === "products" ? "active" : ""} onClick={() => setTab("products")}><Package size={18} /><span>Stock</span></button>
               <button className={tab === "weighIn" ? "active" : ""} onClick={() => setTab("weighIn")}><Weight size={18} /><span>Weigh-In</span></button>
             </>
           ) : (
@@ -281,9 +281,6 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
                   <Package size={18} /><span>Stock</span>
                   {lowStockCount > 0 && <span className="badge-count">{lowStockCount}</span>}
                 </button>
-              )}
-              {currentUser.role === "admin" && (
-                <button className={tab === "stockTake" ? "active" : ""} onClick={() => setTab("stockTake")}><Package size={18} /><span>Stock Take</span></button>
               )}
               {currentUser.role === "admin" && (
                 <button className={tab === "weighIn" ? "active" : ""} onClick={() => setTab("weighIn")}><Weight size={18} /><span>Weigh-In</span></button>
@@ -332,8 +329,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange }: { curren
         )}
         {tab === "queue" && <Queue orders={activeOrders} currentUser={currentUser} onChanged={refresh} printStyle={printStyle} printerMap={printerMap} />}
         {tab === "history" && <HistoryView orders={historyOrders} printStyle={printStyle} printerMap={printerMap} />}
-        {tab === "products" && currentUser.role === "admin" && <Products products={products} onChanged={refresh} />}
-        {tab === "stockTake" && (currentUser.role === "admin" || isStockTaker) && <StockTakePanel products={products} currentUser={currentUser} onChanged={refresh} />}
+        {tab === "products" && (currentUser.role === "admin" || isStockTaker) && <StockPanel products={products} currentUser={currentUser} onChanged={refresh} />}
         {tab === "weighIn" && (currentUser.role === "admin" || isStockTaker) && <WeighInPanel products={products} currentUser={currentUser} onChanged={refresh} />}
         {tab === "users" && currentUser.role === "admin" && <UsersPanel />}
         {tab === "settings" && currentUser.role === "admin" && (
@@ -370,6 +366,16 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
     const p = products.find((x) => x.id === Number(productId));
     if (!p) { setLine(index, { productId: null, name: "", unitPrice: null, notes: "", department: defaultDept }); return; }
     setLine(index, { productId: p.id, name: p.name, unitPrice: p.pricePerUnit, notes: p.prepNotes, department: p.department });
+  };
+
+  // A "wanted price" (e.g. customer asks for "R100 of mince") stands in for a
+  // weight the cashier hasn't taken yet. Kg is estimated from it up front so
+  // the ticket shows something sensible, but stays freely editable/clearable
+  // afterward — the actual weight can be confirmed later at the scale.
+  const setWantedPrice = (index: number, value: string, unitPrice: number | null | undefined) => {
+    const wantedPrice = value ? Number(value) : null;
+    const estimatedKg = wantedPrice && unitPrice ? Number((wantedPrice / unitPrice).toFixed(3)) : null;
+    setLine(index, { wantedPrice, kg: estimatedKg });
   };
 
   const [barcodeModalOpen, setBarcodeModalOpen] = useState(false);
@@ -476,6 +482,10 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
             <label>
               Kg
               <input type="number" min="0" step="0.001" value={item.kg ?? ""} onChange={(e) => setLine(index, { kg: e.target.value ? Number(e.target.value) : null })} />
+            </label>
+            <label>
+              Wanted price (R) <span className="optional-hint">(optional — instead of a weight)</span>
+              <input type="number" min="0" step="0.01" placeholder="e.g. 100" value={item.wantedPrice ?? ""} onChange={(e) => setWantedPrice(index, e.target.value, item.unitPrice)} />
             </label>
             <label>
               Qty
@@ -893,7 +903,7 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
               {item.notes && <span>{item.notes}</span>}
             </div>
             <em>
-              {item.kg ? `${item.kg} kg` : ""}
+              {item.kg ? `${item.kg} kg` : item.wantedPrice ? `${currency.format(item.wantedPrice)} (to weigh)` : ""}
               {item.quantity ? ` ×${item.quantity}` : ""}
             </em>
           </li>
@@ -983,7 +993,30 @@ function HistoryView({ orders, printStyle, printerMap }: { orders: Order[]; prin
   );
 }
 
-// ── Products ──────────────────────────────────────────────────────────────────
+// ── Stock ─────────────────────────────────────────────────────────────────────
+
+// Merged "Stock" tab: an inner Catalog/Count toggle over the same two panels
+// that used to be separate top-level tabs (Products + StockTakePanel below).
+// stock_taker accounts can't edit the catalog, so they only ever see Count —
+// no toggle is rendered for them since there's nothing to switch to.
+function StockPanel({ products, currentUser, onChanged }: { products: Product[]; currentUser: User; onChanged: () => Promise<void> }) {
+  const canEditCatalog = currentUser.role === "admin";
+  const [view, setView] = useState<"catalog" | "count">(canEditCatalog ? "catalog" : "count");
+
+  return (
+    <>
+      {canEditCatalog && (
+        <div className="order-type-toggle">
+          <button type="button" className={view === "catalog" ? "active" : "secondary"} onClick={() => setView("catalog")}>Catalog</button>
+          <button type="button" className={view === "count" ? "active" : "secondary"} onClick={() => setView("count")}>Count</button>
+        </div>
+      )}
+      {view === "catalog"
+        ? <Products products={products} onChanged={onChanged} />
+        : <StockTakePanel products={products} currentUser={currentUser} onChanged={onChanged} />}
+    </>
+  );
+}
 
 // Admin product catalog editor: add/edit/delete products, set price and
 // low-stock threshold. CSV import/export lives in SettingsPanel, not here.
@@ -2458,7 +2491,7 @@ function buildReceiptHtml(order: Order, type: "kitchen" | "counter" | "master", 
   if (style === "a4") {
     const rows = items.map((i) => `<tr>
       <td><b>${esc(i.name)}</b>${i.notes ? `<div class="note">${esc(i.notes)}</div>` : ""}</td>
-      <td>${i.kg ? `${i.kg} kg` : "—"}</td>
+      <td>${i.kg ? `${i.kg} kg` : i.wantedPrice ? `${currency.format(i.wantedPrice)} (to weigh)` : "—"}</td>
       <td>${i.quantity ? `×${i.quantity}` : "—"}</td>
     </tr>`).join("");
 
@@ -2502,7 +2535,7 @@ tr:nth-child(even) td{background:#f8f9fc}tr:last-child td{border-bottom:none}
 
   // Thermal (80mm)
   const rows = items.map((i) => {
-    const qty = [i.kg ? `${i.kg} kg` : "", i.quantity ? `×${i.quantity}` : ""].filter(Boolean).join("  ");
+    const qty = [i.kg ? `${i.kg} kg` : i.wantedPrice ? `${currency.format(i.wantedPrice)} (to weigh)` : "", i.quantity ? `×${i.quantity}` : ""].filter(Boolean).join("  ");
     return `<div class="item"><div class="iname">${esc(i.name)}</div><div class="isub">${esc(qty)}${i.notes ? `  — ${esc(i.notes)}` : ""}</div></div>`;
   }).join("");
 
@@ -2553,11 +2586,12 @@ function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-// Builds the printable weigh-in batch summary: grouped by supplier, then by
-// item within each supplier (showing every individual line plus a per-item
-// subtotal), then a final grand-total table across all suppliers. `heading`
-// is overridden to "... — PREVIEW" when called from the non-finalizing
-// preview button, so the printout is visually distinguishable from a real one.
+// Builds the printable weigh-in batch summary: one page per supplier+product
+// combination (showing every individual line plus a per-item subtotal, and the
+// supplier's grand total on its last product's page), then a final grand-total
+// page across all suppliers. `heading` is overridden to "... — PREVIEW" when
+// called from the non-finalizing preview button, so the printout is visually
+// distinguishable from a real one.
 function buildWeighInSummaryHtml(dateIso: string, lines: WeighInLine[], products: Product[], heading = "WEIGH-IN SUMMARY"): string {
   const siteName = esc(receiptBranding.siteName || "MAXIS");
   const logoUrl = assetUrl(receiptBranding.logoUrl || "/logo.jpg");
@@ -2567,8 +2601,9 @@ function buildWeighInSummaryHtml(dateIso: string, lines: WeighInLine[], products
 
   const productName = (id: number) => products.find((p) => p.id === id)?.name ?? "—";
 
-  // Section by supplier; within each supplier, group by item — each item shows its individual
-  // weigh-in lines plus a per-item subtotal, then a supplier grand total at the bottom
+  // Section by supplier; within each supplier, group by item — each item gets its own
+  // printed page showing its individual weigh-in lines plus a per-item subtotal, and the
+  // supplier's grand total is appended to that supplier's final item page
   const bySupplier = new Map<number, { name: string; lines: WeighInLine[] }>();
   for (const l of lines) {
     const key = l.supplierId;
@@ -2585,26 +2620,31 @@ function buildWeighInSummaryHtml(dateIso: string, lines: WeighInLine[], products
         it.lines.push(l);
         items.set(l.productId, it);
       }
-      const itemBlocks = [...items.values()]
-        .sort((a, b) => a.productName.localeCompare(b.productName))
-        .map((it) => {
+      const sortedItems = [...items.values()].sort((a, b) => a.productName.localeCompare(b.productName));
+      const subPieces = supplier.lines.reduce((sum, l) => sum + l.piecesReceived, 0);
+      const subKg = supplier.lines.reduce((sum, l) => sum + l.weightKg, 0);
+      return sortedItems
+        .map((it, idx) => {
           const lineRows = [...it.lines]
             .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
             .map((l) => `<tr><td></td><td>${esc(l.grade)}</td><td>${l.piecesReceived}</td><td>${l.weightKg.toFixed(2)}</td></tr>`)
             .join("");
           const itPieces = it.lines.reduce((sum, l) => sum + l.piecesReceived, 0);
           const itKg = it.lines.reduce((sum, l) => sum + l.weightKg, 0);
-          return `<tr class="item-hdr"><td colspan="4">${esc(it.productName)}</td></tr>${lineRows}
-<tr class="item-subtotal"><td colspan="2">${esc(it.productName)} subtotal</td><td>${itPieces}</td><td>${itKg.toFixed(2)}</td></tr>`;
+          const supplierTotalRow = idx === sortedItems.length - 1
+            ? `<tr class="totals"><td colspan="2">Supplier total</td><td>${subPieces}</td><td>${subKg.toFixed(2)}</td></tr>`
+            : "";
+          return `<div class="weigh-page">
+<h3 class="supplier-hdr">${esc(supplier.name)}</h3>
+<table><thead><tr><th>Item</th><th>Grade</th><th>Pieces</th><th>Kg</th></tr></thead>
+<tbody>
+<tr class="item-hdr"><td colspan="4">${esc(it.productName)}</td></tr>${lineRows}
+<tr class="item-subtotal"><td colspan="2">${esc(it.productName)} subtotal</td><td>${itPieces}</td><td>${itKg.toFixed(2)}</td></tr>
+${supplierTotalRow}
+</tbody></table>
+</div>`;
         })
         .join("");
-      const subPieces = supplier.lines.reduce((sum, l) => sum + l.piecesReceived, 0);
-      const subKg = supplier.lines.reduce((sum, l) => sum + l.weightKg, 0);
-      return `<h3 class="supplier-hdr">${esc(supplier.name)}</h3>
-<table><thead><tr><th>Item</th><th>Grade</th><th>Pieces</th><th>Kg</th></tr></thead>
-<tbody>${itemBlocks}
-<tr class="totals"><td colspan="2">Supplier total</td><td>${subPieces}</td><td>${subKg.toFixed(2)}</td></tr>
-</tbody></table>`;
     })
     .join("");
 
@@ -2640,17 +2680,20 @@ tr:nth-child(even) td{background:#f8f9fc}
 .item-hdr td{font-weight:700;color:${blueDark};background:#f4f7fd!important;padding-top:12px}
 .item-subtotal td{font-style:italic;color:#555;border-top:1px solid #c8d5ee;background:#fff!important}
 .totals td{font-weight:800;border-top:2px solid ${blueDark};background:#fff}
+.weigh-page{page-break-before:always;page-break-inside:avoid}
 </style></head><body>
 <div class="hdr">
   <div class="hdr-left"><div class="shop">${siteName}</div><div class="type">${esc(heading)}</div></div>
   <div class="hdr-right"><img class="logo" src="${logoUrl}" alt="${siteName}"><div class="dt">${dateStr}</div></div>
 </div>
 ${supplierSections}
+<div class="weigh-page">
 <h2 class="section-hdr">Item totals — all suppliers</h2>
 <table><thead><tr><th>Item</th><th>Pieces</th><th>Kg</th></tr></thead>
 <tbody>${itemTotalRows}
 <tr class="totals"><td>Grand total</td><td>${grandPieces}</td><td>${grandKg.toFixed(2)}</td></tr>
 </tbody></table>
+</div>
 </body></html>`;
 }
 
@@ -2861,12 +2904,13 @@ function nextDeptStatus(status: DeptStatus): DeptStatus | null {
 }
 
 function calculateLineTotal(item: OrderItemInput) {
+  if (item.wantedPrice) return Number(item.wantedPrice.toFixed(2));
   if (!item.unitPrice || !item.kg) return null;
   return Number((item.kg * item.unitPrice).toFixed(2));
 }
 
 function tabTitle(tab: Tab) {
-  return { orders: "New Order", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings", reports: "Reports", stockTake: "Stock Take", weighIn: "Weigh-In", statistics: "Statistics" }[tab];
+  return { orders: "New Order", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings", reports: "Reports", weighIn: "Weigh-In", statistics: "Statistics" }[tab];
 }
 
 function tabSubtitle(tab: Tab) {
@@ -2875,10 +2919,9 @@ function tabSubtitle(tab: Tab) {
     queue: "Move tickets through each stage.",
     history: "Review completed tickets.",
     settings: "System configuration.",
-    products: "Manage stock items and prices.",
+    products: "Manage stock items, prices, and physical counts.",
     users: "Manage staff accounts and PINs.",
     reports: "View and download orders for a date range.",
-    stockTake: "Count on-hand stock and flag low items.",
     weighIn: "Log received stock by weight, batch by batch.",
     statistics: "Sales performance and stock movement per item."
   }[tab];

@@ -167,6 +167,10 @@ export interface OrderItemInput {
   notes: string;
   unitPrice?: number | null;
   lineTotal?: number | null;
+  // Customer-requested rand value instead of a weight (e.g. "R100 of mince") —
+  // when set, it drives lineTotal directly and kg may be auto-estimated from
+  // it, left as entered, or empty until the item is actually weighed.
+  wantedPrice?: number | null;
   department: Department;
 }
 
