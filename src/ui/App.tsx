@@ -37,6 +37,7 @@ import {
   X
 } from "lucide-react";
 import { appSettings } from "../shared/settings";
+import { parseWeighBarcode } from "../shared/weighBarcode";
 import type {
   CreateOrderInput,
   DeliveryAddress,
@@ -434,8 +435,12 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
   // A scanned/quick-created product only tells us item + price, not
   // kg/quantity — appended as a new line (replacing a still-blank first
   // line rather than piling up empties) for the cashier to fill in weight/qty.
-  const addLineFromBarcode = (p: Product) => {
-    const newLine: OrderItemInput = { productId: p.id, name: p.name, kg: null, quantity: null, notes: p.prepNotes, unitPrice: p.pricePerUnit, lineTotal: null, department: p.department };
+  const addLineFromBarcode = (p: Product, wantedPrice?: number) => {
+    // A scale-embedded weigh-barcode already tells us the final price for
+    // this specific label — same "wanted price" convention as typing one
+    // in by hand, so kg is estimated from it the same way.
+    const estimatedKg = wantedPrice && p.pricePerUnit ? Number((wantedPrice / p.pricePerUnit).toFixed(3)) : null;
+    const newLine: OrderItemInput = { productId: p.id, name: p.name, kg: estimatedKg, quantity: null, notes: p.prepNotes, unitPrice: p.pricePerUnit, lineTotal: null, wantedPrice: wantedPrice ?? null, department: p.department };
     setItems((cur) => (cur.length === 1 && !cur[0].name.trim() ? [newLine] : [...cur, newLine]));
     setBarcodeModalOpen(false);
   };
@@ -898,12 +903,17 @@ const BARCODE_FORMATS = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_
 
 type BarcodeStep = "choice" | "scan" | "manual" | "create";
 
-function BarcodeAddModal({ defaultDept, onAdd, onClose }: { defaultDept: Department; onAdd: (p: Product) => void; onClose: () => void }) {
+function BarcodeAddModal({ defaultDept, onAdd, onClose }: { defaultDept: Department; onAdd: (p: Product, wantedPrice?: number) => void; onClose: () => void }) {
   const [step, setStep] = useState<BarcodeStep>("choice");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [manualCode, setManualCode] = useState("");
   const [pendingBarcode, setPendingBarcode] = useState("");
+  // Set when the scanned code decoded as a scale weigh-barcode but its PLU
+  // isn't registered to any product yet — carried through to quick-create
+  // so the brand-new product's first line still gets the price that was
+  // actually on the label, not a blank one.
+  const [pendingWeighPrice, setPendingWeighPrice] = useState<number | undefined>(undefined);
   const [createName, setCreateName] = useState("");
   const [createPrice, setCreatePrice] = useState("");
   const [createDept, setCreateDept] = useState<Department>(defaultDept);
@@ -922,11 +932,18 @@ function BarcodeAddModal({ defaultDept, onAdd, onClose }: { defaultDept: Departm
   // than a dead-end error, per how this feature is meant to work.
   const resolveBarcode = async (code: string) => {
     setBusy(true); setError("");
+    // A scale weigh-barcode embeds the price per-label, so it will never
+    // exact-match a catalog barcode twice — look the product up by its
+    // 5-digit PLU instead of the full scanned code, and carry the decoded
+    // price along to prefill as this line's "wanted price."
+    const weigh = parseWeighBarcode(code);
+    const lookupCode = weigh ? weigh.plu : code;
     try {
-      const product = await api.products.getByBarcode(code);
-      onAdd(product);
+      const product = await api.products.getByBarcode(lookupCode);
+      onAdd(product, weigh?.price);
     } catch {
-      setPendingBarcode(code);
+      setPendingBarcode(lookupCode);
+      setPendingWeighPrice(weigh?.price);
       setCreateName(""); setCreatePrice(""); setCreateDept(defaultDept);
       setStep("create");
     } finally {
@@ -982,7 +999,7 @@ function BarcodeAddModal({ defaultDept, onAdd, onClose }: { defaultDept: Departm
         pricePerUnit: createPrice ? Number(createPrice) : null,
         department: createDept
       });
-      onAdd(product);
+      onAdd(product, pendingWeighPrice);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create product.");
     } finally {
@@ -1027,7 +1044,11 @@ function BarcodeAddModal({ defaultDept, onAdd, onClose }: { defaultDept: Departm
 
         {step === "create" && (
           <form className="modal-body" onSubmit={(e) => void submitCreate(e)}>
-            <p className="settings-hint">No item found for barcode <b>{pendingBarcode}</b> — add it now.</p>
+            <p className="settings-hint">
+              {pendingWeighPrice != null
+                ? <>Recognized as a scale weigh-label (item code <b>{pendingBarcode}</b>, this label priced at {currency.format(pendingWeighPrice)}) but not registered yet — add it now.</>
+                : <>No item found for barcode <b>{pendingBarcode}</b> — add it now.</>}
+            </p>
             <label>Name<input value={createName} onChange={(e) => setCreateName(e.target.value)} autoFocus required /></label>
             <label>R/kg<input type="number" min="0" step="0.01" value={createPrice} onChange={(e) => setCreatePrice(e.target.value)} /></label>
             <label>
@@ -1199,9 +1220,11 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
   const canAddItems = currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier";
   const [barcodeModalOpen, setBarcodeModalOpen] = useState(false);
 
-  const addScannedItem = async (p: Product) => {
+  const addScannedItem = async (p: Product, wantedPrice?: number) => {
     setBarcodeModalOpen(false);
-    await api.orders.addItem(order.id, { productId: p.id, name: p.name, kg: null, quantity: null, notes: p.prepNotes, unitPrice: p.pricePerUnit, lineTotal: null, department: p.department });
+    const estimatedKg = wantedPrice && p.pricePerUnit ? Number((wantedPrice / p.pricePerUnit).toFixed(3)) : null;
+    const item: OrderItemInput = { productId: p.id, name: p.name, kg: estimatedKg, quantity: null, notes: p.prepNotes, unitPrice: p.pricePerUnit, lineTotal: null, wantedPrice: wantedPrice ?? null, department: p.department };
+    await api.orders.addItem(order.id, { ...item, lineTotal: calculateLineTotal(item) });
     await onChanged();
   };
 
@@ -1299,7 +1322,7 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
         </div>
       </footer>
       {barcodeModalOpen && (
-        <BarcodeAddModal defaultDept={currentUser.department ?? "counter"} onAdd={(p) => void addScannedItem(p)} onClose={() => setBarcodeModalOpen(false)} />
+        <BarcodeAddModal defaultDept={currentUser.department ?? "counter"} onAdd={(p, wantedPrice) => void addScannedItem(p, wantedPrice)} onClose={() => setBarcodeModalOpen(false)} />
       )}
     </article>
   );
