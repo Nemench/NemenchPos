@@ -2197,6 +2197,8 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
   const [siteName, setSiteName] = useState(branding.siteName);
   const [themeColor, setThemeColor] = useState("#1a47a0");
   const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [stockLocations, setStockLocations] = useState<StockLocation[]>([]);
+  const [salesStockLocationId, setSalesStockLocationId] = useState("");
   const csvInputRef = useRef<HTMLInputElement>(null);
   const restoreInputRef = useRef<HTMLInputElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -2214,13 +2216,22 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
     api.settings.get().then((s) => {
       setHistoryDays(Number(s.historyDays ?? 30));
       setThemeColor(s.themeColor || "#1a47a0");
+      setSalesStockLocationId(s.salesStockLocationId ?? "");
     }).catch(() => undefined);
+    api.stock.locations.list().then(setStockLocations).catch(() => undefined);
   }, []);
 
   const saveHistoryDays = async (days: number) => {
     await api.settings.set({ historyDays: String(days) });
     setHistoryDays(days);
     setMsg("History retention saved");
+    window.setTimeout(() => setMsg(""), 2500);
+  };
+
+  const saveSalesStockLocation = async (locationId: string) => {
+    await api.settings.set({ salesStockLocationId: locationId });
+    setSalesStockLocationId(locationId);
+    setMsg("Sales stock location saved");
     window.setTimeout(() => setMsg(""), 2500);
   };
 
@@ -2508,6 +2519,20 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
             />
             <span>days</span>
           </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Stock</h3>
+        <div className="setting-row">
+          <div className="setting-info">
+            <strong>Sales stock location</strong>
+            <p>When a POS sale is completed, its items are deducted from this location's stock. Leave unset to skip automatic deduction (e.g. if you'd rather rely on manual stock takes).</p>
+          </div>
+          <select className="settings-select" value={salesStockLocationId} onChange={(e) => void saveSalesStockLocation(e.target.value)}>
+            <option value="">— Don't auto-deduct —</option>
+            {stockLocations.map((loc) => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+          </select>
         </div>
       </section>
 

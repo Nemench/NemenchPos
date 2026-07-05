@@ -587,7 +587,39 @@ export class KotDatabase {
     for (const item of input.items) {
       insertItem.run(orderId, item.productId ?? null, item.name.trim(), item.kg ?? null, item.quantity ?? null, item.notes.trim(), item.unitPrice ?? null, item.lineTotal ?? null, item.wantedPrice ?? null, item.department);
     }
+
+    // A completeImmediately order is a finished POS sale (see the
+    // completeImmediately doc on CreateOrderInput) — stock actually left
+    // the shop, so deduct it now. Regular KOT tickets don't touch stock
+    // here; they're still New/being prepared, not a completed sale.
+    if (doneNow) {
+      const salesLocationId = this.resolveSalesLocationId();
+      if (salesLocationId != null) {
+        for (const item of input.items) {
+          if (!item.productId) continue; // free-text lines aren't in the catalog — nothing to deduct
+          const amount = item.kg || item.quantity;
+          if (amount) this.adjustProductStock(item.productId, salesLocationId, -amount);
+        }
+      }
+    }
+
     return this.getOrder(orderId);
+  }
+
+  // Which stock location a completed sale's items come out of. Explicit
+  // admin choice (settings.salesStockLocationId) wins; with exactly one
+  // location configured there's only one sensible answer so no setup is
+  // required; with zero or several and nothing chosen, skip the deduction
+  // entirely rather than guess — an unconfigured shop would rather see
+  // stock stay accurate-but-stale than silently wrong.
+  private resolveSalesLocationId(): number | null {
+    const setting = this.db.prepare("SELECT value FROM settings WHERE key = 'salesStockLocationId'").get() as { value: string } | null;
+    const configured = setting?.value ? Number(setting.value) : null;
+    if (configured && this.db.prepare("SELECT 1 FROM stock_locations WHERE id = ? AND isActive = 1").get(configured)) {
+      return configured;
+    }
+    const locations = this.listStockLocations();
+    return locations.length === 1 ? locations[0].id : null;
   }
 
   // scope="active": open tickets (New/Received/Ready) for the live queue.
