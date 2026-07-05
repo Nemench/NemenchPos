@@ -374,6 +374,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
           <POSPanel
             products={products}
             printerMap={printerMap}
+            currentUser={currentUser}
             onCompleted={async (order) => { notify(`Sale ${order.ticketNumber} complete`); await refresh(); }}
           />
         )}
@@ -586,17 +587,42 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
 // so it's created via completeImmediately (see createOrder) and lands
 // straight in History, never the prep Queue. Gated to the same roles as
 // "New Order" (admin/cashier/master_cashier), both in MainApp's nav and here.
-function POSPanel({ products, printerMap, onCompleted }: { products: Product[]; printerMap: Record<string, string>; onCompleted: (order: Order) => void }) {
+function POSPanel({ products, printerMap, currentUser, onCompleted }: { products: Product[]; printerMap: Record<string, string>; currentUser: User; onCompleted: (order: Order) => void }) {
+  // Keyed per-user (not just per-device) so switching cashiers on a shared
+  // terminal can't hand one cashier's in-progress sale to the next — an
+  // abandoned cart silently reappearing on someone else's till would be a
+  // real "wrong person got charged" risk, not just an inconvenience.
+  const posSaleKey = `maxis-pos-sale-${currentUser.id}`;
+  const loadSavedSale = (): { cart: OrderItemInput[]; discount: number } => {
+    try {
+      const raw = localStorage.getItem(posSaleKey);
+      if (!raw) return { cart: [], discount: 0 };
+      const parsed = JSON.parse(raw) as { cart?: OrderItemInput[]; discount?: number };
+      return { cart: parsed.cart ?? [], discount: parsed.discount ?? 0 };
+    } catch {
+      return { cart: [], discount: 0 };
+    }
+  };
+
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All");
-  const [cart, setCart] = useState<OrderItemInput[]>([]);
-  const [discount, setDiscount] = useState(0);
+  const [cart, setCart] = useState<OrderItemInput[]>(() => loadSavedSale().cart);
+  const [discount, setDiscount] = useState(() => loadSavedSale().discount);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   // Index of the line awaiting PIN confirmation before it's actually
   // removed — a fat-finger tap on the trash icon during a live sale
   // shouldn't be enough on its own to drop an item.
   const [pendingRemoveIndex, setPendingRemoveIndex] = useState<number | null>(null);
+
+  // Survives switching tabs away from POS and back (this component
+  // unmounts on tab switch, which would otherwise wipe React state), and
+  // even a full page reload/app restart — an in-progress till sale
+  // shouldn't evaporate because someone bumped the wrong nav button.
+  useEffect(() => {
+    if (cart.length === 0 && discount === 0) { localStorage.removeItem(posSaleKey); return; }
+    localStorage.setItem(posSaleKey, JSON.stringify({ cart, discount }));
+  }, [cart, discount]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const categories = useMemo(() => ["All", ...Array.from(new Set(products.map((p) => p.category || "Other"))).sort()], [products]);
 
@@ -678,7 +704,10 @@ function POSPanel({ products, printerMap, onCompleted }: { products: Product[]; 
     if (!canCheckout) return;
     setSubmitting(true); setError("");
     const payload: CreateOrderInput = {
-      customerName: "Walk-in customer",
+      // Deliberately empty — a POS sale has no customer on file, and an
+      // empty customerName tells buildReceiptHtml to skip the whole
+      // "Customer Details" block rather than print a placeholder name.
+      customerName: "",
       customerPhone: "",
       orderType: "pickup",
       deliveryAddress: { street: "", area: "", buildingType: "", apartment: "" },
@@ -728,10 +757,7 @@ function POSPanel({ products, printerMap, onCompleted }: { products: Product[]; 
       </div>
 
       <div className="pos-receipt">
-        <div className="pos-receipt-header">
-          <h3>Receipt preview</h3>
-          <button type="button" className="pos-clear-btn" disabled={cart.length === 0 || submitting} onClick={clearSale}>Clear</button>
-        </div>
+        <h3>Receipt preview</h3>
         <div className="pos-receipt-lines">
           {cart.length === 0 && <p className="report-empty">Tap items to add them to the sale.</p>}
           {cart.map((line, i) => (
@@ -782,9 +808,12 @@ function POSPanel({ products, printerMap, onCompleted }: { products: Product[]; 
           </div>
         </div>
         {error && <p className="form-error">{error}</p>}
-        <button type="button" className="pos-charge-btn" disabled={!canCheckout} onClick={() => void checkout()}>
-          {submitting ? "Completing…" : `Charge ${currency.format(total)}`}
-        </button>
+        <div className="pos-receipt-actions">
+          <button type="button" className="pos-clear-btn" disabled={cart.length === 0 || submitting} onClick={clearSale}>Clear Sale</button>
+          <button type="button" className="pos-charge-btn" disabled={!canCheckout} onClick={() => void checkout()}>
+            {submitting ? "Completing…" : `Charge ${currency.format(total)}`}
+          </button>
+        </div>
       </div>
       {pendingRemoveIndex != null && (
         <PinConfirmModal
@@ -1297,7 +1326,7 @@ function HistoryView({ orders, printStyle, printerMap }: { orders: Order[]; prin
             {displayed.map((order) => (
               <tr key={order.id}>
                 <td>{order.ticketNumber}</td>
-                <td>{order.customerName}</td>
+                <td>{order.customerName || "POS sale"}</td>
                 <td>{order.customerPhone}</td>
                 <td>{order.requestedByName ?? "—"}</td>
                 <td>{order.items.length}</td>
@@ -2997,7 +3026,7 @@ tr:nth-child(even) td{background:#f8f9fc}tr:last-child td{border-bottom:none}
   <div class="hdr-left"><div class="shop">${siteName}</div><div class="type">${esc(label)}</div></div>
   <div class="hdr-right"><img class="logo" src="${logoUrl}" alt="${siteName}"><div class="tnum">${esc(order.ticketNumber)}</div><div class="dt">${dateStr} &nbsp; ${timeStr}</div></div>
 </div>
-<div class="cbox">
+${order.customerName ? `<div class="cbox">
   <div class="clbl">Customer Details</div>
   <div class="cname">${esc(order.customerName)}</div>
   <div class="cline">${esc(order.customerPhone)}</div>
@@ -3006,7 +3035,7 @@ tr:nth-child(even) td{background:#f8f9fc}tr:last-child td{border-bottom:none}
   ${requestedAtLine ? `<div class="cline ttag">${esc(requestedAtLine)}</div>` : ""}
   ${order.requestedByName ? `<div class="cline">Served by: ${esc(order.requestedByName)}</div>` : ""}
   ${order.assignedTo ? `<div class="cline">Assigned to: <b>${esc(order.assignedTo)}</b></div>` : ""}
-</div>
+</div>` : ""}
 <table><thead><tr><th>Item</th><th>Kg</th><th>Qty</th></tr></thead>
 <tbody>${rows}</tbody></table>
 <div class="footer">Thank you for your order — ${siteName}</div>
@@ -3042,7 +3071,7 @@ body{font-family:'Courier New',Courier,monospace;font-size:12px;width:72mm;paddi
   <div class="dt">${dateStr} &nbsp; ${timeStr}</div>
 </div>
 <hr class="sep">
-<div class="cust">
+${order.customerName ? `<div class="cust">
   <div class="cname">${esc(order.customerName)}</div>
   <div class="cphone">${esc(order.customerPhone)}</div>
   <div class="${order.orderType === "delivery" ? "del" : "cphone"}">${order.orderType === "delivery" ? "*** DELIVERY ***" : "Pickup"}</div>
@@ -3051,7 +3080,7 @@ body{font-family:'Courier New',Courier,monospace;font-size:12px;width:72mm;paddi
   ${order.requestedByName ? `<div class="by">Served by: ${esc(order.requestedByName)}</div>` : ""}
   ${order.assignedTo ? `<div class="by">Assigned to: <b>${esc(order.assignedTo)}</b></div>` : ""}
 </div>
-<hr class="sep">
+<hr class="sep">` : ""}
 ${rows}
 <hr class="sep">
 <div class="center footer">Thank you for your order</div>

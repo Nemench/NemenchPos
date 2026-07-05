@@ -1767,12 +1767,6 @@ button.sm {
   font-family: "Courier New", ui-monospace, monospace;
 }
 
-.pos-receipt-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
 .pos-receipt h3 {
   margin: 0;
   font-size: 15px;
@@ -1780,16 +1774,21 @@ button.sm {
   color: var(--accent-text);
 }
 
+.pos-receipt-actions {
+  display: flex;
+  gap: 10px;
+}
+
 .pos-clear-btn {
-  padding: 6px 12px;
-  min-height: 32px;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: Inter, sans-serif;
+  flex: 1;
+  min-height: 60px;
+  border-radius: 10px;
   border: 1px solid var(--red);
-  border-radius: 6px;
   background: transparent;
   color: var(--red);
+  font-family: Inter, sans-serif;
+  font-size: 15px;
+  font-weight: 700;
 }
 
 .pos-clear-btn:disabled {
@@ -1905,7 +1904,7 @@ button.sm {
 }
 
 .pos-charge-btn {
-  width: 100%;
+  flex: 2;
   min-height: 60px;
   border-radius: 10px;
   border: none;
