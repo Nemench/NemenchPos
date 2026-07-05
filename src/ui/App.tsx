@@ -1407,6 +1407,7 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
   const [editing, setEditing] = useState<ProductInput>(EMPTY_PRODUCT);
   const [stockMessage, setStockMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [weighScanOpen, setWeighScanOpen] = useState(false);
   const categories = useMemo(() => [...new Set(products.map((p) => p.category).filter(Boolean))], [products]);
 
   const save = async (e: FormEvent) => {
@@ -1454,8 +1455,16 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
         </label>
         <label>Prep notes<textarea value={editing.prepNotes} onChange={(e) => setEditing({ ...editing, prepNotes: e.target.value })} /></label>
         <label>
-          Barcode <span className="optional-hint">(optional — auto-filled by the Scan barcode button on new orders)</span>
-          <input value={editing.barcode ?? ""} onChange={(e) => setEditing({ ...editing, barcode: e.target.value })} placeholder="e.g. 6001234567890" />
+          Barcode / scale PLU <span className="optional-hint">(optional)</span>
+          <div className="barcode-field-row">
+            <input value={editing.barcode ?? ""} onChange={(e) => setEditing({ ...editing, barcode: e.target.value })} placeholder="e.g. 6001234567890, or a 5-digit PLU" />
+            <button type="button" className="secondary sm" onClick={() => setWeighScanOpen(true)}><ScanLine size={16} /> Scan weigh-label</button>
+          </div>
+          <p className="settings-hint">
+            For a product with a normal printed barcode, enter (or scan) that full number. For a product sold by weight on the scale
+            (price changes every time it's weighed, so the barcode is different every label), enter just its 5-digit scale item code (PLU)
+            — the "Scan weigh-label" button reads one and fills in the PLU automatically.
+          </p>
         </label>
         <label>
           Low-stock threshold
@@ -1500,6 +1509,103 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
           </table>
         </div>
       )}
+      {weighScanOpen && (
+        <WeighLabelScanModal
+          onResolved={(plu, price) => {
+            setEditing((cur) => ({ ...cur, barcode: plu }));
+            setStockMessage(`PLU ${plu} filled in (this label was priced at ${currency.format(price)}, for reference only).`);
+            setWeighScanOpen(false);
+          }}
+          onClose={() => setWeighScanOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Scans a scale-generated weigh-label barcode (see parseWeighBarcode) and
+// hands back just its PLU — used by the product catalog form so an admin
+// never has to manually work out which 5 digits of a 13-digit scan are the
+// actual item code. Deliberately separate from BarcodeAddModal: that one
+// resolves a code against the product catalog (and offers quick-create),
+// which isn't the job here — here the barcode IS the product being edited.
+function WeighLabelScanModal({ onResolved, onClose }: { onResolved: (plu: string, price: number) => void; onClose: () => void }) {
+  const [error, setError] = useState("");
+  const [manualCode, setManualCode] = useState("");
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const cameraSupported = typeof navigator !== "undefined" && !!navigator.mediaDevices && "BarcodeDetector" in window;
+  const [mode, setMode] = useState<"scan" | "manual">(cameraSupported ? "scan" : "manual");
+
+  const stopCamera = () => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+  };
+
+  const handleCode = (code: string) => {
+    const weigh = parseWeighBarcode(code);
+    if (!weigh) { setError(`"${code}" isn't a recognized scale weigh-label barcode.`); return; }
+    onResolved(weigh.plu, weigh.price);
+  };
+
+  useEffect(() => {
+    if (mode !== "scan" || !cameraSupported) return;
+    let cancelled = false;
+    let intervalId: number;
+    const detector = new BarcodeDetector({ formats: BARCODE_FORMATS });
+
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+      .then((stream) => {
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        streamRef.current = stream;
+        if (videoRef.current) { videoRef.current.srcObject = stream; void videoRef.current.play(); }
+        intervalId = window.setInterval(async () => {
+          if (!videoRef.current || videoRef.current.readyState < 2) return;
+          try {
+            const results = await detector.detect(videoRef.current);
+            if (results.length > 0) { window.clearInterval(intervalId); stopCamera(); handleCode(results[0].rawValue); }
+          } catch { /* transient decode failure — retried on the next tick */ }
+        }, 300);
+      })
+      .catch(() => { if (!cancelled) { setError("Couldn't access the camera — check permissions, or enter the code manually."); setMode("manual"); } });
+
+    return () => { cancelled = true; window.clearInterval(intervalId); stopCamera(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+
+  const submitManual = (e: FormEvent) => {
+    e.preventDefault();
+    if (!manualCode.trim()) return;
+    setError("");
+    handleCode(manualCode.trim());
+  };
+
+  return (
+    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal-card panel">
+        <div className="modal-header">
+          <h2>Scan weigh-label</h2>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close"><X size={18} /></button>
+        </div>
+        {mode === "scan" ? (
+          <div className="modal-body barcode-scan">
+            <video ref={videoRef} className="barcode-video" muted playsInline />
+            <p className="settings-hint">Point the camera at a printed scale label for this item.</p>
+            <button type="button" className="secondary" onClick={() => setMode("manual")}>Enter code manually instead</button>
+          </div>
+        ) : (
+          <form className="modal-body" onSubmit={submitManual}>
+            <label>Full barcode from the label
+              <input inputMode="numeric" autoFocus value={manualCode} onChange={(e) => setManualCode(e.target.value)} placeholder="e.g. 2000550070568" />
+            </label>
+            <footer className="actions">
+              {cameraSupported && <button type="button" className="secondary" onClick={() => setMode("scan")}>Use camera instead</button>}
+              <button type="submit" disabled={!manualCode.trim()}>Decode</button>
+            </footer>
+          </form>
+        )}
+        {error && <p className="form-error">{error}</p>}
+      </div>
     </div>
   );
 }

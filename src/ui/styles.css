@@ -602,6 +602,19 @@ th {
   gap: 12px;
 }
 
+.barcode-field-row {
+  display: flex;
+  gap: 8px;
+}
+
+.barcode-field-row input {
+  flex: 1;
+}
+
+.barcode-field-row button {
+  white-space: nowrap;
+}
+
 /* ── Empty state ── */
 .empty {
   display: grid;
