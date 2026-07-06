@@ -50,6 +50,7 @@ import type {
   ItemStockMovementStat,
   StatisticsOverview,
   MarginOverview,
+  PendingYieldConversion,
   Order,
   OrderItemInput,
   Product,
@@ -1514,20 +1515,108 @@ function HistoryView({ orders, printStyle, printerMap }: { orders: Order[]; prin
 // no toggle is rendered for them since there's nothing to switch to.
 function StockPanel({ products, currentUser, onChanged }: { products: Product[]; currentUser: User; onChanged: () => Promise<void> }) {
   const canEditCatalog = currentUser.role === "admin";
-  const [view, setView] = useState<"catalog" | "count">(canEditCatalog ? "catalog" : "count");
+  const [view, setView] = useState<"catalog" | "count" | "yields">(canEditCatalog ? "catalog" : "count");
 
   return (
     <>
-      {canEditCatalog && (
-        <div className="order-type-toggle">
-          <button type="button" className={view === "catalog" ? "active" : "secondary"} onClick={() => setView("catalog")}>Catalog</button>
-          <button type="button" className={view === "count" ? "active" : "secondary"} onClick={() => setView("count")}>Count</button>
-        </div>
-      )}
-      {view === "catalog"
-        ? <Products products={products} onChanged={onChanged} />
-        : <StockTakePanel products={products} currentUser={currentUser} onChanged={onChanged} />}
+      <div className="order-type-toggle">
+        {canEditCatalog && <button type="button" className={view === "catalog" ? "active" : "secondary"} onClick={() => setView("catalog")}>Catalog</button>}
+        <button type="button" className={view === "count" ? "active" : "secondary"} onClick={() => setView("count")}>Count</button>
+        <button type="button" className={view === "yields" ? "active" : "secondary"} onClick={() => setView("yields")}>Cut Estimates</button>
+      </div>
+      {view === "catalog" && canEditCatalog && <Products products={products} onChanged={onChanged} />}
+      {view === "count" && <StockTakePanel products={products} currentUser={currentUser} onChanged={onChanged} />}
+      {view === "yields" && <PendingYieldsPanel onChanged={onChanged} />}
     </>
+  );
+}
+
+// Review queue for cut-yield conversions (see product_yield_estimates /
+// pending_yield_conversions) — each row is one raw-intake Weigh-In line
+// that has an estimated cut breakdown waiting to be reviewed. Nothing here
+// touches stock until "Apply" is clicked; the estimated kg per cut is
+// editable first, since the estimate is a starting point, not what the
+// butcher necessarily produced.
+function PendingYieldsPanel({ onChanged }: { onChanged: () => Promise<void> }) {
+  const [pending, setPending] = useState<PendingYieldConversion[]>([]);
+  const [edits, setEdits] = useState<Record<number, Record<number, number>>>({});
+  const [message, setMessage] = useState("");
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  const load = () => { api.weighIn.pendingYields("pending").then(setPending).catch(() => undefined); };
+  useEffect(() => { load(); }, []);
+
+  const kgFor = (conv: PendingYieldConversion, item: PendingYieldConversion["items"][number]) =>
+    edits[conv.id]?.[item.subProductId] ?? item.estimatedKg;
+
+  const setKg = (convId: number, subProductId: number, kg: number) =>
+    setEdits((cur) => ({ ...cur, [convId]: { ...cur[convId], [subProductId]: kg } }));
+
+  const apply = async (conv: PendingYieldConversion) => {
+    setBusyId(conv.id); setMessage("");
+    try {
+      const items = conv.items.map((i) => ({ subProductId: i.subProductId, kg: kgFor(conv, i) }));
+      await api.weighIn.applyYield(conv.id, items);
+      setMessage(`Applied — stock updated for ${conv.rawProductName}'s cuts.`);
+      load();
+      await onChanged().catch(() => undefined);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not apply conversion.");
+    } finally { setBusyId(null); }
+  };
+
+  const dismiss = async (conv: PendingYieldConversion) => {
+    if (!window.confirm(`Dismiss this estimate for ${conv.rawProductName}? No stock will be changed.`)) return;
+    setBusyId(conv.id); setMessage("");
+    try {
+      await api.weighIn.dismissYield(conv.id);
+      load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not dismiss conversion.");
+    } finally { setBusyId(null); }
+  };
+
+  if (pending.length === 0) {
+    return <EmptyState title="No pending cut estimates" detail="These appear automatically when a Weigh-In line is logged for a raw item that has cut yield estimates configured (set them up in Stock > Catalog)." />;
+  }
+
+  return (
+    <div className="panel">
+      <h2>Cut estimates awaiting review</h2>
+      <p className="settings-hint">Estimated from the raw item's configured yield %s — adjust the kg if the actual cutting differed, then apply.</p>
+      {message && <div className="form-message">{message}</div>}
+      <div className="pending-yield-list">
+        {pending.map((conv) => (
+          <div className="pending-yield-card" key={conv.id}>
+            <div className="pending-yield-header">
+              <strong>{conv.rawProductName}</strong>
+              <span className="settings-hint">{conv.weightKgReceived}kg received{conv.locationName ? ` · ${conv.locationName}` : ""} · {new Date(conv.createdAt).toLocaleDateString(appSettings.locale)}</span>
+            </div>
+            <table>
+              <thead><tr><th>Cut</th><th>Estimate</th><th>Apply as (kg)</th></tr></thead>
+              <tbody>
+                {conv.items.map((item) => (
+                  <tr key={item.id}>
+                    <td>{item.subProductName}</td>
+                    <td>{item.yieldPct}% → {item.estimatedKg.toFixed(2)}kg</td>
+                    <td>
+                      <input
+                        type="number" min="0" step="0.01" value={kgFor(conv, item)}
+                        onChange={(e) => setKg(conv.id, item.subProductId, e.target.value ? Number(e.target.value) : 0)}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <footer className="actions">
+              <button type="button" className="danger" disabled={busyId === conv.id} onClick={() => void dismiss(conv)}>Dismiss</button>
+              <button type="button" disabled={busyId === conv.id} onClick={() => void apply(conv)}>{busyId === conv.id ? "Applying…" : "Apply to stock"}</button>
+            </footer>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1539,10 +1628,46 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
   const [busy, setBusy] = useState(false);
   const [weighScanOpen, setWeighScanOpen] = useState(false);
   const [missingCost, setMissingCost] = useState<Product[]>([]);
+  const [yieldRows, setYieldRows] = useState<{ subProductId: number; yieldPct: number }[]>([]);
+  const [yieldMessage, setYieldMessage] = useState("");
   const categories = useMemo(() => [...new Set(products.map((p) => p.category).filter(Boolean))], [products]);
+  // Only non-raw-intake products make sense as a cut/sub-product — a raw
+  // carcass isn't itself "yielded" from another raw carcass.
+  const cuttableProducts = useMemo(() => products.filter((p) => !p.isRawIntake), [products]);
 
   const loadMissingCost = () => { api.products.missingCost().then(setMissingCost).catch(() => undefined); };
   useEffect(() => { loadMissingCost(); }, []);
+
+  // Yield estimates only apply to an already-saved raw-intake product (a
+  // brand-new one has no id yet to attach them to) — refetched whenever a
+  // different product is loaded into the form.
+  useEffect(() => {
+    if (editing.id && editing.isRawIntake) {
+      api.products.yieldEstimates(editing.id)
+        .then((rows) => setYieldRows(rows.map((r) => ({ subProductId: r.subProductId, yieldPct: r.yieldPct }))))
+        .catch(() => setYieldRows([]));
+    } else {
+      setYieldRows([]);
+    }
+    setYieldMessage("");
+  }, [editing.id, editing.isRawIntake]);
+
+  const addYieldRow = () => setYieldRows((cur) => [...cur, { subProductId: cuttableProducts[0]?.id ?? 0, yieldPct: 0 }]);
+  const updateYieldRow = (i: number, patch: Partial<{ subProductId: number; yieldPct: number }>) =>
+    setYieldRows((cur) => cur.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  const removeYieldRow = (i: number) => setYieldRows((cur) => cur.filter((_, idx) => idx !== i));
+
+  const saveYieldEstimates = async () => {
+    if (!editing.id) return;
+    setYieldMessage("");
+    try {
+      const saved = await api.products.setYieldEstimates(editing.id, yieldRows.filter((r) => r.subProductId && r.yieldPct > 0));
+      setYieldRows(saved.map((r) => ({ subProductId: r.subProductId, yieldPct: r.yieldPct })));
+      setYieldMessage("Yield estimates saved.");
+    } catch (err) {
+      setYieldMessage(err instanceof Error ? err.message : "Could not save yield estimates.");
+    }
+  };
 
   // Editing an existing row needs its current cost pulled in from the
   // derived Product.currentCost field (a different name/shape than
@@ -1688,6 +1813,37 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
           <input type="checkbox" checked={!!editing.isRawIntake} onChange={(e) => setEditing({ ...editing, isRawIntake: e.target.checked ? 1 : 0 })} />
           Raw meat intake item <span className="optional-hint">(shows up in Weigh-In — whole carcass/organ items only, e.g. Whole Forequarter, Liver, Oxtail)</span>
         </label>
+
+        {editing.id && !!editing.isRawIntake && (
+          <div className="yield-estimates">
+            <strong>Cut yield estimates</strong>
+            <p className="settings-hint">
+              What % of this item's received weight typically becomes each cut (doesn't need to add up to 100% — the
+              rest is bone/trim/waste). Logging a Weigh-In line for this item will queue an estimated stock increase
+              for each cut below, reviewed and applied separately in Stock &gt; Cut Estimates — nothing is added
+              automatically.
+            </p>
+            {yieldRows.map((row, i) => (
+              <div className="yield-estimate-row" key={i}>
+                <select value={row.subProductId} onChange={(e) => updateYieldRow(i, { subProductId: Number(e.target.value) })}>
+                  {cuttableProducts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                <input
+                  type="number" min="0" max="100" step="0.1" value={row.yieldPct || ""}
+                  onChange={(e) => updateYieldRow(i, { yieldPct: e.target.value ? Number(e.target.value) : 0 })}
+                  placeholder="%"
+                />
+                <button type="button" className="icon-button danger sm" onClick={() => removeYieldRow(i)} title="Remove" aria-label="Remove"><Trash2 size={16} /></button>
+              </div>
+            ))}
+            <div className="yield-estimate-actions">
+              <button type="button" className="secondary sm" onClick={addYieldRow} disabled={cuttableProducts.length === 0}><Plus size={16} /> Add cut</button>
+              <button type="button" className="secondary sm" onClick={() => void saveYieldEstimates()}>Save estimates</button>
+            </div>
+            {yieldMessage && <p className="settings-hint">{yieldMessage}</p>}
+          </div>
+        )}
+
         {stockMessage && <div className="form-message">{stockMessage}</div>}
         <footer className="actions">
           {editing.id && <button type="button" className="secondary" onClick={() => { setEditing(EMPTY_PRODUCT); setStockMessage(""); }}>Cancel</button>}

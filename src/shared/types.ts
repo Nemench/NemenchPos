@@ -168,6 +168,55 @@ export interface WeighInLine extends WeighInLineInput {
   createdAt: string;
 }
 
+// ── Cut yield estimates ──────────────────────────────────────────────────────
+// Configured per raw-intake product (e.g. Whole Forequarter): what % of its
+// received weight typically becomes each cut/sub-product (Mince, Steak, ...).
+// Doesn't need to sum to 100% — the remainder is bone/trim/waste, untracked.
+
+export interface YieldEstimate {
+  id: number;
+  rawProductId: number;
+  subProductId: number;
+  subProductName: string;
+  yieldPct: number;
+}
+
+export interface YieldEstimateInput {
+  subProductId: number;
+  yieldPct: number;
+}
+
+// One line of a pending conversion's estimated breakdown — editable before
+// applying (the estimate is a starting point, not a guarantee the actual
+// cutting matches it exactly).
+export interface PendingYieldItem {
+  id: number;
+  subProductId: number;
+  subProductName: string;
+  estimatedKg: number;
+  yieldPct: number;
+}
+
+// Created automatically when a Weigh-In line is logged for a raw-intake
+// product that has yield estimates configured — but nothing is added to
+// any sub-product's stock until someone explicitly applies it (see
+// applyYieldConversion). Never auto-committed.
+export interface PendingYieldConversion {
+  id: number;
+  weighInLineId: number | null;
+  rawProductId: number;
+  rawProductName: string;
+  weightKgReceived: number;
+  locationId: number;
+  locationName: string | null;
+  status: "pending" | "applied" | "dismissed";
+  createdAt: string;
+  resolvedAt: string | null;
+  resolvedById: number | null;
+  resolvedByName: string | null;
+  items: PendingYieldItem[];
+}
+
 // ── Orders (KOT tickets) ─────────────────────────────────────────────────────
 
 export interface OrderItemInput {

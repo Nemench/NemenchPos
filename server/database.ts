@@ -14,7 +14,7 @@ import type {
   Department, DeptStatus, DeliveryAddress,
   Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput,
   StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview,
-  MarginStat, MarginOverview
+  MarginStat, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, PendingYieldItem
 } from "../src/shared/types.js";
 import { generateInternalBarcode } from "../src/shared/internalBarcode.js";
 import { weightedMarginPct } from "../src/shared/margin.js";
@@ -165,6 +165,99 @@ export class KotDatabase {
         HAVING currentCost IS NULL
         ORDER BY p.category, p.name`)
       .all() as Product[];
+  }
+
+  // ── Cut yield estimates ────────────────────────────────────────────────────
+
+  listYieldEstimates(rawProductId: number): YieldEstimate[] {
+    return this.db
+      .prepare(`
+        SELECT e.id, e.rawProductId, e.subProductId, p.name as subProductName, e.yieldPct
+        FROM product_yield_estimates e
+        JOIN products p ON p.id = e.subProductId
+        WHERE e.rawProductId = ?
+        ORDER BY e.yieldPct DESC`)
+      .all(rawProductId) as YieldEstimate[];
+  }
+
+  // Replace-all semantics — simpler and safer than diffing add/remove/edit
+  // client-side, and this list is short (a handful of cuts per raw item).
+  // Existing pending_yield_conversions are untouched: their yieldPct/
+  // estimatedKg were already snapshotted at creation time (see
+  // addWeighInLine), so changing the estimate here never retroactively
+  // rewrites a conversion still awaiting review.
+  setYieldEstimates(rawProductId: number, estimates: YieldEstimateInput[]): YieldEstimate[] {
+    const now = new Date().toISOString();
+    const replace = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM product_yield_estimates WHERE rawProductId = ?").run(rawProductId);
+      const insert = this.db.prepare(
+        "INSERT INTO product_yield_estimates (rawProductId, subProductId, yieldPct, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)"
+      );
+      for (const e of estimates) {
+        if (e.yieldPct <= 0) continue; // a 0%/blank row is "no estimate," not worth storing
+        insert.run(rawProductId, e.subProductId, e.yieldPct, now, now);
+      }
+    });
+    replace();
+    return this.listYieldEstimates(rawProductId);
+  }
+
+  private pendingYieldConversionRow(id: number): PendingYieldConversion {
+    const conv = this.db
+      .prepare(`
+        SELECT c.*, p.name as rawProductName, loc.name as locationName, u.name as resolvedByName
+        FROM pending_yield_conversions c
+        JOIN products p ON p.id = c.rawProductId
+        LEFT JOIN stock_locations loc ON loc.id = c.locationId
+        LEFT JOIN users u ON u.id = c.resolvedById
+        WHERE c.id = ?`)
+      .get(id) as PendingYieldConversion | undefined;
+    if (!conv) throw new Error(`Pending yield conversion ${id} not found`);
+    const items = this.db
+      .prepare(`
+        SELECT i.id, i.subProductId, p.name as subProductName, i.estimatedKg, i.yieldPct
+        FROM pending_yield_items i
+        JOIN products p ON p.id = i.subProductId
+        WHERE i.conversionId = ?
+        ORDER BY i.estimatedKg DESC`)
+      .all(id) as PendingYieldItem[];
+    return { ...conv, items };
+  }
+
+  listPendingYieldConversions(status: "pending" | "applied" | "dismissed" = "pending"): PendingYieldConversion[] {
+    const rows = this.db
+      .prepare("SELECT id FROM pending_yield_conversions WHERE status = ? ORDER BY createdAt DESC")
+      .all(status) as { id: number }[];
+    return rows.map((r) => this.pendingYieldConversionRow(r.id));
+  }
+
+  // Actually adjusts stock — the one moment any of this touches on-hand
+  // quantities. `items` carries whatever kg the reviewer settled on
+  // (usually the estimate, but editable — see the pending_yield_items
+  // table comment), not necessarily what was originally estimated.
+  applyYieldConversion(id: number, items: { subProductId: number; kg: number }[], resolvedById: number): PendingYieldConversion {
+    const conv = this.pendingYieldConversionRow(id);
+    if (conv.status !== "pending") throw new Error(`Conversion ${id} is already ${conv.status}`);
+    const now = new Date().toISOString();
+    const apply = this.db.transaction(() => {
+      for (const item of items) {
+        if (item.kg > 0) this.adjustProductStock(item.subProductId, conv.locationId, item.kg);
+      }
+      this.db.prepare("UPDATE pending_yield_conversions SET status = 'applied', resolvedAt = ?, resolvedById = ? WHERE id = ?").run(now, resolvedById, id);
+    });
+    apply();
+    return this.pendingYieldConversionRow(id);
+  }
+
+  // No stock change at all — for when the actual cutting never happened
+  // as estimated (or didn't happen yet) and the estimate shouldn't be
+  // applied as-is.
+  dismissYieldConversion(id: number, resolvedById: number): PendingYieldConversion {
+    const conv = this.pendingYieldConversionRow(id);
+    if (conv.status !== "pending") throw new Error(`Conversion ${id} is already ${conv.status}`);
+    const now = new Date().toISOString();
+    this.db.prepare("UPDATE pending_yield_conversions SET status = 'dismissed', resolvedAt = ?, resolvedById = ? WHERE id = ?").run(now, resolvedById, id);
+    return this.pendingYieldConversionRow(id);
   }
 
   listProducts(): Product[] {
@@ -398,8 +491,28 @@ export class KotDatabase {
       const result = this.db
         .prepare("INSERT INTO weigh_in_lines (batchId, productId, grade, piecesReceived, weightKg, supplierId, locationId, createdById, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(batch.id, input.productId, input.grade, input.piecesReceived, input.weightKg, input.supplierId, input.locationId, createdById, now);
+      const lineId = Number(result.lastInsertRowid);
       this.adjustProductStock(input.productId, input.locationId, input.piecesReceived);
-      return Number(result.lastInsertRowid);
+
+      // If this raw item has configured cut-yield estimates, queue a
+      // pending conversion — this only *proposes* stock for the cut
+      // sub-products (Mince, Steak, ...); nothing is added until someone
+      // explicitly applies it later (see applyYieldConversion). yieldPct
+      // is snapshotted per item now, not read live when later reviewed.
+      const estimates = this.listYieldEstimates(input.productId);
+      if (estimates.length > 0) {
+        const convResult = this.db
+          .prepare("INSERT INTO pending_yield_conversions (weighInLineId, rawProductId, weightKgReceived, locationId, status, createdAt) VALUES (?, ?, ?, ?, 'pending', ?)")
+          .run(lineId, input.productId, input.weightKg, input.locationId, now);
+        const conversionId = Number(convResult.lastInsertRowid);
+        const insertItem = this.db.prepare(
+          "INSERT INTO pending_yield_items (conversionId, subProductId, estimatedKg, yieldPct) VALUES (?, ?, ?, ?)"
+        );
+        for (const e of estimates) {
+          insertItem.run(conversionId, e.subProductId, Number((input.weightKg * (e.yieldPct / 100)).toFixed(3)), e.yieldPct);
+        }
+      }
+      return lineId;
     });
     const id = add();
     return this.db
@@ -1311,6 +1424,51 @@ export class KotDatabase {
         createdAt TEXT NOT NULL
       );
 
+      -- What % of a raw-intake product's received weight typically becomes
+      -- each cut/sub-product (e.g. Whole Forequarter -> 45% Mince, 30%
+      -- Steak) — doesn't need to sum to 100%, the remainder is untracked
+      -- bone/trim/waste. One row per (rawProductId, subProductId) pair.
+      CREATE TABLE IF NOT EXISTS product_yield_estimates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        rawProductId INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        subProductId INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        yieldPct REAL NOT NULL,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        UNIQUE(rawProductId, subProductId)
+      );
+
+      -- Created automatically when a Weigh-In line is logged for a raw
+      -- product with estimates configured — but this alone changes no
+      -- stock. Only applyYieldConversion (an explicit, separate action)
+      -- actually adjusts the sub-products' stock; dismissing one changes
+      -- nothing either. "status" tracks which of the three has happened.
+      CREATE TABLE IF NOT EXISTS pending_yield_conversions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        weighInLineId INTEGER REFERENCES weigh_in_lines(id) ON DELETE SET NULL,
+        rawProductId INTEGER NOT NULL REFERENCES products(id),
+        weightKgReceived REAL NOT NULL,
+        locationId INTEGER NOT NULL REFERENCES stock_locations(id),
+        status TEXT NOT NULL DEFAULT 'pending',
+        createdAt TEXT NOT NULL,
+        resolvedAt TEXT,
+        resolvedById INTEGER REFERENCES users(id)
+      );
+
+      -- The estimated breakdown for one pending conversion — yieldPct is
+      -- snapshotted at creation time (so a later change to
+      -- product_yield_estimates doesn't retroactively alter an
+      -- already-queued conversion), and estimatedKg can be edited by
+      -- whoever reviews it before applying (the estimate is a starting
+      -- point, not a guarantee the actual cutting matches it exactly).
+      CREATE TABLE IF NOT EXISTS pending_yield_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversionId INTEGER NOT NULL REFERENCES pending_yield_conversions(id) ON DELETE CASCADE,
+        subProductId INTEGER NOT NULL REFERENCES products(id),
+        estimatedKg REAL NOT NULL,
+        yieldPct REAL NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS stock_locations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -1337,6 +1495,9 @@ export class KotDatabase {
       CREATE INDEX IF NOT EXISTS idx_wib_status    ON weigh_in_batches(status);
       CREATE INDEX IF NOT EXISTS idx_pstock_location ON product_stock(locationId);
       CREATE INDEX IF NOT EXISTS idx_cost_product_effective ON product_cost_history(productId, effectiveFrom DESC);
+      CREATE INDEX IF NOT EXISTS idx_yield_est_raw ON product_yield_estimates(rawProductId);
+      CREATE INDEX IF NOT EXISTS idx_pending_yield_status ON pending_yield_conversions(status);
+      CREATE INDEX IF NOT EXISTS idx_pending_yield_items_conv ON pending_yield_items(conversionId);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_prod_barcode ON products(barcode) WHERE barcode IS NOT NULL;
     `);
 

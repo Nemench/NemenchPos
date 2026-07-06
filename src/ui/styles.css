@@ -553,6 +553,32 @@ textarea {
   overflow: auto;
 }
 
+.pending-yield-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pending-yield-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pending-yield-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pending-yield-card input {
+  width: 100px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -621,6 +647,35 @@ th {
   color: var(--red);
   font-weight: 600;
   font-size: 13px;
+}
+
+.yield-estimates {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--chip-bg);
+}
+
+.yield-estimate-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.yield-estimate-row select {
+  flex: 1;
+}
+
+.yield-estimate-row input {
+  width: 80px;
+}
+
+.yield-estimate-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .product-form {

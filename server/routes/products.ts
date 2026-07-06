@@ -3,7 +3,7 @@ import { Router } from "express";
 import { db } from "../index.js";
 import { requireAuth, requireAdmin } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
-import type { ProductInput, QuickCreateProductInput } from "../../src/shared/types.js";
+import type { ProductInput, QuickCreateProductInput, YieldEstimateInput } from "../../src/shared/types.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -76,6 +76,21 @@ router.put("/:id", requireAdmin, (req: AuthRequest, res) => {
 router.delete("/:id", requireAdmin, (req, res) => {
   try { db.deleteProduct(Number(req.params.id)); res.json({ success: true }); }
   catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to delete product" }); }
+});
+
+// Cut-yield estimates: what % of a raw-intake product's received weight
+// typically becomes each cut/sub-product — configured per raw product,
+// consumed automatically by Weigh-In (see db.addWeighInLine) to queue a
+// pending conversion, never applied to stock directly from here.
+router.get("/:id/yield-estimates", requireAdmin, (req, res) => {
+  res.json(db.listYieldEstimates(Number(req.params.id)));
+});
+
+router.put("/:id/yield-estimates", requireAdmin, (req, res) => {
+  try {
+    const estimates = req.body as YieldEstimateInput[];
+    res.json(db.setYieldEstimates(Number(req.params.id), estimates));
+  } catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to save yield estimates" }); }
 });
 
 // Bulk-creates/updates products from a CSV upload. Column order is

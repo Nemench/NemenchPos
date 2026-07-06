@@ -2,7 +2,7 @@
 // req()/download(), which attach the JWT and centrally handle a 401 (token
 // missing/expired) by clearing it and forcing a reload back to the login screen.
 import { Capacitor } from "@capacitor/core";
-import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput, StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview, MarginOverview } from "../shared/types";
+import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput, StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion } from "../shared/types";
 import { tokenStorage } from "./tokenStorage";
 import { NATIVE_SERVER_URL } from "../shared/nativeServer";
 
@@ -82,7 +82,10 @@ export const api = {
     export: () => download("/products/export", `maxis-products-${new Date().toISOString().slice(0, 10)}.csv`),
     getByBarcode: (code: string) => req<Product>("GET", `/products/barcode/${encodeURIComponent(code)}`),
     quickCreate: (data: QuickCreateProductInput) => req<Product>("POST", "/products/quick-create", data),
-    missingCost: () => req<Product[]>("GET", "/products/missing-cost")
+    missingCost: () => req<Product[]>("GET", "/products/missing-cost"),
+    yieldEstimates: (rawProductId: number) => req<YieldEstimate[]>("GET", `/products/${rawProductId}/yield-estimates`),
+    setYieldEstimates: (rawProductId: number, estimates: YieldEstimateInput[]) =>
+      req<YieldEstimate[]>("PUT", `/products/${rawProductId}/yield-estimates`, estimates)
   },
   backup: {
     download: () => download("/backup", `maxis-backup-${new Date().toISOString().slice(0, 10)}.json`),
@@ -135,7 +138,12 @@ export const api = {
     addLine: (data: WeighInLineInput) => req<WeighInLine>("POST", "/weigh-in/lines", data),
     updateLine: (id: number, data: WeighInLineInput) => req<WeighInLine>("PUT", `/weigh-in/lines/${id}`, data),
     deleteLine: (id: number) => req<{ success: boolean }>("DELETE", `/weigh-in/lines/${id}`),
-    finalize: (batchId?: number) => req<{ batch: WeighInBatch; lines: WeighInLine[] }>("POST", "/weigh-in/finalize", batchId ? { batchId } : {})
+    finalize: (batchId?: number) => req<{ batch: WeighInBatch; lines: WeighInLine[] }>("POST", "/weigh-in/finalize", batchId ? { batchId } : {}),
+    pendingYields: (status: "pending" | "applied" | "dismissed" = "pending") =>
+      req<PendingYieldConversion[]>("GET", `/weigh-in/pending-yields?status=${status}`),
+    applyYield: (id: number, items: { subProductId: number; kg: number }[]) =>
+      req<PendingYieldConversion>("POST", `/weigh-in/pending-yields/${id}/apply`, { items }),
+    dismissYield: (id: number) => req<PendingYieldConversion>("POST", `/weigh-in/pending-yields/${id}/dismiss`)
   },
   statistics: {
     sales: (from: string, to: string) => req<ItemSalesStat[]>("GET", `/statistics/sales?from=${from}&to=${to}`),

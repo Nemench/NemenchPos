@@ -42,6 +42,32 @@ router.get("/", requireAdmin, (req, res) => {
   res.json(db.listFinalizedBatches(from && to ? from : undefined, from && to ? to : undefined));
 });
 
+// Cut-yield conversions queued by logging a raw-intake weigh-in line (see
+// db.addWeighInLine) — reviewed and applied/dismissed separately, never
+// automatically. Admin/stock_taker only, same roles as logging weigh-ins
+// in the first place. Registered before "/:batchId" below, which would
+// otherwise swallow this path as an invalid batch id.
+router.get("/pending-yields", (req: AuthRequest, res) => {
+  if (!canSubmit(req)) { res.status(403).json({ message: "Not authorized" }); return; }
+  const status = req.query.status as "pending" | "applied" | "dismissed" | undefined;
+  res.json(db.listPendingYieldConversions(status ?? "pending"));
+});
+
+router.post("/pending-yields/:id/apply", (req: AuthRequest, res) => {
+  if (!canSubmit(req)) { res.status(403).json({ message: "Not authorized" }); return; }
+  try {
+    const items = req.body.items as { subProductId: number; kg: number }[];
+    res.json(db.applyYieldConversion(Number(req.params.id), items, req.user!.id));
+  } catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to apply conversion" }); }
+});
+
+router.post("/pending-yields/:id/dismiss", (req: AuthRequest, res) => {
+  if (!canSubmit(req)) { res.status(403).json({ message: "Not authorized" }); return; }
+  try {
+    res.json(db.dismissYieldConversion(Number(req.params.id), req.user!.id));
+  } catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to dismiss conversion" }); }
+});
+
 router.get("/:batchId", requireAdmin, (req, res) => {
   try {
     const batch = db.getBatch(Number(req.params.batchId));
