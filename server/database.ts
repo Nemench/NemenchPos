@@ -1383,6 +1383,18 @@ export class KotDatabase {
         value TEXT NOT NULL
       );
 
+      -- Single-row cache of the last-synced business profile from the
+      -- control plane (see server/controlPlaneSync.ts) — id is pinned to 1
+      -- via the CHECK constraint since there's only ever one profile for
+      -- this instance. Read once into memory at startup and refreshed in
+      -- memory whenever a sync succeeds; this table is the durable copy
+      -- that survives a restart between syncs.
+      CREATE TABLE IF NOT EXISTS local_profile_cache (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        profile_json TEXT NOT NULL,
+        synced_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS suppliers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -1549,6 +1561,24 @@ export class KotDatabase {
 
   setSetting(key: string, value: string): void {
     this.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
+  }
+
+  // ── Control plane profile cache ─────────────────────────────────────────────
+  // See server/controlPlaneSync.ts — these are the only two operations it
+  // needs against the local DB, kept here for consistency with every other
+  // table in this file rather than in a separate data-access module.
+
+  getCachedProfile(): { profile_json: string; synced_at: string } | null {
+    return this.db.prepare("SELECT profile_json, synced_at FROM local_profile_cache WHERE id = 1").get() as
+      { profile_json: string; synced_at: string } | null;
+  }
+
+  setCachedProfile(profileJson: string, syncedAt: string): void {
+    this.db
+      .prepare(`
+        INSERT INTO local_profile_cache (id, profile_json, synced_at) VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET profile_json = excluded.profile_json, synced_at = excluded.synced_at`)
+      .run(profileJson, syncedAt);
   }
 
   // Populates a brand-new database with a default admin login (Admin/0000

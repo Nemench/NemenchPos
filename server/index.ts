@@ -25,9 +25,17 @@ import stockRouter from "./routes/stock.js";
 import suppliersRouter from "./routes/suppliers.js";
 import weighInRouter from "./routes/weighIn.js";
 import statisticsRouter from "./routes/statistics.js";
+import { startControlPlaneSync } from "./controlPlaneSync.js";
 
 export const db = new KotDatabase();
 db.initialize();
+
+// Multi-tenant control-plane sync (see controlPlaneSync.ts) — reads
+// MAXIS_CONTROL_PLANE_URL/MAXIS_CONTROL_API_KEY if set, otherwise this is
+// a no-op forever (a valid, fully-offline deployment mode). Never throws
+// into this bootstrap; a control plane that's unreachable or never
+// configured can't stop the server from starting or operating.
+startControlPlaneSync();
 
 const isProd = process.env.NODE_ENV === "production";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

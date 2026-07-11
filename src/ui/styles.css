@@ -264,6 +264,28 @@ h2 { font-size: 17px; color: var(--accent-text); }
   font-size: 13px;
 }
 
+/* ── License status banner (admin-only, informational) ── */
+.license-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border-radius: 8px;
+  background: var(--amber-light, #fdf0d5);
+  color: var(--amber-text, #92650a);
+  border: 1px solid #e0c56b;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.license-banner-suspended {
+  background: var(--red-light);
+  color: var(--red);
+  border-color: var(--red);
+}
+
 /* ── Toast ── */
 .toast {
   position: fixed;

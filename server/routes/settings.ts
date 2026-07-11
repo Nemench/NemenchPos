@@ -7,6 +7,7 @@ import path from "node:path";
 import { db } from "../index.js";
 import { requireAuth, requireAdmin } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
+import { getBusinessProfile } from "../controlPlaneSync.js";
 
 const router = Router();
 
@@ -31,6 +32,16 @@ router.get("/public", (_req, res) => {
 
 router.get("/", requireAuth, (_req, res) => {
   res.json(db.getAllSettings());
+});
+
+// Admin-only — license/suspension status is informational for the business
+// owner, not something cashiers/kitchen staff need or should see (see
+// LicenseStatusBanner in src/ui/App.tsx, which is the only consumer).
+// Reads the in-memory cache synchronously (see controlPlaneSync.ts) —
+// never itself makes a network call to the control plane.
+router.get("/license-status", requireAuth, requireAdmin, (_req, res) => {
+  const p = getBusinessProfile();
+  res.json({ licenseStatus: p.license_status, gracePeriodEndsAt: p.grace_period_ends_at });
 });
 
 // Generic settings bag: any key/value pairs (siteName, themeColor, etc).

@@ -106,7 +106,8 @@ export const api = {
     get: () => req<Record<string, string>>("GET", "/settings"),
     set: (data: Record<string, string>) => req<Record<string, string>>("PUT", "/settings", data),
     public: () => req<{ siteName: string; logoUrl: string; themeColor: string; vatRegistered: boolean; vatNumber: string; businessAddress: string }>("GET", "/settings/public"),
-    uploadLogo: (dataUrl: string) => req<{ logoUrl: string }>("POST", "/settings/logo", { dataUrl })
+    uploadLogo: (dataUrl: string) => req<{ logoUrl: string }>("POST", "/settings/logo", { dataUrl }),
+    licenseStatus: () => req<{ licenseStatus: string; gracePeriodEndsAt: string | null }>("GET", "/settings/license-status")
   },
   printers: {
     list: () => req<string[]>("GET", "/printers")

@@ -7,6 +7,11 @@ REPO_URL="https://github.com/Nemench/maxis.git"
 APP_DIR="/opt/maxis"
 PORT="${PORT:-3000}"
 SERVICE="maxis"
+# Optional multi-tenant control-plane sync (see server/controlPlaneSync.ts)
+# — if unset, this instance just never syncs and runs as a fully offline,
+# standalone install (the default/existing behavior, unaffected either way).
+MAXIS_CONTROL_PLANE_URL="${MAXIS_CONTROL_PLANE_URL:-}"
+MAXIS_CONTROL_API_KEY="${MAXIS_CONTROL_API_KEY:-}"
 
 RED='\033[0;31m'; BLUE='\033[0;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info()  { echo -e "${BLUE}▶ $*${NC}"; }
@@ -141,6 +146,8 @@ Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
 Environment=PORT=${PORT}
+Environment=MAXIS_CONTROL_PLANE_URL=${MAXIS_CONTROL_PLANE_URL:-}
+Environment=MAXIS_CONTROL_API_KEY=${MAXIS_CONTROL_API_KEY:-}
 
 [Install]
 WantedBy=multi-user.target

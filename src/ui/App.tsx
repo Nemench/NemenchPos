@@ -220,6 +220,44 @@ function LoginScreen({ onLogin, branding }: { onLogin: (user: User) => void; bra
   );
 }
 
+// Purely informational — shows license/suspension status reported by the
+// multi-tenant control plane (see server/controlPlaneSync.ts), for the
+// business owner to notice and act on. One-shot fetch on mount (matches
+// api.settings.public()'s one-shot call at boot — this doesn't need to be
+// any more real-time than a page load/tab switch already provides), never
+// throws into the UI on failure, renders nothing for active/trial status.
+// Dismissible for the current page view; reappears on next load if the
+// underlying status hasn't changed. Deliberately makes no calls into any
+// order/product/print flow — see MainApp's role+tab gating on where this
+// is even mounted, which is the actual guarantee it never touches POS/
+// kitchen behavior, not anything in this component itself.
+function LicenseStatusBanner() {
+  const [status, setStatus] = useState<{ licenseStatus: string; gracePeriodEndsAt: string | null } | null>(null);
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    api.settings.licenseStatus().then(setStatus).catch(() => undefined);
+  }, []);
+
+  if (!status || dismissed) return null;
+  if (status.licenseStatus !== "pending_suspension" && status.licenseStatus !== "suspended") return null;
+
+  const daysLeft = status.gracePeriodEndsAt
+    ? Math.max(0, Math.ceil((new Date(status.gracePeriodEndsAt).getTime() - Date.now()) / 86_400_000))
+    : null;
+
+  return (
+    <div className={`license-banner ${status.licenseStatus === "suspended" ? "license-banner-suspended" : ""}`}>
+      <span>
+        {status.licenseStatus === "suspended"
+          ? "Account suspended — contact support to restore access."
+          : `Account pending suspension — ${daysLeft} day${daysLeft === 1 ? "" : "s"} remaining. Contact support to resolve this.`}
+      </span>
+      <button type="button" className="icon-button" onClick={() => setDismissed(true)} aria-label="Dismiss"><X size={16} /></button>
+    </div>
+  );
+}
+
 // ── Main app ──────────────────────────────────────────────────────────────────
 
 // The logged-in shell: sidebar nav (gated per role) + whichever panel the
@@ -364,6 +402,12 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
         </header>
 
         {message && <div className="toast">{message}</div>}
+
+        {/* Admin-only, and hidden on POS/Queue even for an admin using those
+            tabs themselves — this is informational for the business owner,
+            never something a cashier or kitchen screen should show or be
+            distracted by. See LicenseStatusBanner. */}
+        {currentUser.role === "admin" && tab !== "pos" && tab !== "queue" && <LicenseStatusBanner />}
 
         {tab === "orders" && (
           <OrderEntry
