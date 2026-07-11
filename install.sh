@@ -12,6 +12,15 @@ SERVICE="maxis"
 # standalone install (the default/existing behavior, unaffected either way).
 MAXIS_CONTROL_PLANE_URL="${MAXIS_CONTROL_PLANE_URL:-}"
 MAXIS_CONTROL_API_KEY="${MAXIS_CONTROL_API_KEY:-}"
+# WhatsApp Cloud API (CRM automation — see server/whatsapp/). All optional:
+# unset, the outbox worker just fails every send attempt harmlessly and the
+# inbound webhook 403s Meta's verification handshake. whatsapp_number_id
+# itself is NOT set here — it comes down from the control-plane business
+# profile (see server/whatsapp/metaClient.ts); only real per-instance
+# secrets live here.
+WHATSAPP_ACCESS_TOKEN="${WHATSAPP_ACCESS_TOKEN:-}"
+WHATSAPP_WEBHOOK_VERIFY_TOKEN="${WHATSAPP_WEBHOOK_VERIFY_TOKEN:-}"
+WHATSAPP_APP_SECRET="${WHATSAPP_APP_SECRET:-}"
 
 RED='\033[0;31m'; BLUE='\033[0;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info()  { echo -e "${BLUE}▶ $*${NC}"; }
@@ -148,6 +157,9 @@ Environment=NODE_ENV=production
 Environment=PORT=${PORT}
 Environment=MAXIS_CONTROL_PLANE_URL=${MAXIS_CONTROL_PLANE_URL:-}
 Environment=MAXIS_CONTROL_API_KEY=${MAXIS_CONTROL_API_KEY:-}
+Environment=WHATSAPP_ACCESS_TOKEN=${WHATSAPP_ACCESS_TOKEN:-}
+Environment=WHATSAPP_WEBHOOK_VERIFY_TOKEN=${WHATSAPP_WEBHOOK_VERIFY_TOKEN:-}
+Environment=WHATSAPP_APP_SECRET=${WHATSAPP_APP_SECRET:-}
 
 [Install]
 WantedBy=multi-user.target

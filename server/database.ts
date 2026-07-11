@@ -7,6 +7,7 @@ import BetterSqlite3 from "better-sqlite3";
 import bcrypt from "bcryptjs";
 import path from "node:path";
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import type {
   Product, ProductInput, QuickCreateProductInput,
   Order, OrderItem, OrderItemInput, CreateOrderInput, OrderStatus,
@@ -14,7 +15,9 @@ import type {
   Department, DeptStatus, DeliveryAddress,
   Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput,
   StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview,
-  MarginStat, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, PendingYieldItem
+  MarginStat, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, PendingYieldItem,
+  CrmContact, CrmContactInput, CrmMessage, MessageDirection, MessageType, MessageStatus,
+  WhatsappOutboxItem, CrmAutomationRule, ConsentStatus, CrmContactDetail, CrmTag
 } from "../src/shared/types.js";
 import { generateInternalBarcode } from "../src/shared/internalBarcode.js";
 import { weightedMarginPct } from "../src/shared/margin.js";
@@ -792,9 +795,17 @@ export class KotDatabase {
       }
     }
 
+    // Optional POS "Customer number" capture (see CreateOrderInput.
+    // customerNumber) — resolved to a crm_contacts row before the INSERT so
+    // crmContactId can be set in one write. Left blank, this is a no-op:
+    // no DB writes beyond the order itself, no added latency, order stays
+    // unlinked. A phone number always resolves (creating a new contact if
+    // there's no match), so this never fails a sale over a typo'd number.
+    const crmContactId = input.customerNumber?.trim() ? this.resolveOrCreateContactByPhone(input.customerNumber.trim()).id : null;
+
     const result = this.db
-      .prepare("INSERT INTO orders (ticketNumber, customerName, customerPhone, orderType, deliveryAddress, requestedTime, assignedTo, status, kitchenStatus, counterStatus, requestedById, createdAt, updatedAt, discountAmount, paymentMethod, cashTendered) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(ticketNumber, input.customerName.trim(), input.customerPhone.trim(), input.orderType, input.orderType === "delivery" || input.deliveryAddress?.street ? JSON.stringify(input.deliveryAddress) : "{}", input.requestedTime.trim(), input.assignedTo?.trim() || null, overallStatus, kitchenStatus, counterStatus, requestedById, now, now, discountAmount, paymentMethod, cashTendered);
+      .prepare("INSERT INTO orders (ticketNumber, customerName, customerPhone, orderType, deliveryAddress, requestedTime, assignedTo, status, kitchenStatus, counterStatus, requestedById, createdAt, updatedAt, discountAmount, paymentMethod, cashTendered, crmContactId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(ticketNumber, input.customerName.trim(), input.customerPhone.trim(), input.orderType, input.orderType === "delivery" || input.deliveryAddress?.street ? JSON.stringify(input.deliveryAddress) : "{}", input.requestedTime.trim(), input.assignedTo?.trim() || null, overallStatus, kitchenStatus, counterStatus, requestedById, now, now, discountAmount, paymentMethod, cashTendered, crmContactId);
 
     const orderId = Number(result.lastInsertRowid);
     const insertItem = this.db.prepare(
@@ -855,7 +866,7 @@ export class KotDatabase {
     const base = `
       SELECT o.id, o.ticketNumber, o.customerName, o.customerPhone, o.orderType,
              o.deliveryAddress, o.requestedTime, o.assignedTo, o.status, o.kitchenStatus, o.counterStatus,
-             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, u.name as requestedByName,
+             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, o.crmContactId, u.name as requestedByName,
              oi.id as oi_id, oi.productId as oi_productId, oi.name as oi_name,
              oi.kg as oi_kg, oi.quantity as oi_quantity, oi.notes as oi_notes,
              oi.unitPrice as oi_unitPrice, oi.lineTotal as oi_lineTotal, oi.wantedPrice as oi_wantedPrice, oi.department as oi_dept, oi.costAtSale as oi_costAtSale
@@ -891,7 +902,7 @@ export class KotDatabase {
     const sql = `
       SELECT o.id, o.ticketNumber, o.customerName, o.customerPhone, o.orderType,
              o.deliveryAddress, o.requestedTime, o.assignedTo, o.status, o.kitchenStatus, o.counterStatus,
-             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, u.name as requestedByName,
+             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, o.crmContactId, u.name as requestedByName,
              oi.id as oi_id, oi.productId as oi_productId, oi.name as oi_name,
              oi.kg as oi_kg, oi.quantity as oi_quantity, oi.notes as oi_notes,
              oi.unitPrice as oi_unitPrice, oi.lineTotal as oi_lineTotal, oi.wantedPrice as oi_wantedPrice, oi.department as oi_dept, oi.costAtSale as oi_costAtSale
@@ -1262,6 +1273,7 @@ export class KotDatabase {
       if (!cols.includes("discountAmount")) this.db.exec("ALTER TABLE orders ADD COLUMN discountAmount REAL NOT NULL DEFAULT 0");
       if (!cols.includes("paymentMethod")) this.db.exec("ALTER TABLE orders ADD COLUMN paymentMethod TEXT NOT NULL DEFAULT 'cash'");
       if (!cols.includes("cashTendered")) this.db.exec("ALTER TABLE orders ADD COLUMN cashTendered REAL");
+      if (!cols.includes("crmContactId")) this.db.exec("ALTER TABLE orders ADD COLUMN crmContactId TEXT REFERENCES crm_contacts(id)");
     }
 
     // Add stock-tracking columns to products if missing (existing databases)
@@ -1360,7 +1372,8 @@ export class KotDatabase {
         updatedAt TEXT NOT NULL,
         discountAmount REAL NOT NULL DEFAULT 0,
         paymentMethod TEXT NOT NULL DEFAULT 'cash',
-        cashTendered REAL
+        cashTendered REAL,
+        crmContactId TEXT REFERENCES crm_contacts(id)
       );
 
       CREATE TABLE IF NOT EXISTS order_items (
@@ -1377,6 +1390,78 @@ export class KotDatabase {
         department TEXT NOT NULL DEFAULT 'counter',
         costAtSale REAL
       );
+
+      -- ── CRM + WhatsApp automation ──────────────────────────────────────────
+      -- Lives on each business's local instance, same offline-first model as
+      -- the rest of MAXIS — not centralized through the control plane.
+
+      CREATE TABLE IF NOT EXISTS crm_contacts (
+        id TEXT PRIMARY KEY,
+        full_name TEXT,
+        phone_number TEXT NOT NULL UNIQUE,
+        linked_customer_id TEXT,
+        consent_status TEXT NOT NULL DEFAULT 'unknown',
+        consent_recorded_at TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS crm_tags (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE
+      );
+
+      CREATE TABLE IF NOT EXISTS crm_contact_tags (
+        contact_id TEXT NOT NULL REFERENCES crm_contacts(id),
+        tag_id TEXT NOT NULL REFERENCES crm_tags(id),
+        PRIMARY KEY (contact_id, tag_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS crm_messages (
+        id TEXT PRIMARY KEY,
+        contact_id TEXT NOT NULL REFERENCES crm_contacts(id),
+        direction TEXT NOT NULL,
+        message_type TEXT NOT NULL,
+        template_name TEXT,
+        body TEXT NOT NULL,
+        status TEXT NOT NULL,
+        triggered_by TEXT,
+        wa_message_id TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS whatsapp_outbox (
+        id TEXT PRIMARY KEY,
+        contact_id TEXT NOT NULL REFERENCES crm_contacts(id),
+        template_name TEXT,
+        template_params TEXT,
+        freeform_body TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        sent_at TEXT,
+        -- Not in the original spec — added because the outbox worker (see
+        -- server/whatsapp/outboxWorker.ts) needs to update "the
+        -- corresponding crm_messages row" after sending (per spec section
+        -- 5), and matching by contact_id + timing alone would risk
+        -- updating the wrong row if two messages are queued for the same
+        -- contact close together. Every outbound send creates its
+        -- whatsapp_outbox row and crm_messages row together, linked here.
+        crm_message_id TEXT REFERENCES crm_messages(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS crm_automation_rules (
+        id TEXT PRIMARY KEY,
+        event_name TEXT NOT NULL UNIQUE,
+        template_name TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_crm_contacts_phone ON crm_contacts(phone_number);
+      CREATE INDEX IF NOT EXISTS idx_crm_messages_contact ON crm_messages(contact_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_whatsapp_outbox_status ON whatsapp_outbox(status);
+      CREATE INDEX IF NOT EXISTS idx_orders_crm_contact ON orders(crmContactId);
 
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
@@ -1579,6 +1664,282 @@ export class KotDatabase {
         INSERT INTO local_profile_cache (id, profile_json, synced_at) VALUES (1, ?, ?)
         ON CONFLICT(id) DO UPDATE SET profile_json = excluded.profile_json, synced_at = excluded.synced_at`)
       .run(profileJson, syncedAt);
+  }
+
+  // ── CRM + WhatsApp automation ────────────────────────────────────────────────
+
+  private static readonly CONTACT_COLUMNS = `
+    c.id, c.full_name as fullName, c.phone_number as phoneNumber,
+    c.linked_customer_id as linkedCustomerId, c.consent_status as consentStatus,
+    c.consent_recorded_at as consentRecordedAt, c.notes, c.created_at as createdAt, c.updated_at as updatedAt`;
+
+  private attachTags(contact: Omit<CrmContact, "tags">): CrmContact {
+    const tags = this.db
+      .prepare("SELECT t.name FROM crm_tags t JOIN crm_contact_tags ct ON ct.tag_id = t.id WHERE ct.contact_id = ? ORDER BY t.name")
+      .all(contact.id) as { name: string }[];
+    return { ...contact, tags: tags.map((t) => t.name) };
+  }
+
+  getContact(id: string): CrmContact | null {
+    const row = this.db.prepare(`SELECT ${KotDatabase.CONTACT_COLUMNS} FROM crm_contacts c WHERE c.id = ?`).get(id) as
+      Omit<CrmContact, "tags"> | undefined;
+    return row ? this.attachTags(row) : null;
+  }
+
+  findContactByPhone(phoneNumber: string): CrmContact | null {
+    const row = this.db.prepare(`SELECT ${KotDatabase.CONTACT_COLUMNS} FROM crm_contacts c WHERE c.phone_number = ?`).get(phoneNumber) as
+      Omit<CrmContact, "tags"> | undefined;
+    return row ? this.attachTags(row) : null;
+  }
+
+  // Used by both POS checkout (an optional "Customer number" field — see
+  // createOrder below) and the inbound webhook (server/routes/
+  // whatsappWebhook.ts) — the two places a phone number arrives without
+  // already knowing whether it belongs to an existing contact. A new
+  // contact always starts consent_status='unknown', full_name null; never
+  // silently guesses a name from anywhere.
+  resolveOrCreateContactByPhone(phoneNumber: string): CrmContact {
+    const existing = this.findContactByPhone(phoneNumber);
+    if (existing) return existing;
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.db
+      .prepare("INSERT INTO crm_contacts (id, full_name, phone_number, consent_status, created_at, updated_at) VALUES (?, NULL, ?, 'unknown', ?, ?)")
+      .run(id, phoneNumber, now, now);
+    return this.getContact(id)!;
+  }
+
+  // Search matches name, phone, or tag name (case-insensitive substring) —
+  // deliberately not a full-text index given the scale of a single
+  // butchery's contact list.
+  listContacts(search?: string): CrmContact[] {
+    let rows: Omit<CrmContact, "tags">[];
+    if (search?.trim()) {
+      const q = `%${search.trim().toLowerCase()}%`;
+      rows = this.db
+        .prepare(`
+          SELECT DISTINCT ${KotDatabase.CONTACT_COLUMNS}
+          FROM crm_contacts c
+          LEFT JOIN crm_contact_tags ct ON ct.contact_id = c.id
+          LEFT JOIN crm_tags t ON t.id = ct.tag_id
+          WHERE lower(COALESCE(c.full_name, '')) LIKE ? OR c.phone_number LIKE ? OR lower(COALESCE(t.name, '')) LIKE ?
+          ORDER BY c.full_name COLLATE NOCASE, c.phone_number`)
+        .all(q, q, q) as Omit<CrmContact, "tags">[];
+    } else {
+      rows = this.db
+        .prepare(`SELECT ${KotDatabase.CONTACT_COLUMNS} FROM crm_contacts c ORDER BY c.full_name COLLATE NOCASE, c.phone_number`)
+        .all() as Omit<CrmContact, "tags">[];
+    }
+    return rows.map((r) => this.attachTags(r));
+  }
+
+  updateContact(id: string, input: CrmContactInput): CrmContact {
+    const now = new Date().toISOString();
+    const run = this.db.transaction(() => {
+      if ("fullName" in input || "notes" in input) {
+        const current = this.getContact(id);
+        if (!current) throw new Error(`Contact ${id} not found`);
+        this.db
+          .prepare("UPDATE crm_contacts SET full_name = ?, notes = ?, updated_at = ? WHERE id = ?")
+          .run(input.fullName !== undefined ? input.fullName : current.fullName, input.notes !== undefined ? input.notes : current.notes, now, id);
+      }
+      if (input.tags) this.setContactTags(id, input.tags);
+    });
+    run();
+    const contact = this.getContact(id);
+    if (!contact) throw new Error(`Contact ${id} not found`);
+    return contact;
+  }
+
+  // Replace-all tag assignment, creating any tag that doesn't exist yet —
+  // same pattern as setYieldEstimates: the list is short, diffing
+  // add/remove client-side isn't worth it.
+  setContactTags(contactId: string, tagNames: string[]): void {
+    const run = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM crm_contact_tags WHERE contact_id = ?").run(contactId);
+      for (const name of tagNames) {
+        const trimmed = name.trim();
+        if (!trimmed) continue;
+        let tag = this.db.prepare("SELECT id FROM crm_tags WHERE name = ? COLLATE NOCASE").get(trimmed) as { id: string } | undefined;
+        if (!tag) {
+          const tagId = randomUUID();
+          this.db.prepare("INSERT INTO crm_tags (id, name) VALUES (?, ?)").run(tagId, trimmed);
+          tag = { id: tagId };
+        }
+        this.db.prepare("INSERT OR IGNORE INTO crm_contact_tags (contact_id, tag_id) VALUES (?, ?)").run(contactId, tag.id);
+      }
+    });
+    run();
+  }
+
+  listTags(): CrmTag[] {
+    return this.db.prepare("SELECT id, name FROM crm_tags ORDER BY name").all() as CrmTag[];
+  }
+
+  // Timestamps the change — every consent flip is meant to be auditable
+  // (it's the one field in this whole module with real legal/compliance
+  // weight, since it gates whether marketing messages can ever be sent).
+  setConsentStatus(id: string, status: ConsentStatus): CrmContact {
+    const now = new Date().toISOString();
+    this.db.prepare("UPDATE crm_contacts SET consent_status = ?, consent_recorded_at = ?, updated_at = ? WHERE id = ?").run(status, now, now, id);
+    const contact = this.getContact(id);
+    if (!contact) throw new Error(`Contact ${id} not found`);
+    return contact;
+  }
+
+  listMessagesForContact(contactId: string): CrmMessage[] {
+    return this.db
+      .prepare(`
+        SELECT id, contact_id as contactId, direction, message_type as messageType, template_name as templateName,
+               body, status, triggered_by as triggeredBy, wa_message_id as waMessageId, created_at as createdAt
+        FROM crm_messages WHERE contact_id = ? ORDER BY created_at ASC`)
+      .all(contactId) as CrmMessage[];
+  }
+
+  insertMessage(input: {
+    contactId: string; direction: MessageDirection; messageType: MessageType;
+    templateName?: string | null; body: string; status: MessageStatus; triggeredBy?: string | null; waMessageId?: string | null;
+  }): CrmMessage {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.db
+      .prepare(`INSERT INTO crm_messages (id, contact_id, direction, message_type, template_name, body, status, triggered_by, wa_message_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, input.contactId, input.direction, input.messageType, input.templateName ?? null, input.body, input.status, input.triggeredBy ?? null, input.waMessageId ?? null, now);
+    return { id, contactId: input.contactId, direction: input.direction, messageType: input.messageType, templateName: input.templateName ?? null, body: input.body, status: input.status, triggeredBy: input.triggeredBy ?? null, waMessageId: input.waMessageId ?? null, createdAt: now };
+  }
+
+  updateMessageStatus(id: string, status: MessageStatus, waMessageId?: string | null): void {
+    if (waMessageId) {
+      this.db.prepare("UPDATE crm_messages SET status = ?, wa_message_id = ? WHERE id = ?").run(status, waMessageId, id);
+    } else {
+      this.db.prepare("UPDATE crm_messages SET status = ? WHERE id = ?").run(status, id);
+    }
+  }
+
+  // Whether the contact has an inbound message within the last 24h — Meta's
+  // own rule for when a freeform reply is allowed at all (outside this
+  // window, only an approved template can be sent). Computed here, not
+  // re-derived client-side, so the admin UI can't drift from the actual rule.
+  isWithinServiceWindow(contactId: string): boolean {
+    const row = this.db
+      .prepare("SELECT created_at FROM crm_messages WHERE contact_id = ? AND direction = 'inbound' ORDER BY created_at DESC LIMIT 1")
+      .get(contactId) as { created_at: string } | undefined;
+    if (!row) return false;
+    return Date.now() - new Date(row.created_at).getTime() < 24 * 60 * 60 * 1000;
+  }
+
+  getContactDetail(id: string): CrmContactDetail | null {
+    const contact = this.getContact(id);
+    if (!contact) return null;
+    return { contact, messages: this.listMessagesForContact(id), withinServiceWindow: this.isWithinServiceWindow(id) };
+  }
+
+  // The one place an outbound WhatsApp send is actually queued — used by
+  // both automation (server/whatsapp/automation.ts) and manual staff sends
+  // (server/routes/crm.ts), so the outbox row and its crm_messages log
+  // entry are always created together, correctly linked (see the
+  // crm_message_id column comment above), regardless of which caller.
+  enqueueOutboundMessage(input: {
+    contactId: string; messageType: MessageType; templateName?: string | null; templateParams?: unknown[];
+    freeformBody?: string | null; body: string; triggeredBy: string;
+  }): { outboxId: string; message: CrmMessage } {
+    const message = this.insertMessage({
+      contactId: input.contactId, direction: "outbound", messageType: input.messageType,
+      templateName: input.templateName, body: input.body, status: "queued", triggeredBy: input.triggeredBy
+    });
+    const outboxId = randomUUID();
+    const now = new Date().toISOString();
+    this.db
+      .prepare(`INSERT INTO whatsapp_outbox (id, contact_id, template_name, template_params, freeform_body, status, attempts, created_at, crm_message_id)
+                VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)`)
+      .run(outboxId, input.contactId, input.templateName ?? null, input.templateParams ? JSON.stringify(input.templateParams) : null, input.freeformBody ?? null, now, message.id);
+    return { outboxId, message };
+  }
+
+  listPendingOutbox(): WhatsappOutboxItem[] {
+    return this.db
+      .prepare(`
+        SELECT id, contact_id as contactId, template_name as templateName, template_params as templateParams,
+               freeform_body as freeformBody, status, attempts, created_at as createdAt, sent_at as sentAt
+        FROM whatsapp_outbox WHERE status = 'pending' ORDER BY created_at ASC`)
+      .all() as WhatsappOutboxItem[];
+  }
+
+  // The worker (server/whatsapp/outboxWorker.ts) calls this after every
+  // send attempt. attempts always increments; a failed attempt is left in
+  // status='pending' (still returned by listPendingOutbox, so the worker
+  // retries it next poll) unless the worker tells us this was the final
+  // try (permanent=true, past its retry ceiling), in which case it's
+  // marked 'failed' for good — the worker owns the retry ceiling, not
+  // this method.
+  recordOutboxAttempt(id: string, result: "sent" | "failed", permanent = false): void {
+    const now = new Date().toISOString();
+    if (result === "sent") {
+      this.db.prepare("UPDATE whatsapp_outbox SET status = 'sent', attempts = attempts + 1, sent_at = ? WHERE id = ?").run(now, id);
+    } else if (permanent) {
+      this.db.prepare("UPDATE whatsapp_outbox SET status = 'failed', attempts = attempts + 1 WHERE id = ?").run(id);
+    } else {
+      this.db.prepare("UPDATE whatsapp_outbox SET attempts = attempts + 1 WHERE id = ?").run(id);
+    }
+  }
+
+  getOutboxItem(id: string): WhatsappOutboxItem | null {
+    return this.db
+      .prepare(`
+        SELECT id, contact_id as contactId, template_name as templateName, template_params as templateParams,
+               freeform_body as freeformBody, status, attempts, created_at as createdAt, sent_at as sentAt
+        FROM whatsapp_outbox WHERE id = ?`)
+      .get(id) as WhatsappOutboxItem | null;
+  }
+
+  // Only used internally by the worker to find the crm_messages row to
+  // update after a send attempt — not part of the public WhatsappOutboxItem
+  // shape (crm_message_id is an implementation detail of the link, not
+  // something callers outside this file need).
+  private getOutboxCrmMessageId(outboxId: string): string | null {
+    const row = this.db.prepare("SELECT crm_message_id as crmMessageId FROM whatsapp_outbox WHERE id = ?").get(outboxId) as { crmMessageId: string | null } | undefined;
+    return row?.crmMessageId ?? null;
+  }
+
+  // Called by the outbox worker after a Meta API call resolves — updates
+  // both the outbox row (queue bookkeeping) and the linked crm_messages
+  // row (status the admin CRM UI actually displays) together. On a
+  // transient failure (permanent=false) the crm_messages row is left as
+  // 'queued' — it's still going to be retried, so it shouldn't read as a
+  // final failure to admin staff yet.
+  resolveOutboxSend(outboxId: string, result: "sent" | "failed", waMessageId?: string | null, permanent = false): void {
+    this.recordOutboxAttempt(outboxId, result, permanent);
+    if (result === "sent" || permanent) {
+      const messageId = this.getOutboxCrmMessageId(outboxId);
+      if (messageId) this.updateMessageStatus(messageId, result === "sent" ? "sent" : "failed", waMessageId);
+    }
+  }
+
+  getAutomationRule(eventName: string): CrmAutomationRule | null {
+    return this.db
+      .prepare("SELECT id, event_name as eventName, template_name as templateName, enabled FROM crm_automation_rules WHERE event_name = ?")
+      .get(eventName) as CrmAutomationRule | null;
+  }
+
+  listAutomationRules(): CrmAutomationRule[] {
+    return this.db.prepare("SELECT id, event_name as eventName, template_name as templateName, enabled FROM crm_automation_rules ORDER BY event_name").all() as CrmAutomationRule[];
+  }
+
+  // Upsert by event_name (it's UNIQUE) — the admin UI manages a fixed small
+  // set of events (order_ready, payment_received), not arbitrary ones.
+  setAutomationRule(eventName: string, templateName: string, enabled: boolean): CrmAutomationRule {
+    const existing = this.getAutomationRule(eventName);
+    if (existing) {
+      this.db.prepare("UPDATE crm_automation_rules SET template_name = ?, enabled = ? WHERE event_name = ?").run(templateName, enabled ? 1 : 0, eventName);
+    } else {
+      this.db.prepare("INSERT INTO crm_automation_rules (id, event_name, template_name, enabled) VALUES (?, ?, ?, ?)").run(randomUUID(), eventName, templateName, enabled ? 1 : 0);
+    }
+    return this.getAutomationRule(eventName)!;
+  }
+
+  linkOrderToContact(orderId: number, contactId: string): void {
+    this.db.prepare("UPDATE orders SET crmContactId = ? WHERE id = ?").run(contactId, orderId);
   }
 
   // Populates a brand-new database with a default admin login (Admin/0000

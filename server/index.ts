@@ -25,7 +25,10 @@ import stockRouter from "./routes/stock.js";
 import suppliersRouter from "./routes/suppliers.js";
 import weighInRouter from "./routes/weighIn.js";
 import statisticsRouter from "./routes/statistics.js";
+import crmRouter from "./routes/crm.js";
+import whatsappWebhookRouter from "./routes/whatsappWebhook.js";
 import { startControlPlaneSync } from "./controlPlaneSync.js";
+import { startOutboxWorker } from "./whatsapp/outboxWorker.js";
 
 export const db = new KotDatabase();
 db.initialize();
@@ -36,6 +39,13 @@ db.initialize();
 // into this bootstrap; a control plane that's unreachable or never
 // configured can't stop the server from starting or operating.
 startControlPlaneSync();
+
+// Drains whatsapp_outbox every 15s, sending via the Meta Graph API (see
+// server/whatsapp/outboxWorker.ts). Same never-block-bootstrap posture as
+// the control-plane sync — sends only happen if WHATSAPP_ACCESS_TOKEN and
+// the business's whatsapp_number_id are actually configured; otherwise
+// every attempt fails harmlessly and gets retried/eventually given up on.
+startOutboxWorker();
 
 const isProd = process.env.NODE_ENV === "production";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -122,6 +132,11 @@ app.use("/api/stock",    stockRouter);
 app.use("/api/suppliers", suppliersRouter);
 app.use("/api/weigh-in", weighInRouter);
 app.use("/api/statistics", statisticsRouter);
+app.use("/api/crm", crmRouter);
+// Public — no requireAuth — Meta calls this directly and can't authenticate
+// like a normal client (see server/routes/whatsappWebhook.ts's top comment
+// re: signature verification not yet implemented).
+app.use("/api/whatsapp", whatsappWebhookRouter);
 
 if (isProd) {
   // Serve the Vite-built SPA and fall back to index.html for any

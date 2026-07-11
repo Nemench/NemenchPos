@@ -2,7 +2,7 @@
 // req()/download(), which attach the JWT and centrally handle a 401 (token
 // missing/expired) by clearing it and forcing a reload back to the login screen.
 import { Capacitor } from "@capacitor/core";
-import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput, StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion } from "../shared/types";
+import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput, StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, CrmContact, CrmContactInput, CrmContactDetail, CrmTag, CrmMessage, CrmAutomationRule, ConsentStatus } from "../shared/types";
 import { tokenStorage } from "./tokenStorage";
 import { NATIVE_SERVER_URL } from "../shared/nativeServer";
 
@@ -152,5 +152,18 @@ export const api = {
     overview: (from: string, to: string) => req<StatisticsOverview>("GET", `/statistics/overview?from=${from}&to=${to}`),
     margins: (from: string, to: string, groupBy: "product" | "category" | "day") =>
       req<MarginOverview>("GET", `/statistics/margins?from=${from}&to=${to}&group_by=${groupBy}`)
+  },
+  crm: {
+    contacts: (search?: string) => req<CrmContact[]>("GET", `/crm/contacts${search ? `?search=${encodeURIComponent(search)}` : ""}`),
+    contact: (id: string) => req<CrmContactDetail>("GET", `/crm/contacts/${id}`),
+    updateContact: (id: string, data: CrmContactInput) => req<CrmContact>("PATCH", `/crm/contacts/${id}`, data),
+    setConsent: (id: string, consentStatus: ConsentStatus) => req<CrmContact>("POST", `/crm/contacts/${id}/consent`, { consentStatus }),
+    tags: () => req<CrmTag[]>("GET", "/crm/tags"),
+    templates: () => req<{ name: string; category: "utility" | "marketing"; bodyTemplate: string }[]>("GET", "/crm/templates"),
+    automationRules: () => req<CrmAutomationRule[]>("GET", "/crm/automation-rules"),
+    setAutomationRule: (eventName: string, templateName: string, enabled: boolean) =>
+      req<CrmAutomationRule>("PUT", `/crm/automation-rules/${eventName}`, { templateName, enabled }),
+    send: (id: string, data: { freeformBody?: string; templateName?: string; templateParams?: unknown[] }) =>
+      req<CrmMessage>("POST", `/crm/contacts/${id}/send`, data)
   }
 };

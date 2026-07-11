@@ -21,6 +21,7 @@ import {
   History,
   LogOut,
   Minus,
+  MessageCircle,
   Moon,
   Package,
   Plus,
@@ -61,13 +62,17 @@ import type {
   User,
   UserInput,
   WeighInBatchSummary,
-  WeighInLine
+  WeighInLine,
+  CrmContact,
+  CrmContactDetail,
+  CrmMessage,
+  ConsentStatus
 } from "../shared/types";
 import { api, assetUrl } from "./api";
 import { applyTheme, applyThemeMode, deriveShades, initThemeMode, ThemeMode } from "./theme";
 import { tokenStorage } from "./tokenStorage";
 
-type Tab = "orders" | "pos" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "weighIn" | "statistics";
+type Tab = "orders" | "pos" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "weighIn" | "statistics" | "crm";
 
 // Applied at module load (before React's first render) so there's no flash
 // of the wrong theme — reads the stored preference (or system default).
@@ -375,6 +380,9 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
               {currentUser.role === "admin" && (
                 <button className={tab === "statistics" ? "active" : ""} onClick={() => setTab("statistics")}><TrendingUp size={18} /><span>Statistics</span></button>
               )}
+              {currentUser.role === "admin" && (
+                <button className={tab === "crm" ? "active" : ""} onClick={() => setTab("crm")}><MessageCircle size={18} /><span>CRM</span></button>
+              )}
             </>
           )}
           {/* Sign out lives in nav itself (not just .sidebar-footer below) so it's
@@ -437,6 +445,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
         )}
         {tab === "reports" && currentUser.role === "admin" && <ReportsPanel />}
         {tab === "statistics" && currentUser.role === "admin" && <StatisticsPanel />}
+        {tab === "crm" && currentUser.role === "admin" && <CrmPanel />}
       </main>
     </div>
   );
@@ -674,6 +683,12 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
   // (see needsFullInvoice below) — otherwise unused and left blank.
   const [buyerName, setBuyerName] = useState("");
   const [buyerAddress, setBuyerAddress] = useState("");
+  // Entirely optional CRM contact capture — blank stays blank forever, never
+  // required to check out, never validated client-side beyond a plain text
+  // field. See db.createOrder's customerNumber handling: a filled-in number
+  // resolves-or-creates a crm_contacts row server-side; nothing here blocks
+  // or slows down an ordinary cash sale.
+  const [customerNumber, setCustomerNumber] = useState("");
   // Index of the line awaiting PIN confirmation before it's actually
   // removed — a fat-finger tap on the trash icon during a live sale
   // shouldn't be enough on its own to drop an item.
@@ -756,7 +771,7 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
 
   const removeLine = (index: number) => setCart((cur) => cur.filter((_, i) => i !== index));
 
-  const clearSale = () => { setCart([]); setDiscount(0); setBuyerName(""); setBuyerAddress(""); setPaymentMethod(null); setCashTendered(""); setError(""); };
+  const clearSale = () => { setCart([]); setDiscount(0); setBuyerName(""); setBuyerAddress(""); setPaymentMethod(null); setCashTendered(""); setCustomerNumber(""); setError(""); };
 
   // South African retail prices are required to be displayed VAT-inclusive
   // (Consumer Protection Act / VAT Act) — pricePerUnit is already the
@@ -801,7 +816,8 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
       completeImmediately: true,
       discountAmount: clampedDiscount,
       paymentMethod: paymentMethod ?? "cash",
-      cashTendered: paymentMethod === "cash" ? tenderedAmount : null
+      cashTendered: paymentMethod === "cash" ? tenderedAmount : null,
+      customerNumber: customerNumber.trim() || null
     };
     try {
       const order = await api.orders.create(payload);
@@ -909,6 +925,12 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
             <label>Buyer address<input value={buyerAddress} onChange={(e) => setBuyerAddress(e.target.value)} placeholder="Required for sales over R5,000" /></label>
           </div>
         )}
+
+        <div className="pos-customer-number">
+          <label>Customer number <span className="settings-hint">(optional — for order-ready WhatsApp updates)</span>
+            <input type="tel" value={customerNumber} onChange={(e) => setCustomerNumber(e.target.value)} placeholder="e.g. 082 123 4567" />
+          </label>
+        </div>
 
         <div className="pos-payment-section">
           <div className="pos-payment-tabs">
@@ -2720,6 +2742,188 @@ function UsersPanel() {
   );
 }
 
+// ── CRM (admin) ───────────────────────────────────────────────────────────────
+
+const CONSENT_LABEL: Record<ConsentStatus, string> = { opted_in: "Opted in", opted_out: "Opted out", unknown: "Unknown" };
+
+function CrmPanel() {
+  const [contacts, setContacts] = useState<CrmContact[]>([]);
+  const [search, setSearch] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const load = () => api.crm.contacts(search).then(setContacts).catch(() => undefined);
+  useEffect(() => {
+    void load();
+    const id = setInterval(() => void load(), 15_000);
+    return () => clearInterval(id);
+  }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="products-layout">
+      <div className="panel table-panel">
+        <div className="crm-search">
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, phone, or tag…" />
+        </div>
+        <table>
+          <thead><tr><th>Name</th><th>Phone</th><th>Tags</th><th>Consent</th></tr></thead>
+          <tbody>
+            {contacts.map((c) => (
+              <tr key={c.id} className={selectedId === c.id ? "active-row" : ""} onClick={() => setSelectedId(c.id)} style={{ cursor: "pointer" }}>
+                <td>{c.fullName || <span className="muted">Unnamed</span>}</td>
+                <td>{c.phoneNumber}</td>
+                <td>{c.tags.join(", ")}</td>
+                <td><span className={`consent-badge consent-${c.consentStatus}`}>{CONSENT_LABEL[c.consentStatus]}</span></td>
+              </tr>
+            ))}
+            {contacts.length === 0 && <tr><td colSpan={4} className="muted">No contacts yet — captured automatically from POS checkout or inbound WhatsApp messages.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {selectedId && <CrmContactDetailPanel contactId={selectedId} onClose={() => setSelectedId(null)} onChanged={load} />}
+    </div>
+  );
+}
+
+function CrmContactDetailPanel({ contactId, onClose, onChanged }: { contactId: string; onClose: () => void; onChanged: () => void }) {
+  const [detail, setDetail] = useState<CrmContactDetail | null>(null);
+  const [tagsInput, setTagsInput] = useState("");
+  const [notesInput, setNotesInput] = useState("");
+  const [nameInput, setNameInput] = useState("");
+  const [freeformBody, setFreeformBody] = useState("");
+  const [templates, setTemplates] = useState<{ name: string; category: "utility" | "marketing"; bodyTemplate: string }[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const load = () => api.crm.contact(contactId).then((d) => {
+    setDetail(d);
+    setTagsInput(d.contact.tags.join(", "));
+    setNotesInput(d.contact.notes ?? "");
+    setNameInput(d.contact.fullName ?? "");
+  }).catch(() => undefined);
+
+  useEffect(() => {
+    void load();
+    void api.crm.templates().then(setTemplates).catch(() => undefined);
+    const id = setInterval(() => void load(), 10_000);
+    return () => clearInterval(id);
+  }, [contactId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!detail) return <div className="panel">Loading…</div>;
+  const { contact, messages, withinServiceWindow } = detail;
+
+  const saveDetails = async () => {
+    setBusy(true); setMsg("");
+    try {
+      await api.crm.updateContact(contact.id, {
+        fullName: nameInput.trim() || null,
+        notes: notesInput.trim() || null,
+        tags: tagsInput.split(",").map((t) => t.trim()).filter(Boolean)
+      });
+      setMsg("Saved.");
+      await load();
+      onChanged();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Failed to save");
+    } finally { setBusy(false); }
+  };
+
+  const setConsent = async (status: ConsentStatus) => {
+    setBusy(true); setMsg("");
+    try {
+      await api.crm.setConsent(contact.id, status);
+      await load();
+      onChanged();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Failed to update consent");
+    } finally { setBusy(false); }
+  };
+
+  const sendFreeform = async () => {
+    if (!freeformBody.trim()) return;
+    setBusy(true); setMsg("");
+    try {
+      await api.crm.send(contact.id, { freeformBody: freeformBody.trim() });
+      setFreeformBody("");
+      await load();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Failed to send");
+    } finally { setBusy(false); }
+  };
+
+  const sendTemplate = async () => {
+    if (!selectedTemplate) return;
+    setBusy(true); setMsg("");
+    try {
+      await api.crm.send(contact.id, { templateName: selectedTemplate });
+      setSelectedTemplate("");
+      await load();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Failed to send");
+    } finally { setBusy(false); }
+  };
+
+  // Marketing-tier templates can only ever be sent to opted_in contacts —
+  // filtered out of the picker entirely rather than shown-but-disabled, to
+  // keep the send box simple.
+  const availableTemplates = templates.filter((t) => t.category !== "marketing" || contact.consentStatus === "opted_in");
+
+  return (
+    <div className="panel product-form crm-detail">
+      <header className="crm-detail-header">
+        <h2>{contact.fullName || contact.phoneNumber}</h2>
+        <button type="button" className="secondary" onClick={onClose}><X size={16} /></button>
+      </header>
+
+      <label>Name<input value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="Not captured yet" /></label>
+      <label>Notes<input value={notesInput} onChange={(e) => setNotesInput(e.target.value)} /></label>
+      <label>Tags (comma-separated)<input value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} /></label>
+      <footer className="actions">
+        <button type="button" disabled={busy} onClick={() => void saveDetails()}><Save size={16} /> Save</button>
+      </footer>
+
+      <div className="crm-consent-row">
+        <span>Consent: <b>{CONSENT_LABEL[contact.consentStatus]}</b></span>
+        <div className="crm-consent-buttons">
+          <button type="button" className="secondary" disabled={busy || contact.consentStatus === "opted_in"} onClick={() => void setConsent("opted_in")}>Opt in</button>
+          <button type="button" className="secondary" disabled={busy || contact.consentStatus === "opted_out"} onClick={() => void setConsent("opted_out")}>Opt out</button>
+        </div>
+      </div>
+
+      {msg && <div className="form-message">{msg}</div>}
+
+      <h3>Messages</h3>
+      <div className="crm-chat">
+        {messages.length === 0 && <p className="muted">No messages yet.</p>}
+        {messages.map((m: CrmMessage) => (
+          <div key={m.id} className={`crm-chat-bubble ${m.direction}`}>
+            <div className="crm-chat-body">{m.body}</div>
+            <div className="crm-chat-meta">{new Date(m.createdAt).toLocaleString()} · {m.status}{m.templateName ? ` · ${m.templateName}` : ""}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="crm-send-box">
+        {withinServiceWindow ? (
+          <>
+            <textarea value={freeformBody} onChange={(e) => setFreeformBody(e.target.value)} placeholder="Type a message…" rows={2} />
+            <button type="button" disabled={busy || !freeformBody.trim()} onClick={() => void sendFreeform()}>Send</button>
+          </>
+        ) : (
+          <>
+            <p className="settings-hint">Outside the 24h reply window — only an approved template can be sent.</p>
+            <select value={selectedTemplate} onChange={(e) => setSelectedTemplate(e.target.value)}>
+              <option value="">Choose a template…</option>
+              {availableTemplates.map((t) => <option key={t.name} value={t.name}>{t.name} ({t.category})</option>)}
+            </select>
+            <button type="button" disabled={busy || !selectedTemplate} onClick={() => void sendTemplate()}>Send template</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Settings (admin) ──────────────────────────────────────────────────────────
 
 // Admin control panel: printing config, branding (site name/logo/theme
@@ -4323,7 +4527,7 @@ function calculateLineTotal(item: OrderItemInput) {
 }
 
 function tabTitle(tab: Tab) {
-  return { orders: "New Order", pos: "POS", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings", reports: "Reports", weighIn: "Weigh-In", statistics: "Statistics" }[tab];
+  return { orders: "New Order", pos: "POS", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings", reports: "Reports", weighIn: "Weigh-In", statistics: "Statistics", crm: "CRM" }[tab];
 }
 
 function tabSubtitle(tab: Tab) {
@@ -4337,6 +4541,7 @@ function tabSubtitle(tab: Tab) {
     users: "Manage staff accounts and PINs.",
     reports: "View and download orders for a date range.",
     weighIn: "Log received stock by weight, batch by batch.",
-    statistics: "Sales performance and stock movement per item."
+    statistics: "Sales performance and stock movement per item.",
+    crm: "Contacts, message history, and WhatsApp automation."
   }[tab];
 }

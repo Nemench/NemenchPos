@@ -4,7 +4,20 @@ import { Router } from "express";
 import { db } from "../index.js";
 import { requireAuth } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
-import type { CreateOrderInput, OrderItemInput, OrderStatus, Department, DeptStatus } from "../../src/shared/types.js";
+import type { CreateOrderInput, Order, OrderItemInput, OrderStatus, Department, DeptStatus } from "../../src/shared/types.js";
+import { triggerAutomation } from "../whatsapp/automation.js";
+
+// Fires the order_ready automation only on the transition INTO "Ready"
+// (previous status wasn't already Ready) — callers pass the status just
+// before their update so a second PATCH that leaves an order sitting at
+// Ready doesn't re-send the notification. Lives here (not baked into
+// db.updateDeptStatus/updateOrderStatus) because triggerAutomation reads
+// `db` from server/index.ts, the same module that constructs the
+// KotDatabase instance — importing it from database.ts would be circular.
+function maybeTriggerOrderReady(previousStatus: OrderStatus, order: Order): void {
+  if (order.status !== "Ready" || previousStatus === "Ready") return;
+  triggerAutomation("order_ready", order.crmContactId, { args: [order.customerName || "there", order.ticketNumber] });
+}
 
 const router = Router();
 router.use(requireAuth);
@@ -35,7 +48,19 @@ router.post("/", (req: AuthRequest, res) => {
     res.status(403).json({ message: "Not authorized to create orders" });
     return;
   }
-  try { res.status(201).json(db.createOrder(req.body as CreateOrderInput, req.user!.id)); }
+  try {
+    const order = db.createOrder(req.body as CreateOrderInput, req.user!.id);
+    // "payment_received" only has a real trigger point for completeImmediately
+    // (POS) sales — those are the only orders paid for at creation time in
+    // this codebase; regular KOT tickets aren't paid until much later, if
+    // ever, through a flow that doesn't exist yet.
+    if ((req.body as CreateOrderInput).completeImmediately) {
+      triggerAutomation("payment_received", order.crmContactId, {
+        args: [order.customerName || "there", `R${(order.items.reduce((s, i) => s + (i.lineTotal ?? 0), 0) - order.discountAmount).toFixed(2)}`, order.ticketNumber]
+      });
+    }
+    res.status(201).json(order);
+  }
   catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to create order" }); }
 });
 
@@ -59,7 +84,13 @@ router.post("/:id/items", (req: AuthRequest, res) => {
 });
 
 router.patch("/:id/status", (req, res) => {
-  try { res.json(db.updateOrderStatus(Number(req.params.id), req.body.status as OrderStatus)); }
+  try {
+    const id = Number(req.params.id);
+    const previousStatus = db.getOrder(id).status;
+    const order = db.updateOrderStatus(id, req.body.status as OrderStatus);
+    maybeTriggerOrderReady(previousStatus, order);
+    res.json(order);
+  }
   catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to update status" }); }
 });
 
@@ -76,7 +107,11 @@ router.patch("/:id/dept-status", (req: AuthRequest, res) => {
       res.status(403).json({ message: "Counter staff can only update counter status" });
       return;
     }
-    res.json(db.updateDeptStatus(Number(req.params.id), department, status));
+    const id = Number(req.params.id);
+    const previousStatus = db.getOrder(id).status;
+    const order = db.updateDeptStatus(id, department, status);
+    maybeTriggerOrderReady(previousStatus, order);
+    res.json(order);
   } catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to update status" }); }
 });
 

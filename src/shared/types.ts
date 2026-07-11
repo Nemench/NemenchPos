@@ -274,6 +274,11 @@ export interface CreateOrderInput {
   // What the customer physically handed over, for cash sales only — the
   // change due is derived from this minus the total, not stored separately.
   cashTendered?: number | null;
+  // Optional "Customer number" from POS checkout — a bare phone number,
+  // not a contact id. Server resolves-or-creates a crm_contacts row and
+  // links the order to it; left blank, the order stays unlinked and
+  // nothing CRM-related happens (see db.createOrder's handling).
+  customerNumber?: string | null;
 }
 
 export interface Order {
@@ -295,6 +300,7 @@ export interface Order {
   discountAmount: number;
   paymentMethod: "cash" | "card";
   cashTendered: number | null;
+  crmContactId: string | null;
   items: OrderItem[];
 }
 
@@ -366,4 +372,84 @@ export interface MarginOverview {
   overallMarginPct: number;
   prevOverallMarginPct: number;
   trend: { date: string; revenue: number; cost: number; profit: number; marginPct: number }[];
+}
+
+// ── CRM + WhatsApp automation ────────────────────────────────────────────────
+// Column names in the SQL schema are snake_case (server/database.ts) — these
+// TS types are the camelCase shape every query aliases into, matching every
+// other table in this app.
+
+export type ConsentStatus = "opted_in" | "opted_out" | "unknown";
+export type MessageDirection = "inbound" | "outbound";
+export type MessageType = "template" | "freeform";
+export type MessageStatus = "queued" | "sent" | "delivered" | "read" | "failed";
+export type OutboxStatus = "pending" | "sent" | "failed";
+
+export interface CrmContact {
+  id: string;
+  fullName: string | null;
+  phoneNumber: string;
+  linkedCustomerId: string | null;
+  consentStatus: ConsentStatus;
+  consentRecordedAt: string | null;
+  notes: string | null;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CrmContactInput {
+  fullName?: string | null;
+  notes?: string | null;
+  tags?: string[];
+}
+
+export interface CrmTag {
+  id: string;
+  name: string;
+}
+
+export interface CrmMessage {
+  id: string;
+  contactId: string;
+  direction: MessageDirection;
+  messageType: MessageType;
+  templateName: string | null;
+  body: string;
+  status: MessageStatus;
+  triggeredBy: string | null;
+  waMessageId: string | null;
+  createdAt: string;
+}
+
+export interface WhatsappOutboxItem {
+  id: string;
+  contactId: string;
+  templateName: string | null;
+  templateParams: string | null;
+  freeformBody: string | null;
+  status: OutboxStatus;
+  attempts: number;
+  createdAt: string;
+  sentAt: string | null;
+}
+
+export interface CrmAutomationRule {
+  id: string;
+  eventName: string;
+  templateName: string;
+  enabled: number;
+}
+
+// A contact plus enough context for the admin CRM "send message" box to
+// decide what it's allowed to show — computed server-side (see GET
+// /api/crm/contacts/:id) rather than the client re-deriving the 24h
+// service-window rule itself.
+export interface CrmContactDetail {
+  contact: CrmContact;
+  messages: CrmMessage[];
+  // Whether the most recent inbound message was within the last 24h — a
+  // freeform reply is only ever allowed within that window (Meta's own
+  // rule); outside it, only an approved template can be sent.
+  withinServiceWindow: boolean;
 }
