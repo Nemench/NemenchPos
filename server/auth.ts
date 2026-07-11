@@ -20,7 +20,7 @@ function loadOrCreateSecret(): string {
     const secret = randomBytes(48).toString("hex");
     mkdirSync(dataDir, { recursive: true });
     writeFileSync(secretPath, secret, { mode: 0o600 });
-    console.log("[MAXIS] Generated JWT secret saved to", secretPath);
+    console.log("[NemenchPos] Generated JWT secret saved to", secretPath);
     return secret;
   }
 }

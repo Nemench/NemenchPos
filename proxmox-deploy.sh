@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# MAXIS KOT — Proxmox LXC auto-provisioner
+# NemenchPos — Proxmox LXC auto-provisioner
 # Run this on the PROXMOX HOST (not inside a container)
 # Usage: bash <(curl -sSL https://raw.githubusercontent.com/Nemench/NemenchPos/main/proxmox-deploy.sh)
 set -euo pipefail
 
 # ── Configurable defaults (override with env vars) ────────────────────────────
 CTID="${CTID:-200}"
-CT_HOSTNAME="${CT_HOSTNAME:-maxis}"
+CT_HOSTNAME="${CT_HOSTNAME:-nemenchpos}"
 MEMORY="${MEMORY:-512}"        # MB
 SWAP="${SWAP:-512}"            # MB
 DISK="${DISK:-4}"              # GB
@@ -114,8 +114,8 @@ pct exec "$CTID" -- bash -c "
   apt-get install -y -qq curl
 "
 
-# ── Run MAXIS installer inside the container ──────────────────────────────────
-info "Installing MAXIS inside container $CTID..."
+# ── Run NemenchPos installer inside the container ──────────────────────────────
+info "Installing NemenchPos inside container $CTID..."
 pct exec "$CTID" -- bash -c "
   export DEBIAN_FRONTEND=noninteractive PORT=${PORT}
   bash <(curl -sSL https://raw.githubusercontent.com/Nemench/NemenchPos/main/install.sh)
@@ -126,7 +126,7 @@ CT_IP=$(pct exec "$CTID" -- bash -c "hostname -I | awk '{print \$1}'" 2>/dev/nul
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║   MAXIS is running in container ${CTID}!               ║${NC}"
+echo -e "${GREEN}║   NemenchPos is running in container ${CTID}!          ║${NC}"
 echo -e "${GREEN}║                                                      ║${NC}"
 echo -e "${GREEN}║   http://${CT_IP}:${PORT}                          ║${NC}"
 echo -e "${GREEN}║   Default login: Admin / 0000                        ║${NC}"

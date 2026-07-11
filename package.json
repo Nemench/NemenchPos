@@ -1,7 +1,7 @@
 {
-  "name": "maxis-kot",
+  "name": "nemenchpos",
   "version": "1.0.0",
-  "description": "KOT system for Maxis Discount Kosher Butchery.",
+  "description": "KOT system for butcheries and delis.",
   "type": "module",
   "main": "electron-dist/main.cjs",
   "scripts": {
@@ -69,8 +69,8 @@
     "vitest": "^4.1.10"
   },
   "build": {
-    "appId": "com.nemench.maxis",
-    "productName": "MAXIS KOT",
+    "appId": "com.nemench.nemenchpos",
+    "productName": "NemenchPos",
     "npmRebuild": false,
     "files": [
       "electron-dist/**",

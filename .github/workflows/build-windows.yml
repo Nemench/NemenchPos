@@ -44,7 +44,7 @@ jobs:
       - name: Upload installer as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MAXIS-KOT-Windows
+          name: NemenchPos-Windows
           path: release/*.exe
 
       - name: Attach to GitHub Release

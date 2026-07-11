@@ -11,7 +11,7 @@ import { getBusinessProfile } from "../controlPlaneSync.js";
 // whatsapp_templates, which ride along on the business profile) — same
 // reasoning as the control plane's own API keys: a real secret should
 // never round-trip through a third system if it can live only where it's
-// used. Set it as a local-only env var on each MAXIS instance.
+// used. Set it as a local-only env var on each NemenchPos instance.
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN ?? "";
 
 const GRAPH_API_VERSION = "v21.0";

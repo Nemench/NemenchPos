@@ -3,7 +3,7 @@
 // `whatsapp_templates` field on the business profile (see
 // server/controlPlaneSync.ts). Meta's Graph API doesn't need anything
 // beyond the template's name + ordered params to send a message — this
-// catalog exists purely so MAXIS itself can (a) render a human-readable
+// catalog exists purely so NemenchPos itself can (a) render a human-readable
 // body for the crm_messages log/chat view, and (b) know which templates
 // are "marketing" tier so opted-out/unknown-consent contacts can never be
 // sent one (see KotDatabase's consent rules).

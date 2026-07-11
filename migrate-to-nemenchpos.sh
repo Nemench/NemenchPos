@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-time migration: /opt/maxis (service "maxis") -> /opt/nemenchpos
-# (service "nemenchpos"). Run this ON your actual MAXIS server as root,
+# (service "nemenchpos"). Run this ON your actual NemenchPos server as root,
 # AFTER pulling this commit. Preserves your existing data/ directory
 # (SQLite database, uploads, .jwt-secret) untouched — only moves the
 # directory and re-registers the systemd unit under the new name.
@@ -42,7 +42,7 @@ mv "$OLD_DIR" "$NEW_DIR"
 info "Writing new systemd unit for $NEW_SERVICE..."
 {
   echo "[Unit]"
-  echo "Description=MAXIS KOT Server"
+  echo "Description=NemenchPos Server"
   echo "After=network.target"
   echo ""
   echo "[Service]"

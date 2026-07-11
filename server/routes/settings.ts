@@ -25,7 +25,7 @@ const ALLOWED_LOGO_TYPES: Record<string, string> = {
 router.get("/public", (_req, res) => {
   const s = db.getAllSettings();
   res.json({
-    siteName: s.siteName || "MAXIS", logoUrl: s.logoUrl || "", themeColor: s.themeColor || "",
+    siteName: s.siteName || "NemenchPos", logoUrl: s.logoUrl || "", themeColor: s.themeColor || "",
     vatRegistered: s.vatRegistered === "true", vatNumber: s.vatNumber || "", businessAddress: s.businessAddress || ""
   });
 });

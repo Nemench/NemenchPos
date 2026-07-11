@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Allows plain HTTP (no TLS) to the MAXIS server's LAN address only — Android 9+
+  Allows plain HTTP (no TLS) to the NemenchPos server's LAN address only — Android 9+
   blocks cleartext traffic by default. Now covers TWO things: the app's own
   top-level page load (capacitor.config.ts's server.url live-loads this host
   directly) and its API fetches, both the same origin. Keep this scoped to

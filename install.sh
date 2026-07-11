@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MAXIS KOT — one-line installer for Debian/Ubuntu (Proxmox LXC or any server)
+# NemenchPos — one-line installer for Debian/Ubuntu (Proxmox LXC or any server)
 # Usage: curl -sSL https://raw.githubusercontent.com/Nemench/NemenchPos/main/install.sh | bash
 set -euo pipefail
 
@@ -10,8 +10,8 @@ SERVICE="nemenchpos"
 # Optional multi-tenant control-plane sync (see server/controlPlaneSync.ts)
 # — if unset, this instance just never syncs and runs as a fully offline,
 # standalone install (the default/existing behavior, unaffected either way).
-MAXIS_CONTROL_PLANE_URL="${MAXIS_CONTROL_PLANE_URL:-}"
-MAXIS_CONTROL_API_KEY="${MAXIS_CONTROL_API_KEY:-}"
+NEMENCHPOS_CONTROL_PLANE_URL="${NEMENCHPOS_CONTROL_PLANE_URL:-}"
+NEMENCHPOS_CONTROL_API_KEY="${NEMENCHPOS_CONTROL_API_KEY:-}"
 # WhatsApp Cloud API (CRM automation — see server/whatsapp/). All optional:
 # unset, the outbox worker just fails every send attempt harmlessly and the
 # inbound webhook 403s Meta's verification handshake. whatsapp_number_id
@@ -88,12 +88,12 @@ else
   ok "Caddy already installed ($(caddy version 2>/dev/null || echo unknown))"
 fi
 
-# Create Caddyfile if not already configured for MAXIS
+# Create Caddyfile if not already configured for NemenchPos
 CADDYFILE="/etc/caddy/Caddyfile"
-if ! grep -q "maxis\|$PORT" "$CADDYFILE" 2>/dev/null; then
+if ! grep -qi "nemenchpos\|$PORT" "$CADDYFILE" 2>/dev/null; then
   info "Writing Caddy config..."
   cat > "$CADDYFILE" <<CADDY
-# MAXIS KOT — HTTPS reverse proxy
+# NemenchPos — HTTPS reverse proxy
 # Replace "yourdomain.com" with your actual domain name, then:
 #   systemctl reload caddy
 #
@@ -144,7 +144,7 @@ mkdir -p "$APP_DIR/data"
 info "Installing systemd service..."
 cat > /etc/systemd/system/${SERVICE}.service <<EOF
 [Unit]
-Description=MAXIS KOT Server
+Description=NemenchPos KOT Server
 After=network.target
 
 [Service]
@@ -155,8 +155,8 @@ Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
 Environment=PORT=${PORT}
-Environment=MAXIS_CONTROL_PLANE_URL=${MAXIS_CONTROL_PLANE_URL:-}
-Environment=MAXIS_CONTROL_API_KEY=${MAXIS_CONTROL_API_KEY:-}
+Environment=NEMENCHPOS_CONTROL_PLANE_URL=${NEMENCHPOS_CONTROL_PLANE_URL:-}
+Environment=NEMENCHPOS_CONTROL_API_KEY=${NEMENCHPOS_CONTROL_API_KEY:-}
 Environment=WHATSAPP_ACCESS_TOKEN=${WHATSAPP_ACCESS_TOKEN:-}
 Environment=WHATSAPP_WEBHOOK_VERIFY_TOKEN=${WHATSAPP_WEBHOOK_VERIFY_TOKEN:-}
 Environment=WHATSAPP_APP_SECRET=${WHATSAPP_APP_SECRET:-}
@@ -168,17 +168,21 @@ EOF
 systemctl daemon-reload
 systemctl enable "$SERVICE"
 systemctl restart "$SERVICE"
-ok "MAXIS service started"
+ok "NemenchPos service started"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
+# Box width/padding is computed from actual content (not hardcoded spaces),
+# so this stays aligned regardless of how long $IP/$PORT happen to be.
 IP=$(hostname -I | awk '{print $1}')
+BOX_WIDTH=56
+box_line() { printf "${GREEN}║ %-${BOX_WIDTH}s ║${NC}\n" "$1"; }
 echo ""
-echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║   MAXIS KOT is running!                              ║${NC}"
-echo -e "${GREEN}║                                                      ║${NC}"
-echo -e "${GREEN}║   Local:   http://${IP}:${PORT}                      ║${NC}"
-echo -e "${GREEN}║   Default: Admin / 0000  (change after first login)  ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
+echo -e "${GREEN}╔$(printf '═%.0s' $(seq 1 $((BOX_WIDTH + 2))))╗${NC}"
+box_line "NemenchPos is running!"
+box_line ""
+box_line "Local:   http://${IP}:${PORT}"
+box_line "Default: Admin / 0000  (change after first login)"
+echo -e "${GREEN}╚$(printf '═%.0s' $(seq 1 $((BOX_WIDTH + 2))))╝${NC}"
 echo ""
 echo -e "${YELLOW}  ── HTTPS setup (required for internet access) ─────────────${NC}"
 echo    "  1. Point a domain name at this server's public IP"

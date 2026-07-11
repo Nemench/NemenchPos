@@ -1,12 +1,12 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    MAXIS KOT — Windows update script
+    NemenchPos — Windows update script
 .DESCRIPTION
-    Pulls the latest code, rebuilds the frontend, and restarts the MAXIS service.
+    Pulls the latest code, rebuilds the frontend, and restarts the NemenchPos service.
     Run this whenever a new version is available.
 .PARAMETER InstallDir
-    MAXIS install directory. Default: C:\opt\nemenchpos
+    NemenchPos install directory. Default: C:\opt\nemenchpos
 .PARAMETER ServiceName
     NSSM service name. Default: nemenchpos
 .EXAMPLE
@@ -27,7 +27,7 @@ function Abort ([string]$msg) { Write-Host "`nERROR: $msg`n" -ForegroundColor Re
 $NssmExe = "C:\nssm\nssm.exe"
 
 if (-not (Test-Path (Join-Path $InstallDir ".git"))) {
-    Abort "MAXIS not found at $InstallDir. Run install.ps1 first."
+    Abort "NemenchPos not found at $InstallDir. Run install.ps1 first."
 }
 if (-not (Test-Path $NssmExe)) {
     Abort "NSSM not found at $NssmExe. Run install.ps1 first."
@@ -62,7 +62,7 @@ Start-Sleep -Seconds 3
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq "Running") {
     OK
-    Write-Host "`n   MAXIS updated and running." -ForegroundColor Green
+    Write-Host "`n   NemenchPos updated and running." -ForegroundColor Green
 } else {
     Write-Host "   Service status: $($svc?.Status ?? 'unknown')" -ForegroundColor Yellow
     Write-Host "   Check logs in $InstallDir\logs for details."

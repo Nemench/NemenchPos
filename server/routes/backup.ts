@@ -14,7 +14,7 @@ router.get("/", (_req, res) => {
     const data = db.exportBackup();
     const date = new Date().toISOString().slice(0, 10);
     res.setHeader("Content-Type", "application/json");
-    res.setHeader("Content-Disposition", `attachment; filename="maxis-backup-${date}.json"`);
+    res.setHeader("Content-Disposition", `attachment; filename="nemenchpos-backup-${date}.json"`);
     res.json(data);
   } catch (err) {
     res.status(500).json({ message: err instanceof Error ? err.message : "Export failed" });
@@ -22,7 +22,7 @@ router.get("/", (_req, res) => {
 });
 
 // Restores from a previously exported JSON file. `version` presence is used
-// as a cheap sanity check that this is actually a MAXIS backup file.
+// as a cheap sanity check that this is actually a NemenchPos backup file.
 router.post("/restore", (req, res) => {
   try {
     const data = req.body as Record<string, unknown>;

@@ -90,13 +90,13 @@ const currency = new Intl.NumberFormat(appSettings.locale, { style: "currency", 
 
 // Updates the browser tab title/favicon to match the admin-configured branding.
 function applyBranding(siteName: string, logoUrl: string) {
-  document.title = siteName || "MAXIS";
+  document.title = siteName || "NemenchPos";
   document.querySelector('link[rel="icon"]')?.setAttribute("href", assetUrl(logoUrl || "/logo.jpg"));
 }
 
 // Plain module cache so receipt-building functions (outside the React tree) can
 // read live branding without threading it through every print call site.
-let receiptBranding = { siteName: "MAXIS", logoUrl: "", themeColor: "", vatRegistered: false, vatNumber: "", businessAddress: "" };
+let receiptBranding = { siteName: "NemenchPos", logoUrl: "", themeColor: "", vatRegistered: false, vatNumber: "", businessAddress: "" };
 function setReceiptBranding(patch: Partial<typeof receiptBranding>) {
   receiptBranding = { ...receiptBranding, ...patch };
 }
@@ -113,7 +113,7 @@ let closeActivePrintPreview: (() => void) | null = null;
 export function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [booting, setBooting] = useState(true);
-  const [branding, setBranding] = useState({ siteName: "MAXIS", logoUrl: "" });
+  const [branding, setBranding] = useState({ siteName: "NemenchPos", logoUrl: "" });
   // initThemeMode() already applied the stored/system preference to <html>
   // before this component's first render (see module scope above) — this
   // state just needs to agree with it so the toggle button shows the right icon.
@@ -656,7 +656,7 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
   // terminal can't hand one cashier's in-progress sale to the next — an
   // abandoned cart silently reappearing on someone else's till would be a
   // real "wrong person got charged" risk, not just an inconvenience.
-  const posSaleKey = `maxis-pos-sale-${currentUser.id}`;
+  const posSaleKey = `nemenchpos-pos-sale-${currentUser.id}`;
   const loadSavedSale = (): { cart: OrderItemInput[]; discount: number } => {
     try {
       const raw = localStorage.getItem(posSaleKey);
@@ -2973,7 +2973,7 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
   };
 
   const saveSiteName = async (name: string) => {
-    const trimmed = name.trim() || "MAXIS";
+    const trimmed = name.trim() || "NemenchPos";
     await api.settings.set({ siteName: trimmed });
     onBrandingChange({ ...branding, siteName: trimmed });
     applyBranding(trimmed, branding.logoUrl);
@@ -3383,7 +3383,7 @@ function ReportsPanel() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `maxis-orders-${from}-to-${to}.csv`;
+    a.download = `nemenchpos-orders-${from}-to-${to}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -3984,7 +3984,7 @@ function buildReceiptHtml(order: Order, type: "kitchen" | "counter" | "master", 
   const dateStr = d.toLocaleDateString(appSettings.locale);
   const timeStr = d.toLocaleTimeString(appSettings.locale, { hour: "2-digit", minute: "2-digit" });
   const logoUrl = assetUrl(receiptBranding.logoUrl || "/logo.jpg");
-  const siteName = esc(receiptBranding.siteName || "MAXIS");
+  const siteName = esc(receiptBranding.siteName || "NemenchPos");
   const { blue, blueDark } = deriveShades(/^#[0-9a-f]{6}$/i.test(receiptBranding.themeColor) ? receiptBranding.themeColor : "#1a47a0");
 
   // Only the customer-facing "master" receipt is a financial document —
@@ -4163,7 +4163,7 @@ function esc(s: string): string {
 // called from the non-finalizing preview button, so the printout is visually
 // distinguishable from a real one.
 function buildWeighInSummaryHtml(dateIso: string, lines: WeighInLine[], products: Product[], heading = "WEIGH-IN SUMMARY"): string {
-  const siteName = esc(receiptBranding.siteName || "MAXIS");
+  const siteName = esc(receiptBranding.siteName || "NemenchPos");
   const logoUrl = assetUrl(receiptBranding.logoUrl || "/logo.jpg");
   const { blue, blueDark } = deriveShades(/^#[0-9a-f]{6}$/i.test(receiptBranding.themeColor) ? receiptBranding.themeColor : "#1a47a0");
   const d = new Date(dateIso);
@@ -4401,7 +4401,7 @@ body{font-family:'Courier New',Courier,monospace;padding:5mm;font-size:12px;text
 hr{border:none;border-top:1px dashed #999;margin:6px 0}
 .big{font-size:16px;font-weight:bold}.small{font-size:10px;color:#555}
 </style></head><body>
-<div class="big">MAXIS KOT</div>
+<div class="big">NemenchPos</div>
 <div>--- TEST PRINT ---</div>
 <hr>
 <div class="small">${ts}</div>

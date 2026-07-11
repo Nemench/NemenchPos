@@ -33,12 +33,12 @@ app.whenReady().then(async () => {
   const icon = img.isEmpty() ? nativeImage.createEmpty() : img.resize({ width: 16, height: 16 });
 
   tray = new Tray(icon);
-  tray.setToolTip(`MAXIS KOT  •  http://localhost:${PORT}`);
+  tray.setToolTip(`NemenchPos  •  http://localhost:${PORT}`);
 
   tray.setContextMenu(
     Menu.buildFromTemplate([
       {
-        label: "Open MAXIS",
+        label: "Open NemenchPos",
         click: () => shell.openExternal(`http://localhost:${PORT}`),
       },
       { type: "separator" },

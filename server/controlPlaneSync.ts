@@ -30,7 +30,7 @@ export interface BusinessProfile {
 // core POS, license_status "trial" so nothing looks suspended/broken.
 const SAFE_DEFAULT_PROFILE: BusinessProfile = {
   id: "local-default",
-  business_name: "MAXIS",
+  business_name: "NemenchPos",
   logo_url: null,
   primary_color: null,
   vat_number: null,
@@ -72,8 +72,8 @@ function getMaxisVersion(): string {
 }
 
 async function syncOnce(): Promise<void> {
-  const baseUrl = process.env.MAXIS_CONTROL_PLANE_URL;
-  const apiKey = process.env.MAXIS_CONTROL_API_KEY;
+  const baseUrl = process.env.NEMENCHPOS_CONTROL_PLANE_URL;
+  const apiKey = process.env.NEMENCHPOS_CONTROL_API_KEY;
   if (!baseUrl || !apiKey) return; // not configured — silently stay on cache/default, this is a valid (offline-only) deployment mode
 
   const controller = new AbortController();

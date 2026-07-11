@@ -1,6 +1,6 @@
-# MAXIS KOT
+# NemenchPos
 
-Local web-based kitchen order ticket system for Maxis Discount Kosher Butchery.
+Local web-based kitchen order ticket system for butcheries and delis.
 
 Runs on your local network — any device with a browser can log in simultaneously.
 
@@ -17,13 +17,13 @@ Runs on your local network — any device with a browser can log in simultaneous
 
 Default login after a fresh install: **Admin / 0000** — change the PIN immediately from Users after first login.
 
-This "Admin" role is local to one shop's own MAXIS instance. It's unrelated to the separate **master admin** control plane described near the bottom of this file, which oversees multiple independently-hosted shops at once.
+This "Admin" role is local to one shop's own NemenchPos instance. It's unrelated to the separate **master admin** control plane described near the bottom of this file, which oversees multiple independently-hosted shops at once.
 
 ---
 
-## How MAXIS works
+## How NemenchPos works
 
-Each shop runs its own **fully self-contained, offline-first** MAXIS instance (Node/Express + SQLite) on its own network — nothing here depends on the internet to function day-to-day. The pieces:
+Each shop runs its own **fully self-contained, offline-first** NemenchPos instance (Node/Express + SQLite) on its own network — nothing here depends on the internet to function day-to-day. The pieces:
 
 - **Orders / Queue / History** — cashiers and counter/kitchen staff create tickets (KOT), which move through `New → Received → Ready → Done` per department (kitchen and counter are tracked separately, since a ticket can have items for both). History shows completed tickets for a configurable retention window.
 - **POS** — a touch-friendly till for walk-in sales: product grid, live receipt preview, cash/card payment with change calculation, percentage discounts (behind a PIN-confirmation for any destructive action like removing a line or clearing the sale), and South African SARS tax-compliance rules baked in (VAT-inclusive pricing, and a full tax invoice — buyer name + address — is required and enforced server-side above R5,000 per sale). A POS sale completes and deducts stock immediately, unlike a regular KOT ticket which only deducts stock in Weigh-In/receiving flows.
@@ -100,7 +100,7 @@ npm run dev
 
 Download the latest installer from the [Releases page](https://github.com/Nemench/NemenchPos/releases).
 
-Double-click `MAXIS-KOT-Setup.exe` to install. The app starts automatically and sits in the **system tray** — left-click the tray icon to open MAXIS in your browser. Other devices on the same network can connect via `http://<this-pc-ip>:3000`.
+Double-click `NemenchPos-Setup.exe` to install. The app starts automatically and sits in the **system tray** — left-click the tray icon to open NemenchPos in your browser. Other devices on the same network can connect via `http://<this-pc-ip>:3000`.
 
 > The installer is built automatically by GitHub Actions whenever a new version tag is pushed. No Windows machine needed to build it.
 
@@ -108,7 +108,7 @@ Double-click `MAXIS-KOT-Setup.exe` to install. The app starts automatically and 
 
 ## Option 5 — Windows server (PowerShell installer)
 
-Use this option when you want MAXIS to run as a **background Windows service** (auto-starts on boot, no tray icon, accessible from the whole network) on a Windows 10 or 11 PC.
+Use this option when you want NemenchPos to run as a **background Windows service** (auto-starts on boot, no tray icon, accessible from the whole network) on a Windows 10 or 11 PC.
 
 **Requirements:** Windows 10 21H2+ or Windows 11, PowerShell 5.1+, internet access.
 
@@ -131,7 +131,7 @@ The script will:
 2. Clone (or pull) the repo to `C:\opt\nemenchpos`
 3. Run `npm ci` and `npm run build`
 4. Download **NSSM** (Non-Sucking Service Manager) to `C:\nssm\`
-5. Register MAXIS as a Windows service that starts automatically on boot
+5. Register NemenchPos as a Windows service that starts automatically on boot
 6. Print the local IP and port when done
 
 Access the app at `http://<this-pc-ip>:3000`
@@ -151,24 +151,24 @@ powershell -ExecutionPolicy Bypass -File C:\opt\nemenchpos\update.ps1
 ```
 
 **Printing on Windows:**
-Server-side printing writes the ticket HTML to a temp file and opens it in the default browser, which triggers `window.print()`. For this to work, the MAXIS service must run under an **interactive user account** (not `LocalSystem`). After install, open `services.msc`, find **MAXIS KOT**, go to the **Log On** tab, and set it to log on as your Windows user account.
+Server-side printing writes the ticket HTML to a temp file and opens it in the default browser, which triggers `window.print()`. For this to work, the NemenchPos service must run under an **interactive user account** (not `LocalSystem`). After install, open `services.msc`, find **NemenchPos**, go to the **Log On** tab, and set it to log on as your Windows user account.
 
 ---
 
 ## Master admin / multi-tenant control plane (optional)
 
-Everything above describes one shop's own MAXIS instance, which works fully standalone forever with no internet connection required. Separately, if you're running MAXIS for **several independently-hosted shops**, there's an optional companion service — **`maxis-control-plane`** (its own repo, its own process, its own single-admin login) — that lets one person oversee all of them from one place: branding, license/subscription status, feature flags, and WhatsApp configuration per business.
+Everything above describes one shop's own NemenchPos instance, which works fully standalone forever with no internet connection required. Separately, if you're running NemenchPos for **several independently-hosted shops**, there's an optional companion service (its own repo, its own process, its own single-admin login — currently still named `maxis-control-plane` on GitHub, pending a rename) — that lets one person oversee all of them from one place: branding, license/subscription status, feature flags, and WhatsApp configuration per business.
 
 This is **not** the same as a shop's local "Admin" role above. The control plane has exactly one login (the "master admin" — set via a required `ADMIN_PASSWORD` environment variable, no default/auto-generated password), and shop staff never see or interact with it directly.
 
-**How it connects:** each MAXIS instance polls the control plane every 15 minutes for its own business profile (`server/controlPlaneSync.ts`) using two environment variables:
+**How it connects:** each NemenchPos instance polls the control plane every 15 minutes for its own business profile (`server/controlPlaneSync.ts`) using two environment variables:
 
 ```
-MAXIS_CONTROL_PLANE_URL=https://your-control-plane-host
-MAXIS_CONTROL_API_KEY=<per-business API key, generated in the control plane admin UI>
+NEMENCHPOS_CONTROL_PLANE_URL=https://your-control-plane-host
+NEMENCHPOS_CONTROL_API_KEY=<per-business API key, generated in the control plane admin UI>
 ```
 
-Leave both unset and a MAXIS instance just runs standalone forever (the default, and a fully valid deployment mode) — nothing about POS, kitchen, or order flow ever depends on the control plane being reachable. A sync failure only ever falls back to the last-cached (or a safe default) profile; it never throws or blocks the shop's own server from starting or operating.
+Leave both unset and a NemenchPos instance just runs standalone forever (the default, and a fully valid deployment mode) — nothing about POS, kitchen, or order flow ever depends on the control plane being reachable. A sync failure only ever falls back to the last-cached (or a safe default) profile; it never throws or blocks the shop's own server from starting or operating.
 
 **What syncs down to each shop:**
 - Branding (business name, logo, theme color) and VAT number
@@ -178,13 +178,13 @@ Leave both unset and a MAXIS instance just runs standalone forever (the default,
 
 **Deploying the control plane itself:**
 ```bash
-ADMIN_PASSWORD=yourpassword bash install.sh   # from the maxis-control-plane repo
+ADMIN_PASSWORD=yourpassword bash install.sh   # from the control-plane repo
 ```
 Runs on port 3002 by default, admin UI at `/admin`. See that repo's own README for the full admin API (create/edit business, regenerate API key, view change history, license status changes).
 
 ### WhatsApp CRM environment variables (per shop, optional)
 
-Set these on a shop's own MAXIS instance (already wired into `install.sh`) to enable actually *sending* WhatsApp messages — without them, contacts/consent/message history still work locally, but every outbound send just fails harmlessly and retries:
+Set these on a shop's own NemenchPos instance (already wired into `install.sh`) to enable actually *sending* WhatsApp messages — without them, contacts/consent/message history still work locally, but every outbound send just fails harmlessly and retries:
 
 ```
 WHATSAPP_ACCESS_TOKEN=<Meta System User token — real secret, local-only, never synced>
@@ -196,4 +196,4 @@ WHATSAPP_APP_SECRET=<from Meta App Dashboard, for webhook signature verification
 
 ## Data
 
-The SQLite database lives at `./data/maxis.sqlite`. Back this file up regularly to keep your orders and products safe.
+The SQLite database lives at `./data/nemenchpos.sqlite`. Back this file up regularly to keep your orders and products safe.

@@ -8,7 +8,7 @@ const config: CapacitorConfig = {
   // android/app/src/main/res/values/strings.xml's app_name/title_activity_main) —
   // if an admin changes the site name in Settings, the launcher label won't
   // follow automatically; update both here and rebuild to match.
-  appName: 'MAXIS',
+  appName: 'NemenchPos',
   webDir: 'dist',
   // Live-loads the actual LAN server page directly — a "closed browser"
   // shell, not a bundled copy of the web app. This is what makes ordinary

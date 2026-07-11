@@ -30,7 +30,21 @@ export class KotDatabase {
   initialize() {
     const dataDir = process.env.DATA_DIR ?? path.join(process.cwd(), "data");
     fs.mkdirSync(dataDir, { recursive: true });
-    this.db = new BetterSqlite3(path.join(dataDir, "maxis.sqlite"));
+    const dbPath = path.join(dataDir, "nemenchpos.sqlite");
+    // One-time, automatic forward-migration for any instance still running
+    // under the old filename (maxis.sqlite, from before the product
+    // rename) — renamed in place on first boot under the new name so
+    // existing data is never silently orphaned or (worse) replaced by a
+    // fresh empty database that just happens to share a directory.
+    const legacyDbPath = path.join(dataDir, "maxis.sqlite");
+    if (!fs.existsSync(dbPath) && fs.existsSync(legacyDbPath)) {
+      fs.renameSync(legacyDbPath, dbPath);
+      for (const ext of ["-wal", "-shm"]) {
+        if (fs.existsSync(legacyDbPath + ext)) fs.renameSync(legacyDbPath + ext, dbPath + ext);
+      }
+      console.log(`[NemenchPos] Migrated database file: ${legacyDbPath} -> ${dbPath}`);
+    }
+    this.db = new BetterSqlite3(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.migrate();
@@ -1393,7 +1407,7 @@ export class KotDatabase {
 
       -- ── CRM + WhatsApp automation ──────────────────────────────────────────
       -- Lives on each business's local instance, same offline-first model as
-      -- the rest of MAXIS — not centralized through the control plane.
+      -- the rest of NemenchPos — not centralized through the control plane.
 
       CREATE TABLE IF NOT EXISTS crm_contacts (
         id TEXT PRIMARY KEY,
@@ -1624,7 +1638,7 @@ export class KotDatabase {
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('counterPrinter', '')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('masterPrinter', '')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('historyDays', '30')").run();
-    this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('siteName', 'MAXIS')").run();
+    this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('siteName', 'NemenchPos')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('logoUrl', '')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('themeColor', '')").run();
     // Defaults to "not registered" on every fresh install, deliberately —

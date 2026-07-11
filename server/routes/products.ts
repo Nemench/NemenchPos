@@ -145,7 +145,7 @@ router.post("/import", requireAdmin, (req, res) => {
 
 router.get("/export", requireAdmin, (_req, res) => {
   res.setHeader("Content-Type", "text/csv");
-  res.setHeader("Content-Disposition", `attachment; filename="maxis-products-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.setHeader("Content-Disposition", `attachment; filename="nemenchpos-products-${new Date().toISOString().slice(0, 10)}.csv"`);
   res.send(db.exportProducts());
 });
 

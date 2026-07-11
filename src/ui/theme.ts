@@ -61,7 +61,7 @@ export function applyTheme(hex: string): void {
 // separate from the brand color above, which every device should share.
 
 export type ThemeMode = "light" | "dark";
-const THEME_MODE_KEY = "maxis-theme-mode";
+const THEME_MODE_KEY = "nemenchpos-theme-mode";
 
 function systemPrefersDark(): boolean {
   return typeof window !== "undefined" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;

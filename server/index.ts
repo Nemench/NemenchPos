@@ -34,7 +34,7 @@ export const db = new KotDatabase();
 db.initialize();
 
 // Multi-tenant control-plane sync (see controlPlaneSync.ts) — reads
-// MAXIS_CONTROL_PLANE_URL/MAXIS_CONTROL_API_KEY if set, otherwise this is
+// NEMENCHPOS_CONTROL_PLANE_URL/NEMENCHPOS_CONTROL_API_KEY if set, otherwise this is
 // a no-op forever (a valid, fully-offline deployment mode). Never throws
 // into this bootstrap; a control plane that's unreachable or never
 // configured can't stop the server from starting or operating.
@@ -149,5 +149,5 @@ if (isProd) {
 
 const PORT = Number(process.env.PORT) || 3001;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`MAXIS server → http://localhost:${PORT}`);
+  console.log(`NemenchPos server → http://localhost:${PORT}`);
 });

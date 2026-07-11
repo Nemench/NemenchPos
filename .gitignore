@@ -10,4 +10,4 @@ data/
 *.sqlite-shm
 .env
 .env.*
-maxis logo.jpg
+nemenchpos logo.jpg

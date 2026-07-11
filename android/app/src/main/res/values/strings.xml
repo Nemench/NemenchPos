@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">MAXIS</string>
-    <string name="title_activity_main">MAXIS</string>
+    <string name="app_name">NemenchPos</string>
+    <string name="title_activity_main">NemenchPos</string>
     <string name="package_name">com.nemench.nemenchpos</string>
     <string name="custom_url_scheme">com.nemench.nemenchpos</string>
 
@@ -9,7 +9,7 @@
          (see AndroidManifest.xml's <activity-alias> entries and IconSwitcher.java).
          Add a matching values-<locale>/strings.xml override for each of these
          if/when the app supports more than one language. -->
-    <string name="app_name_default">MAXIS</string>
-    <string name="app_name_alt1">MAXIS Alt 1</string>
-    <string name="app_name_alt2">MAXIS Alt 2</string>
+    <string name="app_name_default">NemenchPos</string>
+    <string name="app_name_alt1">NemenchPos Alt 1</string>
+    <string name="app_name_alt2">NemenchPos Alt 2</string>
 </resources>

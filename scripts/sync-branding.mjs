@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataDir = process.env.DATA_DIR ?? path.join(root, "data");
-const dbPath = path.join(dataDir, "maxis.sqlite");
+const dbPath = path.join(dataDir, "nemenchpos.sqlite");
 
 if (!fs.existsSync(dbPath)) {
   console.error(`No database found at ${dbPath}.`);
@@ -37,7 +37,7 @@ if (!fs.existsSync(dbPath)) {
 const db = new Database(dbPath, { readonly: true });
 const getSetting = (key) => db.prepare("SELECT value FROM settings WHERE key = ?").get(key)?.value;
 
-const siteName = getSetting("siteName") || "MAXIS";
+const siteName = getSetting("siteName") || "NemenchPos";
 const logoUrl = getSetting("logoUrl") || "";
 
 // An uploaded logo lives at DATA_DIR/uploads/logo.*; with none uploaded,

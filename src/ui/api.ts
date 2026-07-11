@@ -77,7 +77,7 @@ export const api = {
       data.id ? req<Product>("PUT", `/products/${data.id}`, data) : req<Product>("POST", "/products", data),
     delete: (id: number) => req<void>("DELETE", `/products/${id}`),
     import: (csv: string) => req<{ imported: number; errors: string[] }>("POST", "/products/import", { csv }),
-    export: () => download("/products/export", `maxis-products-${new Date().toISOString().slice(0, 10)}.csv`),
+    export: () => download("/products/export", `nemenchpos-products-${new Date().toISOString().slice(0, 10)}.csv`),
     getByBarcode: (code: string) => req<Product>("GET", `/products/barcode/${encodeURIComponent(code)}`),
     quickCreate: (data: QuickCreateProductInput) => req<Product>("POST", "/products/quick-create", data),
     missingCost: () => req<Product[]>("GET", "/products/missing-cost"),
@@ -86,7 +86,7 @@ export const api = {
       req<YieldEstimate[]>("PUT", `/products/${rawProductId}/yield-estimates`, estimates)
   },
   backup: {
-    download: () => download("/backup", `maxis-backup-${new Date().toISOString().slice(0, 10)}.json`),
+    download: () => download("/backup", `nemenchpos-backup-${new Date().toISOString().slice(0, 10)}.json`),
     restore: (data: object) => req<{ ok: boolean; products: number; users: number; orders: number }>("POST", "/backup/restore", data)
   },
   orders: {
