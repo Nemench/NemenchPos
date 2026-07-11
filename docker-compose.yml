@@ -1,14 +1,14 @@
 services:
-  maxis:
+  nemenchpos:
     build: .
     ports:
       - "3000:3000"
     volumes:
-      - maxis-data:/app/data
+      - nemenchpos-data:/app/data
     environment:
       - NODE_ENV=production
       - PORT=3000
     restart: unless-stopped
 
 volumes:
-  maxis-data:
+  nemenchpos-data:

@@ -4,9 +4,9 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/Nemench/NemenchPos.git"
-APP_DIR="/opt/maxis"
+APP_DIR="/opt/nemenchpos"
 PORT="${PORT:-3000}"
-SERVICE="maxis"
+SERVICE="nemenchpos"
 # Optional multi-tenant control-plane sync (see server/controlPlaneSync.ts)
 # — if unset, this instance just never syncs and runs as a fully offline,
 # standalone install (the default/existing behavior, unaffected either way).

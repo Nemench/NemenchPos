@@ -1,4 +1,4 @@
-package com.nemench.maxis;
+package com.nemench.nemenchpos;
 
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;

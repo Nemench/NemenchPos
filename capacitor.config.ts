@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 import { NATIVE_SERVER_URL } from './src/shared/nativeServer';
 
 const config: CapacitorConfig = {
-  appId: 'com.nemench.maxis',
+  appId: 'com.nemench.nemenchpos',
   // Matches the default site name (server/database.ts's 'siteName' seed).
   // This is baked into the app at build time (also mirrored in
   // android/app/src/main/res/values/strings.xml's app_name/title_activity_main) —

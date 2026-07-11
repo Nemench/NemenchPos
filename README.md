@@ -50,14 +50,14 @@ Access the app at `http://<server-ip>:3000`
 
 **Service commands:**
 ```bash
-systemctl status maxis
-systemctl restart maxis
-journalctl -u maxis -f    # live logs
+systemctl status nemenchpos
+systemctl restart nemenchpos
+journalctl -u nemenchpos -f    # live logs
 ```
 
 **To update:**
 ```bash
-bash /opt/maxis/install.sh
+bash /opt/nemenchpos/install.sh
 ```
 
 ---
@@ -66,13 +66,13 @@ bash /opt/maxis/install.sh
 
 ```bash
 git clone https://github.com/Nemench/NemenchPos.git
-cd maxis
+cd NemenchPos
 docker compose up -d
 ```
 
 Access at `http://localhost:3000`
 
-Data is stored in a named Docker volume (`maxis-data`) so it survives container rebuilds.
+Data is stored in a named Docker volume (`nemenchpos-data`) so it survives container rebuilds.
 
 **To update:**
 ```bash
@@ -122,13 +122,13 @@ irm https://raw.githubusercontent.com/Nemench/NemenchPos/main/install.ps1 | iex
 Or clone the repo first and run the script directly:
 
 ```powershell
-git clone https://github.com/Nemench/NemenchPos.git C:\opt\maxis
-powershell -ExecutionPolicy Bypass -File C:\opt\maxis\install.ps1
+git clone https://github.com/Nemench/NemenchPos.git C:\opt\nemenchpos
+powershell -ExecutionPolicy Bypass -File C:\opt\nemenchpos\install.ps1
 ```
 
 The script will:
 1. Install **Node.js LTS** and **Git** via winget if not already present
-2. Clone (or pull) the repo to `C:\opt\maxis`
+2. Clone (or pull) the repo to `C:\opt\nemenchpos`
 3. Run `npm ci` and `npm run build`
 4. Download **NSSM** (Non-Sucking Service Manager) to `C:\nssm\`
 5. Register MAXIS as a Windows service that starts automatically on boot
@@ -138,16 +138,16 @@ Access the app at `http://<this-pc-ip>:3000`
 
 **Service commands:**
 ```powershell
-C:\nssm\nssm.exe status  maxis
-C:\nssm\nssm.exe restart maxis
-C:\nssm\nssm.exe stop    maxis
+C:\nssm\nssm.exe status  nemenchpos
+C:\nssm\nssm.exe restart nemenchpos
+C:\nssm\nssm.exe stop    nemenchpos
 ```
 
-**Logs:** `C:\opt\maxis\logs\`
+**Logs:** `C:\opt\nemenchpos\logs\`
 
 **To update:**
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\opt\maxis\update.ps1
+powershell -ExecutionPolicy Bypass -File C:\opt\nemenchpos\update.ps1
 ```
 
 **Printing on Windows:**

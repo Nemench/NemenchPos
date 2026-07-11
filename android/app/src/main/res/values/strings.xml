@@ -2,8 +2,8 @@
 <resources>
     <string name="app_name">MAXIS</string>
     <string name="title_activity_main">MAXIS</string>
-    <string name="package_name">com.nemench.maxis</string>
-    <string name="custom_url_scheme">com.nemench.maxis</string>
+    <string name="package_name">com.nemench.nemenchpos</string>
+    <string name="custom_url_scheme">com.nemench.nemenchpos</string>
 
     <!-- Per-variant launcher labels for the activity-alias icon/name switcher
          (see AndroidManifest.xml's <activity-alias> entries and IconSwitcher.java).

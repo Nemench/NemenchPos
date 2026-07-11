@@ -1,4 +1,4 @@
-package com.nemench.maxis;
+package com.nemench.nemenchpos;
 
 import android.content.ComponentName;
 import android.content.Context;

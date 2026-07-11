@@ -1,6 +1,6 @@
 // JS bridge for the local (non-npm) Android IconSwitcherPlugin — wraps the
 // activity-alias-based launcher icon/name switching mechanism (see
-// android/app/src/main/java/com/nemench/maxis/{IconSwitcher,IconSwitcherPlugin}.java
+// android/app/src/main/java/com/nemench/nemenchpos/{IconSwitcher,IconSwitcherPlugin}.java
 // and the <activity-alias> entries in AndroidManifest.xml). Only meaningful
 // on native Android; calling it elsewhere rejects (guard with
 // Capacitor.isNativePlatform() before use, same as any other native-only

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # MAXIS KOT — update script
-# Run from anywhere: bash /opt/maxis/update.sh
+# Run from anywhere: bash /opt/nemenchpos/update.sh
 set -euo pipefail
 
-APP_DIR="/opt/maxis"
-SERVICE="maxis"
+APP_DIR="/opt/nemenchpos"
+SERVICE="nemenchpos"
 
 echo "[MAXIS] Pulling latest code..."
 cd "$APP_DIR"

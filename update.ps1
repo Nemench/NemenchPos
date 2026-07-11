@@ -6,16 +6,16 @@
     Pulls the latest code, rebuilds the frontend, and restarts the MAXIS service.
     Run this whenever a new version is available.
 .PARAMETER InstallDir
-    MAXIS install directory. Default: C:\opt\maxis
+    MAXIS install directory. Default: C:\opt\nemenchpos
 .PARAMETER ServiceName
-    NSSM service name. Default: maxis
+    NSSM service name. Default: nemenchpos
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File C:\opt\maxis\update.ps1
+    powershell -ExecutionPolicy Bypass -File C:\opt\nemenchpos\update.ps1
 #>
 [CmdletBinding()]
 param(
-    [string] $InstallDir  = "C:\opt\maxis",
-    [string] $ServiceName = "maxis"
+    [string] $InstallDir  = "C:\opt\nemenchpos",
+    [string] $ServiceName = "nemenchpos"
 )
 
 $ErrorActionPreference = "Stop"
