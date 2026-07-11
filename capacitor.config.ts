@@ -1,4 +1,5 @@
 import type { CapacitorConfig } from '@capacitor/cli';
+import { NATIVE_SERVER_URL } from './src/shared/nativeServer';
 
 const config: CapacitorConfig = {
   appId: 'com.nemench.maxis',
@@ -9,21 +10,24 @@ const config: CapacitorConfig = {
   // follow automatically; update both here and rebuild to match.
   appName: 'MAXIS',
   webDir: 'dist',
-  // No `server.url` here — the app bundles the web build locally (from
-  // webDir) instead of loading the LAN server's page directly, so Capacitor
-  // serves it from its own secure internal origin (https://localhost by
-  // default). This is required for camera-based barcode scanning: browsers
-  // (and Android's WebView, same rules) only expose getUserMedia/BarcodeDetector
-  // in a "secure context", which a plain-HTTP LAN address never qualifies as.
-  // The API's actual LAN address now lives in src/shared/nativeServer.ts —
-  // edit that file (not this one) if the server's address changes.
-  android: {
-    // The bundled page (https://localhost) fetching the LAN server's plain
-    // HTTP API is "mixed content" — allowed here because this app only ever
-    // talks to one specific trusted LAN host (see android/app/src/main/res/
-    // xml/network_security_config.xml, which scopes cleartext to that host
-    // specifically, same as this scopes mixed content to this one app).
-    allowMixedContent: true
+  // Live-loads the actual LAN server page directly — a "closed browser"
+  // shell, not a bundled copy of the web app. This is what makes ordinary
+  // web deploys show up automatically next time the app is opened, with no
+  // APK rebuild/resideload. `webDir`/`dist` above is still needed (Capacitor
+  // still syncs the native bridge JS from it via `npx cap sync`), but its
+  // contents are no longer what actually gets displayed.
+  //
+  // `cleartext: true` is required because NATIVE_SERVER_URL is plain HTTP
+  // (see src/shared/nativeServer.ts) — Android otherwise refuses to load an
+  // insecure top-level page. This used to also be a problem for camera-based
+  // barcode scanning (the web getUserMedia/BarcodeDetector APIs require a
+  // secure context, which this plain-HTTP page can never be) — that's now
+  // solved by scanning through a native Capacitor plugin instead
+  // (@capacitor-mlkit/barcode-scanning, see src/ui/useBarcodeScan.ts), which
+  // doesn't run inside the WebView and so isn't subject to that restriction.
+  server: {
+    url: NATIVE_SERVER_URL,
+    cleartext: true
   }
 };
 

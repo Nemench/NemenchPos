@@ -1,19 +1,17 @@
 // Thin typed wrapper around the backend REST API. Every call goes through
 // req()/download(), which attach the JWT and centrally handle a 401 (token
 // missing/expired) by clearing it and forcing a reload back to the login screen.
-import { Capacitor } from "@capacitor/core";
 import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput, StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, CrmContact, CrmContactInput, CrmContactDetail, CrmTag, CrmMessage, CrmAutomationRule, ConsentStatus } from "../shared/types";
 import { tokenStorage } from "./tokenStorage";
-import { NATIVE_SERVER_URL } from "../shared/nativeServer";
 
-// The native app bundles the web build locally, so its own page origin is
-// Capacitor's internal one, not this server's — every request needs an
-// absolute URL there. In the browser this just resolves to the page's own
-// origin (a no-op relative to the previous same-origin requests) — always
-// fully absolute rather than relative, since assetUrl() below is also used
-// to build image URLs for standalone print documents (opened in a separate
-// blob/iframe context, where a relative path wouldn't resolve correctly).
-const apiOrigin = Capacitor.isNativePlatform() ? NATIVE_SERVER_URL : window.location.origin;
+// The native Android app now live-loads its own server's page directly
+// (see capacitor.config.ts's server.url) rather than bundling a copy of the
+// web build, so its page origin already IS the API's origin — same as an
+// ordinary browser tab. assetUrl() still builds a fully-qualified URL
+// (rather than a relative path) because it's also used for standalone
+// print documents opened in a separate blob/iframe context, where a
+// relative path wouldn't resolve correctly.
+const apiOrigin = window.location.origin;
 
 // Resolves a server-relative path (e.g. an uploaded logo's /uploads/... URL)
 // to a fully-qualified URL loadable from wherever the app is currently running.

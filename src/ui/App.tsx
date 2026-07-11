@@ -69,6 +69,8 @@ import type {
   ConsentStatus
 } from "../shared/types";
 import { api, assetUrl } from "./api";
+import { useBarcodeScan } from "./useBarcodeScan";
+import { iconSwitcher, type IconVariant } from "./iconSwitcher";
 import { applyTheme, applyThemeMode, deriveShades, initThemeMode, ThemeMode } from "./theme";
 import { tokenStorage } from "./tokenStorage";
 
@@ -1091,13 +1093,9 @@ function PinConfirmModal({ title, message, onConfirm, onCancel }: { title: strin
 }
 
 // ── Barcode add modal ────────────────────────────────────────────────────────
-// Camera-based barcode scanning (via the browser's BarcodeDetector API, not
-// a native Capacitor plugin) plus a manual-entry fallback for when the
-// camera isn't available or the device doesn't support BarcodeDetector.
-// Same code path works in both a desktop/mobile browser and the Android
-// app's WebView, since it's a standard web API rather than native code.
-const BARCODE_FORMATS = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "itf", "qr_code"];
-
+// Camera-based barcode scanning (native camera UI on Android, the browser's
+// BarcodeDetector API elsewhere — see useBarcodeScan) plus a manual-entry
+// fallback for when the camera isn't available or permission is denied.
 type BarcodeStep = "choice" | "scan" | "manual" | "create";
 
 function BarcodeAddModal({ defaultDept, onAdd, onClose }: { defaultDept: Department; onAdd: (p: Product, wantedPrice?: number) => void; onClose: () => void }) {
@@ -1114,15 +1112,6 @@ function BarcodeAddModal({ defaultDept, onAdd, onClose }: { defaultDept: Departm
   const [createName, setCreateName] = useState("");
   const [createPrice, setCreatePrice] = useState("");
   const [createDept, setCreateDept] = useState<Department>(defaultDept);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-
-  const cameraSupported = typeof navigator !== "undefined" && !!navigator.mediaDevices && "BarcodeDetector" in window;
-
-  const stopCamera = () => {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-  };
 
   // Looks up a resolved barcode (from either scan or manual entry); on a
   // 404 it's treated as "not found yet" and routes to quick-create rather
@@ -1148,36 +1137,11 @@ function BarcodeAddModal({ defaultDept, onAdd, onClose }: { defaultDept: Departm
     }
   };
 
-  useEffect(() => {
-    if (step !== "scan") return;
-    if (!cameraSupported) { setError("Camera scanning isn't supported on this device — enter the barcode manually instead."); setStep("choice"); return; }
-
-    let cancelled = false;
-    let intervalId: number;
-    const detector = new BarcodeDetector({ formats: BARCODE_FORMATS });
-
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
-      .then((stream) => {
-        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
-        streamRef.current = stream;
-        if (videoRef.current) { videoRef.current.srcObject = stream; void videoRef.current.play(); }
-        intervalId = window.setInterval(async () => {
-          if (!videoRef.current || videoRef.current.readyState < 2) return;
-          try {
-            const results = await detector.detect(videoRef.current);
-            if (results.length > 0) {
-              window.clearInterval(intervalId);
-              stopCamera();
-              void resolveBarcode(results[0].rawValue);
-            }
-          } catch { /* transient decode failure — retried on the next tick */ }
-        }, 300);
-      })
-      .catch(() => { if (!cancelled) { setError("Couldn't access the camera — check permissions, or enter the barcode manually."); setStep("choice"); } });
-
-    return () => { cancelled = true; window.clearInterval(intervalId); stopCamera(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
+  const { videoRef, isNative } = useBarcodeScan({
+    active: step === "scan",
+    onDetected: (code) => void resolveBarcode(code),
+    onError: (message) => { setError(message); setStep("choice"); }
+  });
 
   const submitManual = (e: FormEvent) => {
     e.preventDefault();
@@ -1221,8 +1185,9 @@ function BarcodeAddModal({ defaultDept, onAdd, onClose }: { defaultDept: Departm
 
         {step === "scan" && (
           <div className="modal-body barcode-scan">
-            <video ref={videoRef} className="barcode-video" muted playsInline />
-            <p className="settings-hint">Point the camera at the barcode.</p>
+            {isNative
+              ? <p className="settings-hint">Opening the camera…</p>
+              : <><video ref={videoRef} className="barcode-video" muted playsInline /><p className="settings-hint">Point the camera at the barcode.</p></>}
             <button type="button" className="secondary" onClick={() => setStep("choice")}>Cancel</button>
           </div>
         )}
@@ -1987,15 +1952,12 @@ function BarcodeImage({ value }: { value: string }) {
 function WeighLabelScanModal({ onResolved, onClose }: { onResolved: (plu: string, price: number) => void; onClose: () => void }) {
   const [error, setError] = useState("");
   const [manualCode, setManualCode] = useState("");
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const cameraSupported = typeof navigator !== "undefined" && !!navigator.mediaDevices && "BarcodeDetector" in window;
-  const [mode, setMode] = useState<"scan" | "manual">(cameraSupported ? "scan" : "manual");
-
-  const stopCamera = () => {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-  };
+  // Native support doesn't depend on any browser feature check, so it's
+  // known synchronously up front — used only to pick a sensible initial
+  // mode (auto-start "scan" whenever some form of camera scanning is
+  // available at all) before useBarcodeScan itself has run.
+  const initialCameraSupport = Capacitor.isNativePlatform() || (typeof navigator !== "undefined" && !!navigator.mediaDevices && "BarcodeDetector" in window);
+  const [mode, setMode] = useState<"scan" | "manual">(initialCameraSupport ? "scan" : "manual");
 
   const handleCode = (code: string) => {
     const weigh = parseWeighBarcode(code);
@@ -2003,30 +1965,11 @@ function WeighLabelScanModal({ onResolved, onClose }: { onResolved: (plu: string
     onResolved(weigh.plu, weigh.price);
   };
 
-  useEffect(() => {
-    if (mode !== "scan" || !cameraSupported) return;
-    let cancelled = false;
-    let intervalId: number;
-    const detector = new BarcodeDetector({ formats: BARCODE_FORMATS });
-
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
-      .then((stream) => {
-        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
-        streamRef.current = stream;
-        if (videoRef.current) { videoRef.current.srcObject = stream; void videoRef.current.play(); }
-        intervalId = window.setInterval(async () => {
-          if (!videoRef.current || videoRef.current.readyState < 2) return;
-          try {
-            const results = await detector.detect(videoRef.current);
-            if (results.length > 0) { window.clearInterval(intervalId); stopCamera(); handleCode(results[0].rawValue); }
-          } catch { /* transient decode failure — retried on the next tick */ }
-        }, 300);
-      })
-      .catch(() => { if (!cancelled) { setError("Couldn't access the camera — check permissions, or enter the code manually."); setMode("manual"); } });
-
-    return () => { cancelled = true; window.clearInterval(intervalId); stopCamera(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
+  const { videoRef, isNative, cameraSupported } = useBarcodeScan({
+    active: mode === "scan",
+    onDetected: handleCode,
+    onError: (message) => { setError(message); setMode("manual"); }
+  });
 
   const submitManual = (e: FormEvent) => {
     e.preventDefault();
@@ -2044,8 +1987,9 @@ function WeighLabelScanModal({ onResolved, onClose }: { onResolved: (plu: string
         </div>
         {mode === "scan" ? (
           <div className="modal-body barcode-scan">
-            <video ref={videoRef} className="barcode-video" muted playsInline />
-            <p className="settings-hint">Point the camera at a printed scale label for this item.</p>
+            {isNative
+              ? <p className="settings-hint">Opening the camera…</p>
+              : <><video ref={videoRef} className="barcode-video" muted playsInline /><p className="settings-hint">Point the camera at a printed scale label for this item.</p></>}
             <button type="button" className="secondary" onClick={() => setMode("manual")}>Enter code manually instead</button>
           </div>
         ) : (
@@ -2945,6 +2889,8 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
   const [vatRegistered, setVatRegistered] = useState(false);
   const [vatNumber, setVatNumber] = useState("");
   const [businessAddress, setBusinessAddress] = useState("");
+  const [iconVariant, setIconVariant] = useState<IconVariant>("IconDefault");
+  const [savingIcon, setSavingIcon] = useState(false);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const restoreInputRef = useRef<HTMLInputElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -2957,6 +2903,28 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
   };
 
   useEffect(() => { void fetchPrinters(); }, []);
+
+  // Native-only — reads back whichever activity-alias is currently the
+  // enabled launcher icon, so the picker below opens already reflecting
+  // reality instead of always defaulting to "Default."
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    iconSwitcher.getIcon().then(({ variant }) => setIconVariant(variant)).catch(() => undefined);
+  }, []);
+
+  const saveIcon = async (variant: IconVariant) => {
+    setSavingIcon(true); setMsg("");
+    try {
+      await iconSwitcher.setIcon({ variant });
+      setIconVariant(variant);
+      setMsg("Icon updated — the home screen should reflect it within a few seconds, no reinstall needed.");
+      window.setTimeout(() => setMsg(""), 4000);
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Failed to switch icon");
+    } finally {
+      setSavingIcon(false);
+    }
+  };
 
   useEffect(() => {
     api.settings.get().then((s) => {
@@ -3334,6 +3302,23 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
           </select>
         </div>
       </section>
+
+      {Capacitor.isNativePlatform() && (
+        <section className="settings-section">
+          <h3>App icon</h3>
+          <div className="setting-row">
+            <div className="setting-info">
+              <strong>Home screen icon</strong>
+              <p>Switches instantly on this device — no reinstall needed. Only these pre-built variants are available (not an arbitrary custom image).</p>
+            </div>
+            <select className="settings-select" value={iconVariant} disabled={savingIcon} onChange={(e) => void saveIcon(e.target.value as IconVariant)}>
+              <option value="IconDefault">Default</option>
+              <option value="IconAlt1">Alt 1</option>
+              <option value="IconAlt2">Alt 2</option>
+            </select>
+          </div>
+        </section>
+      )}
 
       {msg && <div className="form-message">{msg}</div>}
     </div>

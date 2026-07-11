@@ -77,13 +77,14 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false, // allow blob: print tabs to open on mobile
 }));
 
-// The native Android app bundles the web build locally and calls this API
-// cross-origin from Capacitor's internal origin (https://localhost by
-// default) — needed in every environment, not just dev, since that's how
-// the shipped app behaves too (see capacitor.config.ts + src/shared/nativeServer.ts).
-const nativeAppOrigins = ["https://localhost", "capacitor://localhost"];
+// The native Android app live-loads this server's own page directly (see
+// capacitor.config.ts's server.url + src/shared/nativeServer.ts) — its API
+// requests are therefore same-origin, same as an ordinary browser tab, and
+// need no CORS allowance at all. Only the Vite dev server (frontend on
+// :5173, API on :3001) is ever genuinely cross-origin, so there's nothing
+// to allow-list in production.
 const devOrigins = ["http://localhost:5173", "http://127.0.0.1:5173"];
-app.use(cors({ origin: isProd ? nativeAppOrigins : [...devOrigins, ...nativeAppOrigins], credentials: true }));
+app.use(cors({ origin: isProd ? [] : devOrigins, credentials: true }));
 
 app.use(express.json({ limit: "10mb" }));
 

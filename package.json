@@ -22,6 +22,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@capacitor-mlkit/barcode-scanning": "^8.1.0",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^9.6.0",
     "compression": "^1.8.1",

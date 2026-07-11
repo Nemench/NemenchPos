@@ -8,13 +8,31 @@ Runs on your local network — any device with a browser can log in simultaneous
 
 | Role | Can do |
 |---|---|
-| Admin | Everything — users, stock, orders, queue |
-| Master Cashier | Create orders + one-button accept/complete |
-| Cashier | Create orders, view queue |
-| Kitchen | Kitchen queue only |
-| Counter | Counter queue only |
+| Admin | Everything: users, stock, settings/branding, reports, statistics, Weigh-In, CRM, backup/restore, plus all order/POS/queue actions below |
+| Master Cashier | Create orders, view the queue, and one-button accept/complete a ticket (skips the normal New → Received → Ready → Done stepping) |
+| Cashier | Create orders (including POS walk-in sales), view the queue |
+| Kitchen | Kitchen department queue only — advance kitchen items through their statuses |
+| Counter | Counter department queue only — advance counter items through their statuses |
+| Stock Taker | Products/Stock and Weigh-In screens only (no orders, users, or settings) |
 
-Default login after a fresh install: **Admin / 0000**
+Default login after a fresh install: **Admin / 0000** — change the PIN immediately from Users after first login.
+
+This "Admin" role is local to one shop's own MAXIS instance. It's unrelated to the separate **master admin** control plane described near the bottom of this file, which oversees multiple independently-hosted shops at once.
+
+---
+
+## How MAXIS works
+
+Each shop runs its own **fully self-contained, offline-first** MAXIS instance (Node/Express + SQLite) on its own network — nothing here depends on the internet to function day-to-day. The pieces:
+
+- **Orders / Queue / History** — cashiers and counter/kitchen staff create tickets (KOT), which move through `New → Received → Ready → Done` per department (kitchen and counter are tracked separately, since a ticket can have items for both). History shows completed tickets for a configurable retention window.
+- **POS** — a touch-friendly till for walk-in sales: product grid, live receipt preview, cash/card payment with change calculation, percentage discounts (behind a PIN-confirmation for any destructive action like removing a line or clearing the sale), and South African SARS tax-compliance rules baked in (VAT-inclusive pricing, and a full tax invoice — buyer name + address — is required and enforced server-side above R5,000 per sale). A POS sale completes and deducts stock immediately, unlike a regular KOT ticket which only deducts stock in Weigh-In/receiving flows.
+- **Stock / Products** — the product catalog, with auto-generated EAN-13 barcodes, per-product cost price (required before a product can be sold, enforced server-side), and physical stock-count reconciliation across one or more stock locations.
+- **Weigh-In** — logs raw carcass/organ intake by weight, batch by batch. Optionally records **cut-yield estimates** (e.g. how much boneless rump a side of beef is expected to yield) which land in an admin **review queue** — nothing touches actual stock until an admin approves and applies the estimate against real sub-products.
+- **Statistics** — sales, stock movement, and profit-margin dashboards (revenue vs. cost per product/category/day), computed from cost prices snapshotted at time of sale.
+- **CRM & WhatsApp automation** — an optional local customer-relationship layer (see `server/database.ts`'s `crm_*` tables and `server/whatsapp/`). POS checkout has an optional "Customer number" field (never required, never slows down a walk-in sale) that resolves or creates a contact. Order-ready and payment-received events can automatically queue a WhatsApp notification, gated on consent (`opted_in`/`opted_out`/`unknown`) and an admin-configured automation rule per event. Inbound WhatsApp messages and manual staff replies (from the admin CRM tab) are all logged to the same per-contact message history. Requires real Meta WhatsApp Cloud API credentials to actually send — see the `WHATSAPP_*` environment variables below.
+- **Settings** — branding (site name, logo, theme color), printer assignments, VAT registration, and (native Android app only) the app's launcher icon.
+- **Backup / Restore** — a full JSON export/import of the database, admin-only, done from the Settings screen.
 
 ---
 
@@ -134,6 +152,45 @@ powershell -ExecutionPolicy Bypass -File C:\opt\maxis\update.ps1
 
 **Printing on Windows:**
 Server-side printing writes the ticket HTML to a temp file and opens it in the default browser, which triggers `window.print()`. For this to work, the MAXIS service must run under an **interactive user account** (not `LocalSystem`). After install, open `services.msc`, find **MAXIS KOT**, go to the **Log On** tab, and set it to log on as your Windows user account.
+
+---
+
+## Master admin / multi-tenant control plane (optional)
+
+Everything above describes one shop's own MAXIS instance, which works fully standalone forever with no internet connection required. Separately, if you're running MAXIS for **several independently-hosted shops**, there's an optional companion service — **`maxis-control-plane`** (its own repo, its own process, its own single-admin login) — that lets one person oversee all of them from one place: branding, license/subscription status, feature flags, and WhatsApp configuration per business.
+
+This is **not** the same as a shop's local "Admin" role above. The control plane has exactly one login (the "master admin" — set via a required `ADMIN_PASSWORD` environment variable, no default/auto-generated password), and shop staff never see or interact with it directly.
+
+**How it connects:** each MAXIS instance polls the control plane every 15 minutes for its own business profile (`server/controlPlaneSync.ts`) using two environment variables:
+
+```
+MAXIS_CONTROL_PLANE_URL=https://your-control-plane-host
+MAXIS_CONTROL_API_KEY=<per-business API key, generated in the control plane admin UI>
+```
+
+Leave both unset and a MAXIS instance just runs standalone forever (the default, and a fully valid deployment mode) — nothing about POS, kitchen, or order flow ever depends on the control plane being reachable. A sync failure only ever falls back to the last-cached (or a safe default) profile; it never throws or blocks the shop's own server from starting or operating.
+
+**What syncs down to each shop:**
+- Branding (business name, logo, theme color) and VAT number
+- License status (`trial` / `active` / `pending_suspension` / `suspended`) and a 30-day grace period once suspension is initiated — surfaced only to that shop's own local Admin, only outside the POS/Queue screens, as a dismissible banner (never something that blocks or degrades POS/kitchen operation)
+- Feature flags (e.g. `inventory`, `whatsapp`, `multi_till`)
+- `whatsapp_number_id` / `whatsapp_templates` — WhatsApp Cloud API configuration for that business's CRM automation (see above). The actual WhatsApp **access token** is deliberately *not* synced through the control plane (a real secret, kept local-only per shop) — see the `WHATSAPP_*` env vars below.
+
+**Deploying the control plane itself:**
+```bash
+ADMIN_PASSWORD=yourpassword bash install.sh   # from the maxis-control-plane repo
+```
+Runs on port 3002 by default, admin UI at `/admin`. See that repo's own README for the full admin API (create/edit business, regenerate API key, view change history, license status changes).
+
+### WhatsApp CRM environment variables (per shop, optional)
+
+Set these on a shop's own MAXIS instance (already wired into `install.sh`) to enable actually *sending* WhatsApp messages — without them, contacts/consent/message history still work locally, but every outbound send just fails harmlessly and retries:
+
+```
+WHATSAPP_ACCESS_TOKEN=<Meta System User token — real secret, local-only, never synced>
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=<a string you choose, must match Meta's webhook config>
+WHATSAPP_APP_SECRET=<from Meta App Dashboard, for webhook signature verification>
+```
 
 ---
 
