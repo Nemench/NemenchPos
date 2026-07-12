@@ -29,6 +29,17 @@ router.get("/barcode/:code", (req, res) => {
   res.json(product);
 });
 
+// Item-code lookup — the weighed-product counterpart to /barcode/:code
+// above. Callers decode a scanned weigh-barcode with parseWeighBarcode
+// first (see src/shared/weighBarcode.ts) and look the product up by the
+// resulting itemCode here, never by the raw scanned string (which is
+// unique per label, not per product).
+router.get("/item-code/:code", (req, res) => {
+  const product = db.getProductByItemCode(req.params.code);
+  if (!product) { res.status(404).json({ message: "No product found for this item code" }); return; }
+  res.json(product);
+});
+
 // Minimal product creation from an unrecognized barcode scan — see
 // db.quickCreateProductByBarcode for the field defaults this applies.
 router.post("/quick-create", (req: AuthRequest, res) => {

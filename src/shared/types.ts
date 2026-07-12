@@ -46,7 +46,14 @@ export interface Product {
   onHandQty: number;
   lastCountedAt: string | null;
   lastCountedById: number | null;
+  // Full static EAN-13 identity for a FIXED-UNIT product (unitDefault
+  // 'qty'). Null for a weighed product — see itemCode instead; a weighed
+  // product has no single unchanging barcode (weighBarcode.ts).
   barcode: string | null;
+  // Stable 5-digit scale PLU identity for a WEIGHED product (unitDefault
+  // 'kg'/'kg_qty'). Null for a fixed-unit product. Never auto-generated —
+  // has to match whatever's actually programmed into the physical scale.
+  itemCode: string | null;
   // Whole-carcass/organ items the butchery actually takes delivery of
   // (Whole Forequarter, Liver, Lungs, Oxtail, Whole Lamb, Lamb Hind) —
   // only these appear as selectable items in the Weigh-In receiving flow.
@@ -72,6 +79,7 @@ export interface ProductInput {
   department: Department;
   lowStockThreshold: number | null;
   barcode?: string | null;
+  itemCode?: string | null;
   isRawIntake?: number;
   // Submitting a value here appends a new product_cost_history row (see
   // setProductCost) rather than updating a plain column — omitting it
@@ -81,11 +89,15 @@ export interface ProductInput {
 }
 
 // Minimal fields needed to quick-create a product from an unrecognized
-// barcode scan at the register — everything else defaults sensibly
-// server-side (see db.quickCreateProductByBarcode).
+// scan at the register — everything else defaults sensibly server-side
+// (see db.quickCreateProductByBarcode). Exactly one of barcode/itemCode
+// is provided: barcode for a plain unrecognized EAN-13, itemCode for a
+// decoded scale weigh-label's PLU (see parseWeighBarcode) — which one
+// determines the new product's unitDefault server-side.
 export interface QuickCreateProductInput {
   name: string;
-  barcode: string;
+  barcode?: string;
+  itemCode?: string;
   pricePerUnit: number | null;
   department: Department;
 }
@@ -524,7 +536,12 @@ export interface LabelFormat {
 // (see POSPanel's addToCart/pos-product-price).
 export interface LabelData {
   name: string;
+  // Fixed-unit product: its static EAN-13. Weighed product: unused —
+  // buildLabelCellHtml builds a fresh weigh-barcode from itemCode + the
+  // computed price instead (see buildWeighBarcode); a weighed product's
+  // `barcode` is never a complete, renderable EAN-13 on its own.
   barcode: string;
+  itemCode: string | null;
   pricePerUnit: number | null;
   unitDefault: UnitDefault;
   weightKg: number | null;

@@ -45,7 +45,7 @@ import {
 } from "lucide-react";
 import JsBarcode from "jsbarcode";
 import { appSettings } from "../shared/settings";
-import { parseWeighBarcode } from "../shared/weighBarcode";
+import { parseWeighBarcode, buildWeighBarcode } from "../shared/weighBarcode";
 import { generateInternalBarcode } from "../shared/internalBarcode";
 import type {
   CreateOrderInput,
@@ -92,7 +92,7 @@ initThemeMode();
 
 const deptStatusFlow: DeptStatus[] = ["New", "Received", "Ready", "Done"];
 const emptyLine: OrderItemInput = { productId: null, name: "", kg: null, quantity: null, notes: "", unitPrice: null, lineTotal: null, wantedPrice: null, department: "counter" };
-const EMPTY_PRODUCT: ProductInput = { name: "", category: "", unitDefault: "kg", pricePerUnit: null, prepNotes: "", department: "counter", lowStockThreshold: null, barcode: null, isRawIntake: 0 };
+const EMPTY_PRODUCT: ProductInput = { name: "", category: "", unitDefault: "kg", pricePerUnit: null, prepNotes: "", department: "counter", lowStockThreshold: null, barcode: null, itemCode: null, isRawIntake: 0 };
 
 // Sticker label print preferences (size/copies/which fields show) — a
 // per-device convenience, not shop-wide config, so plain localStorage
@@ -1311,12 +1311,14 @@ function BarcodeAddModal({ defaultDept, onAdd, onClose }: { defaultDept: Departm
     setBusy(true); setError("");
     // A scale weigh-barcode embeds the price per-label, so it will never
     // exact-match a catalog barcode twice — look the product up by its
-    // 5-digit PLU instead of the full scanned code, and carry the decoded
-    // price along to prefill as this line's "wanted price."
+    // 5-digit item code instead of the full scanned code (a weighed
+    // product's identity, never a plain `barcode` lookup — see
+    // getProductByItemCode), and carry the decoded price along to
+    // prefill as this line's "wanted price."
     const weigh = parseWeighBarcode(code);
     const lookupCode = weigh ? weigh.itemCode : code;
     try {
-      const product = await api.products.getByBarcode(lookupCode);
+      const product = weigh ? await api.products.getByItemCode(lookupCode) : await api.products.getByBarcode(lookupCode);
       onAdd(product, weigh?.price);
     } catch {
       setPendingBarcode(lookupCode);
@@ -1345,9 +1347,14 @@ function BarcodeAddModal({ defaultDept, onAdd, onClose }: { defaultDept: Departm
     if (!createName.trim()) { setError("Enter a name."); return; }
     setBusy(true); setError("");
     try {
+      // pendingWeighPrice is only ever set when the original scan decoded
+      // as a weigh-barcode (see resolveBarcode) — same signal used there
+      // to pick the lookup, reused here to pick which field pendingBarcode
+      // actually is.
       const product = await api.products.quickCreate({
         name: createName.trim(),
-        barcode: pendingBarcode,
+        barcode: pendingWeighPrice == null ? pendingBarcode : undefined,
+        itemCode: pendingWeighPrice != null ? pendingBarcode : undefined,
         pricePerUnit: createPrice ? Number(createPrice) : null,
         department: createDept
       });
@@ -2014,7 +2021,7 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
   const matches = useMemo(() => {
     if (!search.trim()) return [];
     const q = search.trim().toLowerCase();
-    return products.filter((p) => p.name.toLowerCase().includes(q) || (p.barcode ?? "").includes(q)).slice(0, 20);
+    return products.filter((p) => p.name.toLowerCase().includes(q) || (p.barcode ?? "").includes(q) || (p.itemCode ?? "").includes(q)).slice(0, 20);
   }, [products, search]);
 
   const selectProduct = (p: Product) => {
@@ -2030,6 +2037,7 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
   const data: LabelData | null = selected ? {
     name: selected.name,
     barcode: selected.barcode ?? "",
+    itemCode: selected.itemCode,
     pricePerUnit: selected.pricePerUnit,
     unitDefault: selected.unitDefault,
     weightKg: isWeighed && weightKg ? Number(weightKg) : null
@@ -2045,7 +2053,8 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
 
   const print = () => {
     if (!data || !format) return;
-    if (!selected?.barcode) { setMessage("This product has no barcode yet — add one in Stock before printing labels for it."); return; }
+    if (isWeighed && !selected?.itemCode) { setMessage("This product has no item code yet — add one in Stock before printing labels for it."); return; }
+    if (!isWeighed && !selected?.barcode) { setMessage("This product has no barcode yet — add one in Stock before printing labels for it."); return; }
     if (isWeighed && !weightKg) { setMessage("Enter the weighed amount first."); return; }
     setPrinting(true); setMessage("");
     try {
@@ -2083,7 +2092,7 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
             <div className="setting-row">
               <div className="setting-info">
                 <strong>{selected.name}</strong>
-                <p>{selected.pricePerUnit != null ? `${currency.format(selected.pricePerUnit)}${isWeighed ? "/kg" : ""}` : "No price set"} - {selected.barcode || "No barcode"}</p>
+                <p>{selected.pricePerUnit != null ? `${currency.format(selected.pricePerUnit)}${isWeighed ? "/kg" : ""}` : "No price set"} - {isWeighed ? (selected.itemCode || "No item code") : (selected.barcode || "No barcode")}</p>
               </div>
               <button type="button" className="secondary" onClick={() => setSelected(null)}>Change product</button>
             </div>
@@ -2418,21 +2427,31 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
           <p className="form-error">Sell price is below cost price — this item would sell at a loss.</p>
         )}
         <label>Prep notes<textarea value={editing.prepNotes} onChange={(e) => setEditing({ ...editing, prepNotes: e.target.value })} /></label>
-        <label>
-          Barcode / scale PLU <span className="optional-hint">(optional — auto-generated on save if left blank)</span>
-          <div className="barcode-field-row">
-            <input value={editing.barcode ?? ""} onChange={(e) => setEditing({ ...editing, barcode: e.target.value })} placeholder="e.g. 6001234567890, or a 5-digit PLU" />
-            <button type="button" className="secondary sm" onClick={() => setWeighScanOpen(true)}><ScanLine size={16} /> Scan weigh-label</button>
-          </div>
-          <p className="settings-hint">
-            For a product with a normal printed barcode, enter (or scan) that full number. For a product sold by weight on the scale
-            (price changes every time it's weighed, so the barcode is different every label), enter just its 5-digit scale item code (PLU)
-            — the "Scan weigh-label" button reads one and fills in the PLU automatically. Leave this blank to have one generated
-            automatically when you save (a fixed, scannable "29"-prefixed code derived from the item, distinct from real manufacturer
-            barcodes and from the scale's own weigh-labels).
-          </p>
-        </label>
-        {editing.id && editing.barcode && (
+        {editing.unitDefault === "qty" ? (
+          <label>
+            Barcode <span className="optional-hint">(optional — auto-generated on save if left blank)</span>
+            <input value={editing.barcode ?? ""} onChange={(e) => setEditing({ ...editing, barcode: e.target.value })} placeholder="e.g. 6001234567890" />
+            <p className="settings-hint">
+              Enter (or scan) the product's real printed barcode. Leave this blank to have one generated automatically when you save
+              (a fixed, scannable "29"-prefixed code derived from the item, distinct from real manufacturer barcodes).
+            </p>
+          </label>
+        ) : (
+          <label>
+            Item code (scale PLU) <span className="optional-hint">(optional)</span>
+            <div className="barcode-field-row">
+              <input value={editing.itemCode ?? ""} onChange={(e) => setEditing({ ...editing, itemCode: e.target.value })} placeholder="e.g. 00550" maxLength={5} />
+              <button type="button" className="secondary sm" onClick={() => setWeighScanOpen(true)}><ScanLine size={16} /> Scan weigh-label</button>
+            </div>
+            <p className="settings-hint">
+              A product sold by weight on the scale has no single barcode — the price changes every time it's weighed, so the barcode is
+              different every label. This 5-digit item code is its stable identity instead: it must match whatever PLU is actually
+              programmed into the physical scale, so it's never auto-generated — enter it manually or use "Scan weigh-label" to read one
+              off an existing label. Use the <b>Print Labels</b> tab to print a fresh weigh-barcode label for this product.
+            </p>
+          </label>
+        )}
+        {editing.id && editing.barcode && editing.unitDefault === "qty" && (
           <div className="barcode-preview">
             <BarcodeImage value={editing.barcode} />
             <div className="label-options">
@@ -2534,9 +2553,9 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
       )}
       {weighScanOpen && (
         <WeighLabelScanModal
-          onResolved={(plu, price) => {
-            setEditing((cur) => ({ ...cur, barcode: plu }));
-            setStockMessage(`PLU ${plu} filled in (this label was priced at ${currency.format(price)}, for reference only).`);
+          onResolved={(itemCode, price) => {
+            setEditing((cur) => ({ ...cur, itemCode }));
+            setStockMessage(`Item code ${itemCode} filled in (this label was priced at ${currency.format(price)}, for reference only).`);
             setWeighScanOpen(false);
           }}
           onClose={() => setWeighScanOpen(false)}
@@ -2579,7 +2598,7 @@ function BarcodeImage({ value }: { value: string }) {
 // actual item code. Deliberately separate from BarcodeAddModal: that one
 // resolves a code against the product catalog (and offers quick-create),
 // which isn't the job here — here the barcode IS the product being edited.
-function WeighLabelScanModal({ onResolved, onClose }: { onResolved: (plu: string, price: number) => void; onClose: () => void }) {
+function WeighLabelScanModal({ onResolved, onClose }: { onResolved: (itemCode: string, price: number) => void; onClose: () => void }) {
   const [error, setError] = useState("");
   const [manualCode, setManualCode] = useState("");
   // Native support doesn't depend on any browser feature check, so it's
@@ -5548,7 +5567,6 @@ const LABEL_CELL_STYLE = `
 // per page), the A4 grid renderer (one per cell), and the live preview's
 // zoomed single-label view, so all three can never visually disagree.
 function buildLabelCellHtml(data: LabelData, widthMm: number, heightMm: number): string {
-  const barcodeSvg = data.barcode ? renderBarcodeSvgMarkup(data.barcode, "EAN13", { height: Math.max(10, heightMm * 0.5), margin: 0, displayValue: true }) : "";
   // unitDefault === "qty" is fixed-unit/each; "kg" and "kg_qty" are both
   // weight-priced — same distinction POS's own product tiles already use.
   const isWeighed = data.unitDefault !== "qty";
@@ -5556,16 +5574,36 @@ function buildLabelCellHtml(data: LabelData, widthMm: number, heightMm: number):
   // x entered weight) — what a real deli label shows a customer — not
   // just the per-kg rate. Falls back to the plain rate if no weight has
   // been entered yet (e.g. while the staff member is still filling in the form).
+  const computedPrice = data.pricePerUnit != null && data.weightKg != null ? data.pricePerUnit * data.weightKg : null;
   const priceLine = isWeighed
-    ? (data.pricePerUnit != null && data.weightKg != null ? currency.format(data.pricePerUnit * data.weightKg) : data.pricePerUnit != null ? `${currency.format(data.pricePerUnit)}/kg` : "")
+    ? (computedPrice != null ? currency.format(computedPrice) : data.pricePerUnit != null ? `${currency.format(data.pricePerUnit)}/kg` : "")
     : (data.pricePerUnit != null ? currency.format(data.pricePerUnit) : "");
   const weightLine = isWeighed && data.weightKg != null && data.pricePerUnit != null ? `${data.weightKg.toFixed(3)} kg @ ${currency.format(data.pricePerUnit)}/kg` : "";
+
+  // A weighed product has no single static barcode to render (see
+  // weighBarcode.ts) — its label needs a FRESH one built from its stable
+  // itemCode plus THIS portion's actual price, every time. Naively
+  // rendering a 5-digit itemCode (or an absent/irrelevant `barcode`) as
+  // an "EAN13" used to crash JsBarcode outright, taking down the whole
+  // label print/preview for any weighed product. No barcode is shown at
+  // all until a weight has actually been entered — there's no real price
+  // to encode before then, and showing a stale/zero one would be wrong.
+  let barcodeSvg = "";
+  if (isWeighed) {
+    if (data.itemCode && computedPrice != null) {
+      try {
+        barcodeSvg = renderBarcodeSvgMarkup(buildWeighBarcode(data.itemCode, computedPrice), "EAN13", { height: Math.max(10, heightMm * 0.5), margin: 0, displayValue: true });
+      } catch { /* price out of the 0-999.99 range buildWeighBarcode accepts — leave blank rather than crash the label */ }
+    }
+  } else if (data.barcode) {
+    barcodeSvg = renderBarcodeSvgMarkup(data.barcode, "EAN13", { height: Math.max(10, heightMm * 0.5), margin: 0, displayValue: true });
+  }
 
   return `<div class="label" style="width:${widthMm}mm;height:${heightMm}mm">
     <div class="lname">${esc(data.name)}</div>
     ${weightLine ? `<div class="lweight">${esc(weightLine)}</div>` : ""}
     ${priceLine ? `<div class="lprice">${esc(priceLine)}</div>` : ""}
-    ${barcodeSvg}
+    ${barcodeSvg || (isWeighed ? `<div class="lweight">${data.itemCode ? "Enter weight to generate barcode" : "No item code set"}</div>` : "")}
   </div>`;
 }
 

@@ -79,6 +79,7 @@ export const api = {
     import: (csv: string) => req<{ imported: number; errors: string[] }>("POST", "/products/import", { csv }),
     export: () => download("/products/export", `nemenchpos-products-${new Date().toISOString().slice(0, 10)}.csv`),
     getByBarcode: (code: string) => req<Product>("GET", `/products/barcode/${encodeURIComponent(code)}`),
+    getByItemCode: (code: string) => req<Product>("GET", `/products/item-code/${encodeURIComponent(code)}`),
     quickCreate: (data: QuickCreateProductInput) => req<Product>("POST", "/products/quick-create", data),
     missingCost: () => req<Product[]>("GET", "/products/missing-cost"),
     yieldEstimates: (rawProductId: number) => req<YieldEstimate[]>("GET", `/products/${rawProductId}/yield-estimates`),

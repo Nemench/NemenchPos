@@ -299,11 +299,28 @@ export class KotDatabase {
       .get(barcode) as Product | null;
   }
 
-  // If no barcode is entered, one is auto-generated from the product's own
-  // id (see generateInternalBarcode) rather than left null — every product
-  // ends up scannable, whether or not it has a real manufacturer barcode.
-  // For a brand-new product the id doesn't exist until after the INSERT,
-  // so that case generates it in a follow-up UPDATE rather than up front.
+  // A weighed product's identity for scanning purposes — see itemCode's
+  // schema comment (migrate()). Distinct from getProductByBarcode: a
+  // weighed product's `barcode` column is null (it has no single static
+  // barcode), so scanning one always resolves through here instead,
+  // after parseWeighBarcode strips the price digits off the raw scan.
+  getProductByItemCode(itemCode: string): Product | null {
+    return this.db
+      .prepare(`SELECT p.*, ${KotDatabase.currentCostSql()} FROM products p WHERE p.itemCode = ? AND p.isActive = 1`)
+      .get(itemCode) as Product | null;
+  }
+
+  // If no barcode is entered for a FIXED-UNIT product, one is auto-
+  // generated from the product's own id (see generateInternalBarcode)
+  // rather than left null — every fixed-unit product ends up scannable,
+  // whether or not it has a real manufacturer barcode. A WEIGHED product
+  // never gets this treatment: it has no single static barcode to
+  // generate in the first place (see weighBarcode.ts) — its itemCode is
+  // the identity instead, and that's never auto-generated (has to match
+  // whatever's actually programmed into the physical scale). For a
+  // brand-new fixed-unit product the id doesn't exist until after the
+  // INSERT, so that case generates it in a follow-up UPDATE rather than
+  // up front.
   //
   // costPerUnit is handled separately from the rest of the fields: if
   // provided, it appends a new product_cost_history row (see
@@ -311,20 +328,25 @@ export class KotDatabase {
   // method only touches the products table itself.
   upsertProduct(input: ProductInput): Product {
     const now = new Date().toISOString();
+    const isWeighed = input.unitDefault !== "qty";
     const providedBarcode = input.barcode?.trim() || null;
+    const itemCode = input.itemCode?.trim() || null;
+    if (itemCode && !/^\d{5}$/.test(itemCode)) {
+      throw new Error(`Item code "${itemCode}" must be exactly 5 digits`);
+    }
     const isRawIntake = input.isRawIntake ? 1 : 0;
     if (input.id) {
-      const barcode = providedBarcode ?? generateInternalBarcode(input.id);
+      const barcode = isWeighed ? providedBarcode : (providedBarcode ?? generateInternalBarcode(input.id));
       this.db
-        .prepare("UPDATE products SET name=?, category=?, unitDefault=?, pricePerUnit=?, prepNotes=?, department=?, lowStockThreshold=?, barcode=?, isRawIntake=?, updatedAt=? WHERE id=?")
-        .run(input.name.trim(), input.category.trim(), input.unitDefault, input.pricePerUnit ?? null, input.prepNotes.trim(), input.department, input.lowStockThreshold ?? null, barcode, isRawIntake, now, input.id);
+        .prepare("UPDATE products SET name=?, category=?, unitDefault=?, pricePerUnit=?, prepNotes=?, department=?, lowStockThreshold=?, barcode=?, itemCode=?, isRawIntake=?, updatedAt=? WHERE id=?")
+        .run(input.name.trim(), input.category.trim(), input.unitDefault, input.pricePerUnit ?? null, input.prepNotes.trim(), input.department, input.lowStockThreshold ?? null, barcode, itemCode, isRawIntake, now, input.id);
       return this.db.prepare(`SELECT p.*, ${KotDatabase.currentCostSql()} FROM products p WHERE p.id = ?`).get(input.id) as Product;
     } else {
       const result = this.db
-        .prepare("INSERT INTO products (name, category, unitDefault, pricePerUnit, prepNotes, department, lowStockThreshold, barcode, isRawIntake, isActive, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)")
-        .run(input.name.trim(), input.category.trim(), input.unitDefault, input.pricePerUnit ?? null, input.prepNotes.trim(), input.department, input.lowStockThreshold ?? null, providedBarcode, isRawIntake, now, now);
+        .prepare("INSERT INTO products (name, category, unitDefault, pricePerUnit, prepNotes, department, lowStockThreshold, barcode, itemCode, isRawIntake, isActive, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)")
+        .run(input.name.trim(), input.category.trim(), input.unitDefault, input.pricePerUnit ?? null, input.prepNotes.trim(), input.department, input.lowStockThreshold ?? null, providedBarcode, itemCode, isRawIntake, now, now);
       const newId = Number(result.lastInsertRowid);
-      if (!providedBarcode) {
+      if (!isWeighed && !providedBarcode) {
         this.db.prepare("UPDATE products SET barcode = ? WHERE id = ?").run(generateInternalBarcode(newId), newId);
       }
       return this.db.prepare(`SELECT p.*, ${KotDatabase.currentCostSql()} FROM products p WHERE p.id = ?`).get(newId) as Product;
@@ -332,24 +354,32 @@ export class KotDatabase {
   }
 
   // Minimal product creation from an unrecognized barcode scan at the
-  // register — everything but name/barcode/price/department defaults
+  // register — everything but name/code/price/department defaults
   // sensibly (same defaults as CSV import), so a cashier can add a new
-  // item in one step without needing full admin product-management access.
+  // item in one step without needing full admin product-management
+  // access. Exactly one of barcode/itemCode is expected — the caller
+  // (BarcodeAddModal) already knows which, from whether parseWeighBarcode
+  // decoded the original scan — and which one determines unitDefault:
+  // a weigh-scale PLU means this is necessarily a weighed product (it can
+  // only have come from a scale label), a plain barcode means fixed-unit.
   quickCreateProductByBarcode(input: QuickCreateProductInput): Product {
-    const barcode = input.barcode.trim();
-    if (!barcode) throw new Error("Barcode is required");
+    const barcode = input.barcode?.trim() || null;
+    const itemCode = input.itemCode?.trim() || null;
+    if (!barcode && !itemCode) throw new Error("A barcode or item code is required");
     const name = input.name.trim();
     if (!name) throw new Error("Name is required");
-    if (this.getProductByBarcode(barcode)) throw new Error("A product with this barcode already exists");
+    if (barcode && this.getProductByBarcode(barcode)) throw new Error("A product with this barcode already exists");
+    if (itemCode && this.getProductByItemCode(itemCode)) throw new Error("A product with this item code already exists");
     return this.upsertProduct({
       name,
       category: "General",
-      unitDefault: "kg",
+      unitDefault: itemCode ? "kg" : "qty",
       pricePerUnit: input.pricePerUnit,
       prepNotes: "",
       department: input.department,
       lowStockThreshold: null,
-      barcode
+      barcode: barcode ?? undefined,
+      itemCode: itemCode ?? undefined
     });
   }
 
@@ -1214,7 +1244,7 @@ export class KotDatabase {
     if (order.consolidatedAt) throw new Error("This order has already been consolidated — no more scanning needed");
 
     const weigh = parseWeighBarcode(rawCode);
-    const product = this.getProductByBarcode(weigh ? weigh.itemCode : rawCode);
+    const product = weigh ? this.getProductByItemCode(weigh.itemCode) : this.getProductByBarcode(rawCode);
     if (!product) throw new Error(`No product found for barcode "${rawCode}"`);
 
     const match = order.items.find((i) => i.productId === product.id && !i.scannedAt);
@@ -1427,6 +1457,19 @@ export class KotDatabase {
       if (!prodCols.includes("lastCountedAt")) this.db.exec("ALTER TABLE products ADD COLUMN lastCountedAt TEXT");
       if (!prodCols.includes("lastCountedById")) this.db.exec("ALTER TABLE products ADD COLUMN lastCountedById INTEGER REFERENCES users(id)");
       if (!prodCols.includes("barcode")) this.db.exec("ALTER TABLE products ADD COLUMN barcode TEXT");
+      if (!prodCols.includes("itemCode")) {
+        this.db.exec("ALTER TABLE products ADD COLUMN itemCode TEXT");
+        // One-time backfill for existing databases: a weighed product's
+        // scale PLU used to be stored in `barcode` (see weighBarcode.ts's
+        // old header comment, before this column existed) — move it to
+        // itemCode and clear barcode, but ONLY when it's unambiguously a
+        // bare 5-digit PLU, never a full 13-digit code. A weighed product
+        // with a real 13-digit barcode (e.g. a pre-packaged item that
+        // happens to be costed by weight) is left untouched rather than
+        // guessed at — better to leave an admin to sort out a genuine
+        // edge case than silently misclassify it.
+        this.db.prepare("UPDATE products SET itemCode = barcode, barcode = NULL WHERE unitDefault != 'qty' AND barcode GLOB '[0-9][0-9][0-9][0-9][0-9]'").run();
+      }
       if (!prodCols.includes("isRawIntake")) {
         this.db.exec("ALTER TABLE products ADD COLUMN isRawIntake INTEGER NOT NULL DEFAULT 0");
         // One-time best-effort flagging for existing databases: if a product's
@@ -1497,6 +1540,7 @@ export class KotDatabase {
         lastCountedAt TEXT,
         lastCountedById INTEGER REFERENCES users(id),
         barcode TEXT,
+        itemCode TEXT,
         isRawIntake INTEGER NOT NULL DEFAULT 0,
         createdAt TEXT NOT NULL,
         updatedAt TEXT NOT NULL
@@ -1833,6 +1877,7 @@ export class KotDatabase {
       CREATE INDEX IF NOT EXISTS idx_pending_yield_status ON pending_yield_conversions(status);
       CREATE INDEX IF NOT EXISTS idx_pending_yield_items_conv ON pending_yield_items(conversionId);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_prod_barcode ON products(barcode) WHERE barcode IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_prod_item_code ON products(itemCode) WHERE itemCode IS NOT NULL;
     `);
 
     // One-time migration for databases that predate per-location stock
