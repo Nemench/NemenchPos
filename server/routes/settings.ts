@@ -8,6 +8,7 @@ import { db } from "../index.js";
 import { requireAuth, requireAdmin } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
 import { getBusinessProfile } from "../controlPlaneSync.js";
+import { sendEmail } from "../email/mailer.js";
 
 const router = Router();
 
@@ -61,6 +62,25 @@ router.put("/", requireAuth, requireAdmin, (req: AuthRequest, res) => {
     db.setSetting(key, String(value));
   }
   res.json(db.getAllSettings());
+});
+
+// Sends an immediate (not queued through email_outbox) test email so an
+// admin gets instant pass/fail feedback while setting up SMTP — a real
+// send through the exact same code path production notifications use,
+// not a simulated check.
+router.post("/email-test", requireAuth, requireAdmin, async (req, res) => {
+  const { to } = req.body as { to: string };
+  if (!to || !/\S+@\S+\.\S+/.test(to)) {
+    res.status(400).json({ message: "Enter a valid email address to send the test to" });
+    return;
+  }
+  const result = await sendEmail(
+    to,
+    "Test email from NemenchPos",
+    "This is a test email confirming your NemenchPos email notification settings are working. If you received this, order-ready and payment emails will reach your customers too."
+  );
+  if (result.ok) res.json({ ok: true });
+  else res.status(400).json({ message: result.error ?? "Send failed" });
 });
 
 // Uploads a new logo from a base64 data URL (as produced by a <input

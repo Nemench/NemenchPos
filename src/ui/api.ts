@@ -101,14 +101,16 @@ export const api = {
     updateDeptStatus: (id: number, department: Department, status: DeptStatus) =>
       req<Order>("PATCH", `/orders/${id}/dept-status`, { department, status }),
     export: (from: string, to: string) =>
-      req<Order[]>("GET", `/reports?from=${from}&to=${to}`)
+      req<Order[]>("GET", `/reports?from=${from}&to=${to}`),
+    emailReceipt: (id: number, to: string, html: string) => req<{ ok: boolean }>("POST", `/orders/${id}/email-receipt`, { to, html })
   },
   settings: {
     get: () => req<Record<string, string>>("GET", "/settings"),
     set: (data: Record<string, string>) => req<Record<string, string>>("PUT", "/settings", data),
     public: () => req<{ siteName: string; logoUrl: string; themeColor: string; vatRegistered: boolean; vatNumber: string; businessAddress: string }>("GET", "/settings/public"),
     uploadLogo: (dataUrl: string) => req<{ logoUrl: string }>("POST", "/settings/logo", { dataUrl }),
-    licenseStatus: () => req<{ licenseStatus: string; gracePeriodEndsAt: string | null }>("GET", "/settings/license-status")
+    licenseStatus: () => req<{ licenseStatus: string; gracePeriodEndsAt: string | null }>("GET", "/settings/license-status"),
+    testEmail: (to: string) => req<{ ok: boolean }>("POST", "/settings/email-test", { to })
   },
   printers: {
     list: () => req<string[]>("GET", "/printers")

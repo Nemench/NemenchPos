@@ -18,7 +18,7 @@ async function processOne(item: ReturnType<typeof db.listPendingEmails>[number])
     return;
   }
 
-  const result = await sendEmail(item.toEmail, item.subject, item.body);
+  const result = await sendEmail(item.toEmail, item.subject, item.body, item.htmlBody);
   if (result.ok) {
     db.recordEmailAttempt(item.id, "sent");
   } else {

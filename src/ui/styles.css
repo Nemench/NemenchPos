@@ -1467,6 +1467,11 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   border-top: 1px solid var(--border);
 }
 
+.test-email-row {
+  display: flex;
+  gap: 8px;
+}
+
 .setting-info {
   flex: 1;
   min-width: 180px;

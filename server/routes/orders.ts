@@ -7,6 +7,7 @@ import type { AuthRequest } from "../auth.js";
 import type { CreateOrderInput, Order, OrderItemInput, OrderStatus, Department, DeptStatus } from "../../src/shared/types.js";
 import { triggerAutomation } from "../whatsapp/automation.js";
 import { triggerEmailNotification } from "../email/automation.js";
+import { sendEmail } from "../email/mailer.js";
 
 // Fires the order_ready automation only on the transition INTO "Ready"
 // (previous status wasn't already Ready) — callers pass the status just
@@ -118,6 +119,35 @@ router.patch("/:id/dept-status", (req: AuthRequest, res) => {
     maybeTriggerOrderReady(previousStatus, order);
     res.json(order);
   } catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to update status" }); }
+});
+
+// Manual "Email receipt" button (Queue/History) — sent immediately (not
+// queued through email_outbox), so staff get instant pass/fail feedback,
+// same posture as the Settings test-email route. The client builds and
+// sends the exact styled receipt HTML it already generates for printing
+// (buildReceiptHtml in src/ui/App.tsx) — a real client is present for
+// this action, unlike the automated order_ready/payment_received emails
+// (see server/email/receipt.ts), so there's no need for the simplified
+// server-built version here.
+router.post("/:id/email-receipt", (req: AuthRequest, res) => {
+  if (!canAddItems(req)) {
+    res.status(403).json({ message: "Not authorized to email receipts" });
+    return;
+  }
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) { res.status(404).json({ message: "Not found" }); return; }
+  const { to, html } = req.body as { to: string; html: string };
+  if (!to || !/\S+@\S+\.\S+/.test(to)) { res.status(400).json({ message: "Enter a valid email address" }); return; }
+  if (!html) { res.status(400).json({ message: "No receipt content provided" }); return; }
+  let order: Order;
+  try { order = db.getOrder(id); }
+  catch (err) { res.status(404).json({ message: err instanceof Error ? err.message : "Not found" }); return; }
+  sendEmail(to, `Your receipt — #${order.ticketNumber}`, "Your receipt is attached. If your email doesn't show it, please contact us.", html)
+    .then((result) => {
+      if (result.ok) res.json({ ok: true });
+      else res.status(400).json({ message: result.error ?? "Send failed" });
+    })
+    .catch((err) => res.status(500).json({ message: err instanceof Error ? err.message : "Send failed" }));
 });
 
 export default router;

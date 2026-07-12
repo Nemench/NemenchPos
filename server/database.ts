@@ -1304,6 +1304,14 @@ export class KotDatabase {
       if (!cols.includes("customerEmail")) this.db.exec("ALTER TABLE orders ADD COLUMN customerEmail TEXT");
     }
 
+    // Add html_body to email_outbox if missing (existing databases created
+    // before HTML/receipt emails were added)
+    const emailOutboxExists = (this.db.prepare("SELECT COUNT(*) as n FROM sqlite_master WHERE type='table' AND name='email_outbox'").get() as { n: number }).n > 0;
+    if (emailOutboxExists) {
+      const emailCols = (this.db.prepare("PRAGMA table_info(email_outbox)").all() as { name: string }[]).map((c) => c.name);
+      if (!emailCols.includes("html_body")) this.db.exec("ALTER TABLE email_outbox ADD COLUMN html_body TEXT");
+    }
+
     // Add stock-tracking columns to products if missing (existing databases)
     const productsExists = (this.db.prepare("SELECT COUNT(*) as n FROM sqlite_master WHERE type='table' AND name='products'").get() as { n: number }).n > 0;
     if (productsExists) {
@@ -1501,6 +1509,7 @@ export class KotDatabase {
         to_email TEXT NOT NULL,
         subject TEXT NOT NULL,
         body TEXT NOT NULL,
+        html_body TEXT,
         status TEXT NOT NULL DEFAULT 'pending',
         attempts INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
@@ -1984,19 +1993,19 @@ export class KotDatabase {
   // comment) — no contact/consent indirection, the outbox row itself is
   // the whole record (no separate message-log table like crm_messages).
 
-  enqueueEmail(orderId: number | null, toEmail: string, subject: string, body: string): EmailOutboxItem {
+  enqueueEmail(orderId: number | null, toEmail: string, subject: string, body: string, htmlBody: string | null = null): EmailOutboxItem {
     const id = randomUUID();
     const now = new Date().toISOString();
     this.db
-      .prepare("INSERT INTO email_outbox (id, order_id, to_email, subject, body, status, attempts, created_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)")
-      .run(id, orderId, toEmail, subject, body, now);
-    return { id, orderId, toEmail, subject, body, status: "pending", attempts: 0, createdAt: now, sentAt: null };
+      .prepare("INSERT INTO email_outbox (id, order_id, to_email, subject, body, html_body, status, attempts, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?)")
+      .run(id, orderId, toEmail, subject, body, htmlBody, now);
+    return { id, orderId, toEmail, subject, body, htmlBody, status: "pending", attempts: 0, createdAt: now, sentAt: null };
   }
 
   listPendingEmails(): EmailOutboxItem[] {
     return this.db
       .prepare(`
-        SELECT id, order_id as orderId, to_email as toEmail, subject, body, status, attempts, created_at as createdAt, sent_at as sentAt
+        SELECT id, order_id as orderId, to_email as toEmail, subject, body, html_body as htmlBody, status, attempts, created_at as createdAt, sent_at as sentAt
         FROM email_outbox WHERE status = 'pending' ORDER BY created_at ASC`)
       .all() as EmailOutboxItem[];
   }

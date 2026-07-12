@@ -453,6 +453,7 @@ export interface EmailOutboxItem {
   toEmail: string;
   subject: string;
   body: string;
+  htmlBody: string | null;
   status: OutboxStatus;
   attempts: number;
   createdAt: string;

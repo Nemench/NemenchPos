@@ -8,6 +8,7 @@
 // never surface into the order-status/payment code path that calls it.
 import { db } from "../index.js";
 import type { Order } from "../../src/shared/types.js";
+import { buildSimpleReceiptHtml } from "./receipt.js";
 
 export type EmailEvent = "order_ready" | "payment_received";
 
@@ -17,6 +18,10 @@ export type EmailEvent = "order_ready" | "payment_received";
 // into the subject/body settings fields.
 function renderTemplate(template: string, vars: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_match, key) => vars[key] ?? "");
+}
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 export function triggerEmailNotification(event: EmailEvent, order: Order): boolean {
@@ -37,7 +42,14 @@ export function triggerEmailNotification(event: EmailEvent, order: Order): boole
       amount: `R${amount.toFixed(2)}`
     };
 
-    db.enqueueEmail(order.id, order.customerEmail, renderTemplate(subjectTemplate, vars), renderTemplate(bodyTemplate, vars));
+    const subject = renderTemplate(subjectTemplate, vars);
+    const body = renderTemplate(bodyTemplate, vars);
+    // The admin's own message goes above a simple itemized receipt — see
+    // server/email/receipt.ts for why this isn't the exact printed layout.
+    const receiptHtml = buildSimpleReceiptHtml(order, settings);
+    const htmlBody = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:480px;margin:0 auto 20px;color:#1a1a2e;white-space:pre-wrap;">${escHtml(body)}</div>${receiptHtml}`;
+
+    db.enqueueEmail(order.id, order.customerEmail, subject, body, htmlBody);
     return true;
   } catch (err) {
     console.error(`[email-automation] failed to trigger "${event}":`, err);

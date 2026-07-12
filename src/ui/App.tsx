@@ -24,6 +24,7 @@ import {
   FileDown,
   History,
   LogOut,
+  Mail,
   Minus,
   MessageCircle,
   Moon,
@@ -1415,6 +1416,7 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
   const canActCounter = currentUser.role === "admin" || currentUser.role === "counter";
   const canAddItems = currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier";
   const [barcodeModalOpen, setBarcodeModalOpen] = useState(false);
+  const [emailReceiptOpen, setEmailReceiptOpen] = useState(false);
 
   const addScannedItem = async (p: Product, wantedPrice?: number) => {
     setBarcodeModalOpen(false);
@@ -1494,6 +1496,7 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
           {hasKitchen && <button className="secondary sm" onClick={() => void printReceipt(order, "kitchen", printStyle, printerMap.kitchen ?? "")} title="Print kitchen receipt">Kitchen</button>}
           {hasCounter && <button className="secondary sm" onClick={() => void printReceipt(order, "counter", printStyle, printerMap.counter ?? "")} title="Print counter receipt">Counter</button>}
           <button className="secondary sm" onClick={() => void printReceipt(order, "master", printStyle, printerMap.master ?? "")} title="Print master receipt"><Printer size={16} /> Receipt</button>
+          {canAddItems && <button className="secondary sm" onClick={() => setEmailReceiptOpen(true)} title="Email receipt"><Mail size={16} /> Email</button>}
           {canAddItems && order.status !== "Done" && (
             <button className="secondary sm" onClick={() => setBarcodeModalOpen(true)}><ScanLine size={16} /> Scan</button>
           )}
@@ -1520,6 +1523,9 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
       {barcodeModalOpen && (
         <BarcodeAddModal defaultDept={currentUser.department ?? "counter"} onAdd={(p, wantedPrice) => void addScannedItem(p, wantedPrice)} onClose={() => setBarcodeModalOpen(false)} />
       )}
+      {emailReceiptOpen && (
+        <EmailReceiptModal order={order} printStyle={printStyle} onClose={() => setEmailReceiptOpen(false)} />
+      )}
     </article>
   );
 }
@@ -1529,6 +1535,7 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
 // Table of completed ("Done") orders within the configured retention window.
 function HistoryView({ orders, printStyle, printerMap }: { orders: Order[]; printStyle: string; printerMap: Record<string, string> }) {
   const [search, setSearch] = useState("");
+  const [emailReceiptOrder, setEmailReceiptOrder] = useState<Order | null>(null);
   const displayed = useMemo(() => {
     if (!search.trim()) return orders;
     const q = search.toLowerCase();
@@ -1563,11 +1570,15 @@ function HistoryView({ orders, printStyle, printerMap }: { orders: Order[]; prin
                 <td>{new Date(order.updatedAt).toLocaleString(appSettings.locale)}</td>
                 <td>
                   <button className="secondary sm" onClick={() => void printReceipt(order, "master", printStyle, printerMap.master ?? "")} title="Print master receipt"><Printer size={16} /> Print</button>
+                  <button className="secondary sm" onClick={() => setEmailReceiptOrder(order)} title="Email receipt"><Mail size={16} /> Email</button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+      {emailReceiptOrder && (
+        <EmailReceiptModal order={emailReceiptOrder} printStyle={printStyle} onClose={() => setEmailReceiptOrder(null)} />
+      )}
     </div>
   );
 }
@@ -3042,6 +3053,9 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
   const [emailFromAddress, setEmailFromAddress] = useState("");
   const [savingEmailConfig, setSavingEmailConfig] = useState(false);
   const [pendingEmailConfigSave, setPendingEmailConfigSave] = useState(false);
+  const [testEmailTo, setTestEmailTo] = useState("");
+  const [sendingTestEmail, setSendingTestEmail] = useState(false);
+  const [testEmailResult, setTestEmailResult] = useState("");
   const [iconVariant, setIconVariant] = useState<IconVariant>("IconDefault");
   const [savingIcon, setSavingIcon] = useState(false);
   const csvInputRef = useRef<HTMLInputElement>(null);
@@ -3181,6 +3195,20 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
     } finally {
       setSavingEmailConfig(false);
       setPendingEmailConfigSave(false);
+    }
+  };
+
+  const sendTestEmail = async () => {
+    const to = testEmailTo.trim();
+    if (!to) return;
+    setSendingTestEmail(true); setTestEmailResult("");
+    try {
+      await api.settings.testEmail(to);
+      setTestEmailResult(`Sent — check ${to}'s inbox (and spam folder).`);
+    } catch (err) {
+      setTestEmailResult(err instanceof Error ? err.message : "Test email failed to send");
+    } finally {
+      setSendingTestEmail(false);
     }
   };
 
@@ -3571,6 +3599,20 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
             {savingEmailConfig ? "Saving…" : "Save email account (PIN required)"}
           </button>
         </footer>
+
+        <div className="setting-row">
+          <div className="setting-info">
+            <strong>Send a test email</strong>
+            <p>Confirms the saved settings actually work — sends a real email right now, no order needed. Do this once after saving above.</p>
+          </div>
+          <div className="test-email-row">
+            <input type="email" value={testEmailTo} onChange={(e) => setTestEmailTo(e.target.value)} placeholder={emailFromAddress || "your@email.com"} />
+            <button type="button" className="secondary" disabled={sendingTestEmail || !testEmailTo.trim()} onClick={() => void sendTestEmail()}>
+              {sendingTestEmail ? "Sending…" : "Send test"}
+            </button>
+          </div>
+        </div>
+        {testEmailResult && <p className="settings-hint">{testEmailResult}</p>}
 
         <div className="setting-row">
           <div className="setting-info">
@@ -4701,20 +4743,73 @@ function showInAppPrintPreview(html: string): void {
 // on the admin's chosen printStyle, builds it, and either sends it straight
 // to a named server-side printer (server/routes/print.ts) or falls back to
 // the browser print flow if no printer is assigned (or the print API fails).
+// Shared by printReceipt below and EmailReceiptModal's send action, so the
+// two never drift on which layout a given printStyle setting resolves to
+// per department.
+function resolvePrintStyle(type: "kitchen" | "counter" | "master", printStyle = "thermal"): "thermal" | "a4" {
+  let resolved: "thermal" | "a4" = printStyle === "a4" ? "a4" : "thermal";
+  if (printStyle === "master_a4") resolved = type === "master" ? "a4" : "thermal";
+  if (printStyle === "dept_a4")   resolved = type !== "master" ? "a4" : "thermal";
+  return resolved;
+}
+
 async function printReceipt(order: Order, type: "kitchen" | "counter" | "master", printStyle = "thermal", printerName = "") {
   const items = type === "master" ? order.items : order.items.filter((i) => i.department === type);
   if (items.length === 0) return;
 
-  let resolved: "thermal" | "a4" = printStyle === "a4" ? "a4" : "thermal";
-  if (printStyle === "master_a4") resolved = type === "master" ? "a4" : "thermal";
-  if (printStyle === "dept_a4")   resolved = type !== "master" ? "a4" : "thermal";
-
+  const resolved = resolvePrintStyle(type, printStyle);
   const html = buildReceiptHtml(order, type, resolved);
 
   if (printerName) {
     try { await api.print(printerName, html); return; } catch { /* fall through to browser print */ }
   }
   printHtml(html);
+}
+
+// Sends the exact same styled receipt HTML used for printing (the "master"
+// customer-facing receipt) to an email address — a real client is present
+// for this manual, staff-triggered action, unlike the automated order_ready/
+// payment_received emails (see server/email/receipt.ts on the server,
+// which builds a simpler version for those since there's no browser then).
+function EmailReceiptModal({ order, printStyle, onClose }: { order: Order; printStyle: string; onClose: () => void }) {
+  const [to, setTo] = useState(order.customerEmail ?? "");
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState("");
+
+  const send = async () => {
+    const trimmed = to.trim();
+    if (!trimmed) return;
+    setSending(true); setResult("");
+    try {
+      const html = buildReceiptHtml(order, "master", resolvePrintStyle("master", printStyle));
+      await api.orders.emailReceipt(order.id, trimmed, html);
+      setResult("Sent!");
+      window.setTimeout(onClose, 1200);
+    } catch (err) {
+      setResult(err instanceof Error ? err.message : "Failed to send");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal-card panel">
+        <div className="modal-header">
+          <h2>Email receipt</h2>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close"><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          <label>Email address<input type="email" autoFocus value={to} onChange={(e) => setTo(e.target.value)} placeholder="customer@example.com" /></label>
+          {result && <p className="form-message">{result}</p>}
+          <footer className="actions">
+            <button type="button" className="secondary" onClick={onClose}>Cancel</button>
+            <button type="button" disabled={sending || !to.trim()} onClick={() => void send()}>{sending ? "Sending…" : "Send"}</button>
+          </footer>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // Sends a throwaway test ticket to confirm a configured printer actually

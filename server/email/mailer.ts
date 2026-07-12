@@ -31,7 +31,10 @@ export interface SendEmailResult {
 // Never throws — a slow or unreachable SMTP server can never block the
 // order flow that triggered a send (same posture as
 // server/whatsapp/metaClient.ts's sendTemplateMessage/sendFreeformMessage).
-export async function sendEmail(to: string, subject: string, body: string): Promise<SendEmailResult> {
+// `html`, when given, is sent alongside `body` as the plain-text
+// fallback — most email clients prefer the HTML part when both are
+// present, but a handful of plain-text-only clients still need `text`.
+export async function sendEmail(to: string, subject: string, body: string, html?: string | null): Promise<SendEmailResult> {
   const config = resolveConfig();
   if (!config.host || !config.from) {
     return { ok: false, error: "Email is not configured on this instance (set it in Settings → Email notifications, or EMAIL_SMTP_HOST/EMAIL_FROM_ADDRESS)" };
@@ -43,7 +46,7 @@ export async function sendEmail(to: string, subject: string, body: string): Prom
       secure: config.port === 465,
       auth: config.user ? { user: config.user, pass: config.pass } : undefined
     });
-    await transporter.sendMail({ from: config.from, to, subject, text: body });
+    await transporter.sendMail({ from: config.from, to, subject, text: body, html: html || undefined });
     return { ok: true, error: null };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "send failed" };
