@@ -279,6 +279,10 @@ export interface CreateOrderInput {
   // links the order to it; left blank, the order stays unlinked and
   // nothing CRM-related happens (see db.createOrder's handling).
   customerNumber?: string | null;
+  // Optional "Customer email" from checkout — independent of the CRM/
+  // WhatsApp system above (see server/email/). Left blank, no email is
+  // ever sent; providing it is the opt-in.
+  customerEmail?: string | null;
 }
 
 export interface Order {
@@ -301,6 +305,7 @@ export interface Order {
   paymentMethod: "cash" | "card";
   cashTendered: number | null;
   crmContactId: string | null;
+  customerEmail: string | null;
   items: OrderItem[];
 }
 
@@ -439,6 +444,19 @@ export interface CrmAutomationRule {
   eventName: string;
   templateName: string;
   enabled: number;
+}
+
+// Independent of the CRM/WhatsApp tables above — see server/email/.
+export interface EmailOutboxItem {
+  id: string;
+  orderId: number | null;
+  toEmail: string;
+  subject: string;
+  body: string;
+  status: OutboxStatus;
+  attempts: number;
+  createdAt: string;
+  sentAt: string | null;
 }
 
 // A contact plus enough context for the admin CRM "send message" box to

@@ -466,6 +466,10 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
   const defaultDept: Department = currentUser.department ?? "counter";
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
+  // Independent of customerPhone above — an email order-ready notification
+  // (see server/email/) is entirely separate from the WhatsApp/CRM system,
+  // never required, only sent if provided.
+  const [customerEmail, setCustomerEmail] = useState("");
   const [orderType, setOrderType] = useState<"pickup" | "delivery">("pickup");
   const [addr, setAddr] = useState<DeliveryAddress>({ street: "", area: "", buildingType: "", apartment: "" });
   const [requestedTime, setRequestedTime] = useState("");
@@ -518,6 +522,7 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
     const payload: CreateOrderInput = {
       customerName,
       customerPhone,
+      customerEmail: customerEmail.trim() || null,
       orderType,
       deliveryAddress: orderType === "delivery" ? addr : { street: "", area: "", buildingType: "", apartment: "" },
       requestedTime,
@@ -528,7 +533,7 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
     };
     try {
       const order = await api.orders.create(payload);
-      setCustomerName(""); setCustomerPhone(""); setOrderType("pickup");
+      setCustomerName(""); setCustomerPhone(""); setCustomerEmail(""); setOrderType("pickup");
       setAddr({ street: "", area: "", buildingType: "", apartment: "" }); setRequestedTime(""); setAssignedTo("");
       setItems([{ ...emptyLine, department: defaultDept }]);
       onCreated(order);
@@ -551,6 +556,9 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
       <section className="form-grid">
         <label>Customer name<input value={customerName} onChange={(e) => setCustomerName(e.target.value)} required /></label>
         <label>Phone<input value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} required /></label>
+        <label>Email <span className="settings-hint">(optional — for order-ready email updates)</span>
+          <input type="email" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} />
+        </label>
       </section>
       <div className="order-type-toggle">
         <button type="button" className={orderType === "pickup" ? "active" : "secondary"} onClick={() => setOrderType("pickup")}>Pickup</button>
@@ -695,6 +703,11 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
   // resolves-or-creates a crm_contacts row server-side; nothing here blocks
   // or slows down an ordinary cash sale.
   const [customerNumber, setCustomerNumber] = useState("");
+  // Same posture as customerNumber above, but independent of it — an
+  // email order-ready/payment-received notification (see server/email/)
+  // is entirely separate from the WhatsApp/CRM system, so this is captured
+  // on its own, not tied to whether a phone number was also given.
+  const [customerEmail, setCustomerEmail] = useState("");
   // Index of the line awaiting PIN confirmation before it's actually
   // removed — a fat-finger tap on the trash icon during a live sale
   // shouldn't be enough on its own to drop an item.
@@ -777,7 +790,7 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
 
   const removeLine = (index: number) => setCart((cur) => cur.filter((_, i) => i !== index));
 
-  const clearSale = () => { setCart([]); setDiscount(0); setBuyerName(""); setBuyerAddress(""); setPaymentMethod(null); setCashTendered(""); setCustomerNumber(""); setError(""); };
+  const clearSale = () => { setCart([]); setDiscount(0); setBuyerName(""); setBuyerAddress(""); setPaymentMethod(null); setCashTendered(""); setCustomerNumber(""); setCustomerEmail(""); setError(""); };
 
   // South African retail prices are required to be displayed VAT-inclusive
   // (Consumer Protection Act / VAT Act) — pricePerUnit is already the
@@ -823,7 +836,8 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
       discountAmount: clampedDiscount,
       paymentMethod: paymentMethod ?? "cash",
       cashTendered: paymentMethod === "cash" ? tenderedAmount : null,
-      customerNumber: customerNumber.trim() || null
+      customerNumber: customerNumber.trim() || null,
+      customerEmail: customerEmail.trim() || null
     };
     try {
       const order = await api.orders.create(payload);
@@ -942,6 +956,15 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
               phone format, since this field accepts any country's numbers. */}
           {customerNumber.trim() && customerNumber.replace(/\D/g, "").length < 7 && (
             <p className="settings-hint pos-customer-number-warning">That doesn't look like a full phone number — WhatsApp updates won't reach it as typed.</p>
+          )}
+        </div>
+
+        <div className="pos-customer-number">
+          <label>Customer email <span className="settings-hint">(optional — for order-ready email updates)</span>
+            <input type="email" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} placeholder="e.g. name@example.com" />
+          </label>
+          {customerEmail.trim() && !/\S+@\S+\.\S+/.test(customerEmail.trim()) && (
+            <p className="settings-hint pos-customer-number-warning">That doesn't look like a full email address — updates won't reach it as typed.</p>
           )}
         </div>
 
@@ -2979,6 +3002,11 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
   const [vatRegistered, setVatRegistered] = useState(false);
   const [vatNumber, setVatNumber] = useState("");
   const [businessAddress, setBusinessAddress] = useState("");
+  const [emailNotificationsEnabled, setEmailNotificationsEnabled] = useState(false);
+  const [emailOrderReadySubject, setEmailOrderReadySubject] = useState("");
+  const [emailOrderReadyBody, setEmailOrderReadyBody] = useState("");
+  const [emailPaymentReceivedSubject, setEmailPaymentReceivedSubject] = useState("");
+  const [emailPaymentReceivedBody, setEmailPaymentReceivedBody] = useState("");
   const [iconVariant, setIconVariant] = useState<IconVariant>("IconDefault");
   const [savingIcon, setSavingIcon] = useState(false);
   const csvInputRef = useRef<HTMLInputElement>(null);
@@ -3024,6 +3052,11 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
       setVatRegistered(s.vatRegistered === "true");
       setVatNumber(s.vatNumber ?? "");
       setBusinessAddress(s.businessAddress ?? "");
+      setEmailNotificationsEnabled(s.emailNotificationsEnabled === "true");
+      setEmailOrderReadySubject(s.emailOrderReadySubject ?? "");
+      setEmailOrderReadyBody(s.emailOrderReadyBody ?? "");
+      setEmailPaymentReceivedSubject(s.emailPaymentReceivedSubject ?? "");
+      setEmailPaymentReceivedBody(s.emailPaymentReceivedBody ?? "");
     }).catch(() => undefined);
     api.stock.locations.list().then(setStockLocations).catch(() => undefined);
   }, []);
@@ -3060,6 +3093,17 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
     setBusinessAddress(value);
     setReceiptBranding({ businessAddress: value });
     await api.settings.set({ businessAddress: value });
+  };
+
+  const saveEmailNotificationsEnabled = async (enabled: boolean) => {
+    setEmailNotificationsEnabled(enabled);
+    await api.settings.set({ emailNotificationsEnabled: String(enabled) });
+    setMsg(enabled ? "Email notifications enabled" : "Email notifications disabled");
+    window.setTimeout(() => setMsg(""), 2500);
+  };
+
+  const saveEmailTemplate = async (key: string, value: string) => {
+    await api.settings.set({ [key]: value });
   };
 
   const saveSiteName = async (name: string) => {
@@ -3269,7 +3313,7 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
         <div className="setting-row">
           <div className="setting-info">
             <strong>Product catalog</strong>
-            <p>Import a CSV to bulk-add or update products. Export downloads the full product list as a CSV.</p>
+            <p>Import a CSV to bulk-add or update products (columns: name, category, unitDefault, pricePerUnit, prepNotes, department, costPerUnit — cost is optional but recommended, matched by "cost"/"costPerUnit"/"costPrice"). Export downloads the full product list, cost price included, as a CSV.</p>
           </div>
           <div className="setting-actions">
             <input ref={csvInputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => void handleImport(e)} />
@@ -3404,6 +3448,47 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
             {stockLocations.map((loc) => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
           </select>
         </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Email notifications</h3>
+        <div className="setting-row">
+          <div className="setting-info">
+            <strong>Send order-ready / payment emails</strong>
+            <p>Sent automatically when a customer gives an email at checkout (POS or New Order) — independent of the WhatsApp/CRM system. Requires SMTP to be configured on the server (EMAIL_SMTP_* environment variables, including the "from" address) — see the README; without it, nothing is sent.</p>
+          </div>
+          <label className="checkbox-label">
+            <input type="checkbox" checked={emailNotificationsEnabled} onChange={(e) => void saveEmailNotificationsEnabled(e.target.checked)} />
+            Enabled
+          </label>
+        </div>
+        {emailNotificationsEnabled && (
+          <>
+            <p className="settings-hint">Placeholders: {"{{customerName}}"}, {"{{ticketNumber}}"}, {"{{amount}}"} (amount is only meaningful in the payment-received email). Leave a subject blank to skip sending that event's email.</p>
+            <div className="setting-row">
+              <div className="setting-info"><strong>Order ready — subject</strong></div>
+              <input value={emailOrderReadySubject} onChange={(e) => setEmailOrderReadySubject(e.target.value)}
+                onBlur={(e) => void saveEmailTemplate("emailOrderReadySubject", e.target.value.trim())} placeholder="Your order is ready!" />
+            </div>
+            <div className="setting-row">
+              <div className="setting-info"><strong>Order ready — body</strong></div>
+              <textarea value={emailOrderReadyBody} onChange={(e) => setEmailOrderReadyBody(e.target.value)}
+                onBlur={(e) => void saveEmailTemplate("emailOrderReadyBody", e.target.value.trim())} rows={3}
+                placeholder="Hi {{customerName}}, your order #{{ticketNumber}} is ready for collection!" />
+            </div>
+            <div className="setting-row">
+              <div className="setting-info"><strong>Payment received — subject</strong></div>
+              <input value={emailPaymentReceivedSubject} onChange={(e) => setEmailPaymentReceivedSubject(e.target.value)}
+                onBlur={(e) => void saveEmailTemplate("emailPaymentReceivedSubject", e.target.value.trim())} placeholder="Payment received" />
+            </div>
+            <div className="setting-row">
+              <div className="setting-info"><strong>Payment received — body</strong></div>
+              <textarea value={emailPaymentReceivedBody} onChange={(e) => setEmailPaymentReceivedBody(e.target.value)}
+                onBlur={(e) => void saveEmailTemplate("emailPaymentReceivedBody", e.target.value.trim())} rows={3}
+                placeholder="Hi {{customerName}}, we've received your payment of {{amount}} for order #{{ticketNumber}}. Thank you!" />
+            </div>
+          </>
+        )}
       </section>
 
       {Capacitor.isNativePlatform() && (

@@ -17,7 +17,7 @@ import type {
   StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview,
   MarginStat, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, PendingYieldItem,
   CrmContact, CrmContactInput, CrmMessage, MessageDirection, MessageType, MessageStatus,
-  WhatsappOutboxItem, CrmAutomationRule, ConsentStatus, CrmContactDetail, CrmTag
+  WhatsappOutboxItem, CrmAutomationRule, ConsentStatus, CrmContactDetail, CrmTag, EmailOutboxItem
 } from "../src/shared/types.js";
 import { generateInternalBarcode } from "../src/shared/internalBarcode.js";
 import { weightedMarginPct } from "../src/shared/margin.js";
@@ -631,7 +631,7 @@ export class KotDatabase {
 
   // Upserts products by case-insensitive name match (existing products are
   // updated in place rather than duplicated) from parsed CSV rows.
-  importProducts(rows: { name: string; category: string; unitDefault: string; pricePerUnit: string; prepNotes: string; department: string }[]): { imported: number; errors: string[] } {
+  importProducts(rows: { name: string; category: string; unitDefault: string; pricePerUnit: string; prepNotes: string; department: string; costPerUnit?: string }[], createdById: number | null): { imported: number; errors: string[] } {
     const now = new Date().toISOString();
     let imported = 0;
     const errors: string[] = [];
@@ -644,13 +644,25 @@ export class KotDatabase {
         const price = row.pricePerUnit ? parseFloat(row.pricePerUnit) : null;
         const dept = row.department === "kitchen" ? "kitchen" : "counter";
         const prepNotes = row.prepNotes?.trim() || "";
+        const cost = row.costPerUnit?.trim() ? parseFloat(row.costPerUnit) : null;
         const existing = this.db.prepare("SELECT id FROM products WHERE lower(name) = lower(?) AND isActive = 1").get(name) as { id: number } | null;
+        let productId: number;
         if (existing) {
           this.db.prepare("UPDATE products SET category=?, unitDefault=?, pricePerUnit=?, prepNotes=?, department=?, updatedAt=? WHERE id=?")
             .run(category, unitDefault, price, prepNotes, dept, now, existing.id);
+          productId = existing.id;
         } else {
-          this.db.prepare("INSERT INTO products (name, category, unitDefault, pricePerUnit, prepNotes, department, isActive, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)")
+          const result = this.db.prepare("INSERT INTO products (name, category, unitDefault, pricePerUnit, prepNotes, department, isActive, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)")
             .run(name, category, unitDefault, price, prepNotes, dept, now, now);
+          productId = Number(result.lastInsertRowid);
+        }
+        // Same dedup-by-value guard as the manual edit form's
+        // maybeUpdateCost (routes/products.ts) — only inserts a new
+        // product_cost_history row when the value actually changed, so
+        // re-importing the same CSV repeatedly doesn't grow a duplicate
+        // row per run.
+        if (cost != null && !Number.isNaN(cost) && this.getCurrentCost(productId) !== cost) {
+          this.setProductCost(productId, cost, createdById);
         }
         imported++;
       }
@@ -661,10 +673,13 @@ export class KotDatabase {
 
   exportProducts(): string {
     const products = this.db
-      .prepare("SELECT name, category, unitDefault, pricePerUnit, prepNotes, department FROM products WHERE isActive = 1 ORDER BY category, name")
-      .all() as { name: string; category: string; unitDefault: string; pricePerUnit: number | null; prepNotes: string; department: string }[];
-    const header = "name,category,unitDefault,pricePerUnit,prepNotes,department";
-    const rows = products.map((p) => [p.name, p.category, p.unitDefault, p.pricePerUnit ?? "", p.prepNotes, p.department]
+      .prepare(`
+        SELECT p.name, p.category, p.unitDefault, p.pricePerUnit, p.prepNotes, p.department,
+               (SELECT costPerUnit FROM product_cost_history WHERE productId = p.id ORDER BY effectiveFrom DESC, id DESC LIMIT 1) as costPerUnit
+        FROM products p WHERE p.isActive = 1 ORDER BY p.category, p.name`)
+      .all() as { name: string; category: string; unitDefault: string; pricePerUnit: number | null; prepNotes: string; department: string; costPerUnit: number | null }[];
+    const header = "name,category,unitDefault,pricePerUnit,prepNotes,department,costPerUnit";
+    const rows = products.map((p) => [p.name, p.category, p.unitDefault, p.pricePerUnit ?? "", p.prepNotes, p.department, p.costPerUnit ?? ""]
       .map((v) => `"${String(v).replace(/"/g, '""')}"`)
       .join(","));
     return [header, ...rows].join("\n");
@@ -691,7 +706,7 @@ export class KotDatabase {
     "products", "crm_contact_tags", "crm_messages", "whatsapp_outbox", "crm_automation_rules",
     "orders", "order_items", "weigh_in_batches", "weigh_in_lines",
     "product_cost_history", "product_yield_estimates", "pending_yield_conversions", "pending_yield_items",
-    "product_stock"
+    "product_stock", "email_outbox"
   ];
 
   private tableColumns(table: string): string[] {
@@ -816,8 +831,8 @@ export class KotDatabase {
     const crmContactId = input.customerNumber?.trim() ? this.resolveOrCreateContactByPhone(input.customerNumber.trim()).id : null;
 
     const result = this.db
-      .prepare("INSERT INTO orders (ticketNumber, customerName, customerPhone, orderType, deliveryAddress, requestedTime, assignedTo, status, kitchenStatus, counterStatus, requestedById, createdAt, updatedAt, discountAmount, paymentMethod, cashTendered, crmContactId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(ticketNumber, input.customerName.trim(), input.customerPhone.trim(), input.orderType, input.orderType === "delivery" || input.deliveryAddress?.street ? JSON.stringify(input.deliveryAddress) : "{}", input.requestedTime.trim(), input.assignedTo?.trim() || null, overallStatus, kitchenStatus, counterStatus, requestedById, now, now, discountAmount, paymentMethod, cashTendered, crmContactId);
+      .prepare("INSERT INTO orders (ticketNumber, customerName, customerPhone, orderType, deliveryAddress, requestedTime, assignedTo, status, kitchenStatus, counterStatus, requestedById, createdAt, updatedAt, discountAmount, paymentMethod, cashTendered, crmContactId, customerEmail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(ticketNumber, input.customerName.trim(), input.customerPhone.trim(), input.orderType, input.orderType === "delivery" || input.deliveryAddress?.street ? JSON.stringify(input.deliveryAddress) : "{}", input.requestedTime.trim(), input.assignedTo?.trim() || null, overallStatus, kitchenStatus, counterStatus, requestedById, now, now, discountAmount, paymentMethod, cashTendered, crmContactId, input.customerEmail?.trim() || null);
 
     const orderId = Number(result.lastInsertRowid);
     const insertItem = this.db.prepare(
@@ -878,7 +893,7 @@ export class KotDatabase {
     const base = `
       SELECT o.id, o.ticketNumber, o.customerName, o.customerPhone, o.orderType,
              o.deliveryAddress, o.requestedTime, o.assignedTo, o.status, o.kitchenStatus, o.counterStatus,
-             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, o.crmContactId, u.name as requestedByName,
+             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, o.crmContactId, o.customerEmail, u.name as requestedByName,
              oi.id as oi_id, oi.productId as oi_productId, oi.name as oi_name,
              oi.kg as oi_kg, oi.quantity as oi_quantity, oi.notes as oi_notes,
              oi.unitPrice as oi_unitPrice, oi.lineTotal as oi_lineTotal, oi.wantedPrice as oi_wantedPrice, oi.department as oi_dept, oi.costAtSale as oi_costAtSale
@@ -914,7 +929,7 @@ export class KotDatabase {
     const sql = `
       SELECT o.id, o.ticketNumber, o.customerName, o.customerPhone, o.orderType,
              o.deliveryAddress, o.requestedTime, o.assignedTo, o.status, o.kitchenStatus, o.counterStatus,
-             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, o.crmContactId, u.name as requestedByName,
+             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, o.crmContactId, o.customerEmail, u.name as requestedByName,
              oi.id as oi_id, oi.productId as oi_productId, oi.name as oi_name,
              oi.kg as oi_kg, oi.quantity as oi_quantity, oi.notes as oi_notes,
              oi.unitPrice as oi_unitPrice, oi.lineTotal as oi_lineTotal, oi.wantedPrice as oi_wantedPrice, oi.department as oi_dept, oi.costAtSale as oi_costAtSale
@@ -1286,6 +1301,7 @@ export class KotDatabase {
       if (!cols.includes("paymentMethod")) this.db.exec("ALTER TABLE orders ADD COLUMN paymentMethod TEXT NOT NULL DEFAULT 'cash'");
       if (!cols.includes("cashTendered")) this.db.exec("ALTER TABLE orders ADD COLUMN cashTendered REAL");
       if (!cols.includes("crmContactId")) this.db.exec("ALTER TABLE orders ADD COLUMN crmContactId TEXT REFERENCES crm_contacts(id)");
+      if (!cols.includes("customerEmail")) this.db.exec("ALTER TABLE orders ADD COLUMN customerEmail TEXT");
     }
 
     // Add stock-tracking columns to products if missing (existing databases)
@@ -1385,7 +1401,8 @@ export class KotDatabase {
         discountAmount REAL NOT NULL DEFAULT 0,
         paymentMethod TEXT NOT NULL DEFAULT 'cash',
         cashTendered REAL,
-        crmContactId TEXT REFERENCES crm_contacts(id)
+        crmContactId TEXT REFERENCES crm_contacts(id),
+        customerEmail TEXT
       );
 
       CREATE TABLE IF NOT EXISTS order_items (
@@ -1470,8 +1487,29 @@ export class KotDatabase {
         enabled INTEGER NOT NULL DEFAULT 1
       );
 
+      -- ── Email order notifications ────────────────────────────────────────
+      -- Deliberately independent of the CRM/WhatsApp tables above — no
+      -- consent/contact-resolution machinery, no Meta template-approval
+      -- shape. A customer opts in by giving an email at checkout; whether
+      -- it's sent at all is a single settings toggle (emailNotificationsEnabled)
+      -- with a free-text subject/body template per event (also in settings,
+      -- since there's no approval process constraining the shape the way
+      -- WhatsApp templates are). See server/email/.
+      CREATE TABLE IF NOT EXISTS email_outbox (
+        id TEXT PRIMARY KEY,
+        order_id INTEGER REFERENCES orders(id),
+        to_email TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        body TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        sent_at TEXT
+      );
+
       CREATE INDEX IF NOT EXISTS idx_crm_contacts_phone ON crm_contacts(phone_number);
       CREATE INDEX IF NOT EXISTS idx_crm_messages_contact ON crm_messages(contact_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_email_outbox_status ON email_outbox(status);
       CREATE INDEX IF NOT EXISTS idx_whatsapp_outbox_status ON whatsapp_outbox(status);
       CREATE INDEX IF NOT EXISTS idx_orders_crm_contact ON orders(crmContactId);
 
@@ -1939,6 +1977,43 @@ export class KotDatabase {
       this.db.prepare("INSERT INTO crm_automation_rules (id, event_name, template_name, enabled) VALUES (?, ?, ?, ?)").run(randomUUID(), eventName, templateName, enabled ? 1 : 0);
     }
     return this.getAutomationRule(eventName)!;
+  }
+
+  // ── Email order notifications ────────────────────────────────────────────
+  // Independent of the WhatsApp outbox above (see the email_outbox schema
+  // comment) — no contact/consent indirection, the outbox row itself is
+  // the whole record (no separate message-log table like crm_messages).
+
+  enqueueEmail(orderId: number | null, toEmail: string, subject: string, body: string): EmailOutboxItem {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.db
+      .prepare("INSERT INTO email_outbox (id, order_id, to_email, subject, body, status, attempts, created_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)")
+      .run(id, orderId, toEmail, subject, body, now);
+    return { id, orderId, toEmail, subject, body, status: "pending", attempts: 0, createdAt: now, sentAt: null };
+  }
+
+  listPendingEmails(): EmailOutboxItem[] {
+    return this.db
+      .prepare(`
+        SELECT id, order_id as orderId, to_email as toEmail, subject, body, status, attempts, created_at as createdAt, sent_at as sentAt
+        FROM email_outbox WHERE status = 'pending' ORDER BY created_at ASC`)
+      .all() as EmailOutboxItem[];
+  }
+
+  // Same shape as recordOutboxAttempt above: a transient failure
+  // (permanent=false) is left in status='pending' so the worker retries it
+  // next poll; only a permanent failure (past the retry ceiling, which the
+  // worker owns) is marked 'failed' for good.
+  recordEmailAttempt(id: string, result: "sent" | "failed", permanent = false): void {
+    const now = new Date().toISOString();
+    if (result === "sent") {
+      this.db.prepare("UPDATE email_outbox SET status = 'sent', attempts = attempts + 1, sent_at = ? WHERE id = ?").run(now, id);
+    } else if (permanent) {
+      this.db.prepare("UPDATE email_outbox SET status = 'failed', attempts = attempts + 1 WHERE id = ?").run(id);
+    } else {
+      this.db.prepare("UPDATE email_outbox SET attempts = attempts + 1 WHERE id = ?").run(id);
+    }
   }
 
   // Populates a brand-new database with a default admin login (Admin/0000

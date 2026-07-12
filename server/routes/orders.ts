@@ -6,6 +6,7 @@ import { requireAuth } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
 import type { CreateOrderInput, Order, OrderItemInput, OrderStatus, Department, DeptStatus } from "../../src/shared/types.js";
 import { triggerAutomation } from "../whatsapp/automation.js";
+import { triggerEmailNotification } from "../email/automation.js";
 
 // Fires the order_ready automation only on the transition INTO "Ready"
 // (previous status wasn't already Ready) — callers pass the status just
@@ -14,9 +15,12 @@ import { triggerAutomation } from "../whatsapp/automation.js";
 // db.updateDeptStatus/updateOrderStatus) because triggerAutomation reads
 // `db` from server/index.ts, the same module that constructs the
 // KotDatabase instance — importing it from database.ts would be circular.
+// Fires both channels off the same computed transition — email piggybacks
+// on this same check rather than a second one.
 function maybeTriggerOrderReady(previousStatus: OrderStatus, order: Order): void {
   if (order.status !== "Ready" || previousStatus === "Ready") return;
   triggerAutomation("order_ready", order.crmContactId, { args: [order.customerName || "there", order.ticketNumber] });
+  triggerEmailNotification("order_ready", order);
 }
 
 const router = Router();
@@ -58,6 +62,7 @@ router.post("/", (req: AuthRequest, res) => {
       triggerAutomation("payment_received", order.crmContactId, {
         args: [order.customerName || "there", `R${(order.items.reduce((s, i) => s + (i.lineTotal ?? 0), 0) - order.discountAmount).toFixed(2)}`, order.ticketNumber]
       });
+      triggerEmailNotification("payment_received", order);
     }
     res.status(201).json(order);
   }

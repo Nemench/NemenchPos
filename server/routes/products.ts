@@ -96,8 +96,10 @@ router.put("/:id/yield-estimates", requireAdmin, (req, res) => {
 // Bulk-creates/updates products from a CSV upload. Column order is
 // flexible — matched by header name (case-insensitive, punctuation-stripped)
 // rather than position, and a few columns accept common alias names
-// (e.g. "price" or "priceperunit").
-router.post("/import", requireAdmin, (req, res) => {
+// (e.g. "price" or "priceperunit"; "cost", "costPerUnit", or "costPrice"
+// for cost — applied via the same dedup-by-value guard as the manual edit
+// form, see importProducts).
+router.post("/import", requireAdmin, (req: AuthRequest, res) => {
   try {
     const { csv } = req.body as { csv: string };
     if (!csv) { res.status(400).json({ message: "No CSV data provided" }); return; }
@@ -131,13 +133,14 @@ router.post("/import", requireAdmin, (req, res) => {
         name: col(r, "name"),
         category: col(r, "category"),
         unitDefault: col(r, "unitdefault") || col(r, "unit"),
-        pricePerUnit: col(r, "pricerperunit") || col(r, "priceperunit") || col(r, "price"),
+        pricePerUnit: col(r, "priceperunit") || col(r, "price"),
         prepNotes: col(r, "prepnotes") || col(r, "notes"),
         department: col(r, "department") || col(r, "dept"),
+        costPerUnit: col(r, "costperunit") || col(r, "cost") || col(r, "costprice"),
       };
     });
 
-    res.json(db.importProducts(rows));
+    res.json(db.importProducts(rows, req.user!.id));
   } catch (err) {
     res.status(400).json({ message: err instanceof Error ? err.message : "Import failed" });
   }

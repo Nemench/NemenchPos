@@ -30,6 +30,7 @@ import crmRouter from "./routes/crm.js";
 import whatsappWebhookRouter from "./routes/whatsappWebhook.js";
 import { startControlPlaneSync } from "./controlPlaneSync.js";
 import { startOutboxWorker } from "./whatsapp/outboxWorker.js";
+import { startEmailOutboxWorker } from "./email/worker.js";
 
 export const db = new KotDatabase();
 db.initialize();
@@ -47,6 +48,13 @@ startControlPlaneSync();
 // the business's whatsapp_number_id are actually configured; otherwise
 // every attempt fails harmlessly and gets retried/eventually given up on.
 startOutboxWorker();
+
+// Drains email_outbox every 15s, sending via SMTP (see
+// server/email/worker.ts). Same never-block-bootstrap posture — sends
+// only happen if EMAIL_SMTP_HOST/EMAIL_FROM_ADDRESS are configured;
+// otherwise every attempt fails harmlessly and gets retried/eventually
+// given up on, same as the WhatsApp outbox.
+startEmailOutboxWorker();
 
 const isProd = process.env.NODE_ENV === "production";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

@@ -21,6 +21,18 @@ NEMENCHPOS_CONTROL_API_KEY="${NEMENCHPOS_CONTROL_API_KEY:-}"
 WHATSAPP_ACCESS_TOKEN="${WHATSAPP_ACCESS_TOKEN:-}"
 WHATSAPP_WEBHOOK_VERIFY_TOKEN="${WHATSAPP_WEBHOOK_VERIFY_TOKEN:-}"
 WHATSAPP_APP_SECRET="${WHATSAPP_APP_SECRET:-}"
+# Email order notifications via SMTP (see server/email/). All optional:
+# unset, the outbox worker just fails every send attempt harmlessly (order
+# flow itself is never affected either way). Any normal business email
+# account's SMTP details work here, or point this at a self-hosted mail
+# server if you'd rather not use a third party. EMAIL_FROM_ADDRESS is the
+# address customers see as the sender — most providers require it to match
+# (or be authorized for) EMAIL_SMTP_USER.
+EMAIL_SMTP_HOST="${EMAIL_SMTP_HOST:-}"
+EMAIL_SMTP_PORT="${EMAIL_SMTP_PORT:-587}"
+EMAIL_SMTP_USER="${EMAIL_SMTP_USER:-}"
+EMAIL_SMTP_PASS="${EMAIL_SMTP_PASS:-}"
+EMAIL_FROM_ADDRESS="${EMAIL_FROM_ADDRESS:-}"
 
 RED='\033[0;31m'; BLUE='\033[0;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info()  { echo -e "${BLUE}▶ $*${NC}"; }
@@ -160,6 +172,11 @@ Environment=NEMENCHPOS_CONTROL_API_KEY=${NEMENCHPOS_CONTROL_API_KEY:-}
 Environment=WHATSAPP_ACCESS_TOKEN=${WHATSAPP_ACCESS_TOKEN:-}
 Environment=WHATSAPP_WEBHOOK_VERIFY_TOKEN=${WHATSAPP_WEBHOOK_VERIFY_TOKEN:-}
 Environment=WHATSAPP_APP_SECRET=${WHATSAPP_APP_SECRET:-}
+Environment=EMAIL_SMTP_HOST=${EMAIL_SMTP_HOST:-}
+Environment=EMAIL_SMTP_PORT=${EMAIL_SMTP_PORT:-}
+Environment=EMAIL_SMTP_USER=${EMAIL_SMTP_USER:-}
+Environment=EMAIL_SMTP_PASS=${EMAIL_SMTP_PASS:-}
+Environment=EMAIL_FROM_ADDRESS=${EMAIL_FROM_ADDRESS:-}
 
 [Install]
 WantedBy=multi-user.target

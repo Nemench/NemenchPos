@@ -31,7 +31,8 @@ Each shop runs its own **fully self-contained, offline-first** NemenchPos instan
 - **Weigh-In** — logs raw carcass/organ intake by weight, batch by batch. Optionally records **cut-yield estimates** (e.g. how much boneless rump a side of beef is expected to yield) which land in an admin **review queue** — nothing touches actual stock until an admin approves and applies the estimate against real sub-products.
 - **Statistics** — sales, stock movement, and profit-margin dashboards (revenue vs. cost per product/category/day), computed from cost prices snapshotted at time of sale.
 - **CRM & WhatsApp automation** — an optional local customer-relationship layer (see `server/database.ts`'s `crm_*` tables and `server/whatsapp/`). POS checkout has an optional "Customer number" field (never required, never slows down a walk-in sale) that resolves or creates a contact. Order-ready and payment-received events can automatically queue a WhatsApp notification, gated on consent (`opted_in`/`opted_out`/`unknown`) and an admin-configured automation rule per event. Inbound WhatsApp messages and manual staff replies (from the admin CRM tab) are all logged to the same per-contact message history. Requires real Meta WhatsApp Cloud API credentials to actually send — see the `WHATSAPP_*` environment variables below.
-- **Settings** — branding (site name, logo, theme color), printer assignments, VAT registration, and (native Android app only) the app's launcher icon.
+- **Email order notifications** — a separate, independent notification channel (see `server/email/`) built on [Nodemailer](https://nodemailer.com/), an open-source SMTP library — not tied to the CRM/WhatsApp system above at all, no consent/contact model, just a plain optional "Customer email" field at checkout (POS or New Order). When enabled in Settings, order-ready and payment-received events send a free-text email (admin-editable subject/body, with `{{customerName}}`/`{{ticketNumber}}`/`{{amount}}` placeholders) through whatever SMTP account you configure. Requires the `EMAIL_SMTP_*` environment variables below to actually send.
+- **Settings** — branding (site name, logo, theme color), printer assignments, VAT registration, email notification templates, and (native Android app only) the app's launcher icon.
 - **Backup / Restore** — a full JSON export/import of the database, admin-only, done from the Settings screen.
 
 ---
@@ -190,6 +191,18 @@ Set these on a shop's own NemenchPos instance (already wired into `install.sh`) 
 WHATSAPP_ACCESS_TOKEN=<Meta System User token — real secret, local-only, never synced>
 WHATSAPP_WEBHOOK_VERIFY_TOKEN=<a string you choose, must match Meta's webhook config>
 WHATSAPP_APP_SECRET=<from Meta App Dashboard, for webhook signature verification>
+```
+
+### Email notification environment variables (per shop, optional)
+
+Set these to enable actually *sending* order-ready/payment-received emails (also toggled/edited in Settings → Email notifications) — without them, the outbox worker just fails every send attempt harmlessly and retries. Any normal business email account's SMTP details work, or point this at a self-hosted mail server if you'd rather not use a third party:
+
+```
+EMAIL_SMTP_HOST=<e.g. smtp.gmail.com, or your own mail server>
+EMAIL_SMTP_PORT=<usually 587 (STARTTLS) or 465 (TLS); defaults to 587>
+EMAIL_SMTP_USER=<the mailbox/account username to authenticate as>
+EMAIL_SMTP_PASS=<its password or app-specific password — real secret, local-only>
+EMAIL_FROM_ADDRESS=<the address customers see as the sender — most providers require this to match EMAIL_SMTP_USER's account/domain>
 ```
 
 ---
