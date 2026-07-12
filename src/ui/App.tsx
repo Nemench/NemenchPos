@@ -71,7 +71,8 @@ import type {
   CrmContact,
   CrmContactDetail,
   CrmMessage,
-  ConsentStatus
+  ConsentStatus,
+  EmailSubscriber
 } from "../shared/types";
 import { api, assetUrl } from "./api";
 import { useBarcodeScan } from "./useBarcodeScan";
@@ -102,8 +103,42 @@ function applyBranding(siteName: string, logoUrl: string) {
 // Plain module cache so receipt-building functions (outside the React tree) can
 // read live branding without threading it through every print call site.
 let receiptBranding = { siteName: "NemenchPos", logoUrl: "", themeColor: "", vatRegistered: false, vatNumber: "", businessAddress: "" };
+
+// Receipts/emails embed the logo as a base64 data URI rather than
+// referencing it by an absolute URL — a URL only actually resolves for
+// whoever can reach this server. That's fine for an on-screen print
+// preview on the same device/network, but never true for an emailed
+// receipt opened on a customer's own device (especially for a LAN-only
+// deployment with no public domain), so the image just silently failed to
+// load there. Fetched once whenever the logo actually changes and cached
+// here; buildReceiptHtml falls back to the plain URL only in the brief
+// window before the very first fetch completes.
+let logoDataUri: string | null = null;
+let logoDataUriFor = "";
+
+async function refreshLogoDataUri(): Promise<void> {
+  const target = receiptBranding.logoUrl || "/logo.jpg";
+  if (logoDataUriFor === target && logoDataUri) return;
+  try {
+    const res = await fetch(assetUrl(target));
+    const blob = await res.blob();
+    const dataUri = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error("Failed to read logo blob"));
+      reader.readAsDataURL(blob);
+    });
+    logoDataUri = dataUri;
+    logoDataUriFor = target;
+  } catch {
+    // Leave the previous cached value (possibly still null) in place —
+    // buildReceiptHtml's URL fallback covers this case.
+  }
+}
+
 function setReceiptBranding(patch: Partial<typeof receiptBranding>) {
   receiptBranding = { ...receiptBranding, ...patch };
+  if (patch.logoUrl !== undefined) void refreshLogoDataUri();
 }
 
 // Set while the native app's in-app print preview overlay (see printHtml)
@@ -2792,6 +2827,7 @@ function UsersPanel() {
 const CONSENT_LABEL: Record<ConsentStatus, string> = { opted_in: "Opted in", opted_out: "Opted out", unknown: "Unknown" };
 
 function CrmPanel() {
+  const [view, setView] = useState<"contacts" | "email">("contacts");
   const [contacts, setContacts] = useState<CrmContact[]>([]);
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -2805,10 +2841,20 @@ function CrmPanel() {
     api.crm.contacts(search).then(setContacts).catch(() => undefined).finally(() => setLoading(false));
   };
   useEffect(() => {
+    if (view !== "contacts") return;
     load();
     const id = setInterval(load, 15_000);
     return () => clearInterval(id);
-  }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [search, view]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const tabs = (
+    <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+      <button type="button" className={view === "contacts" ? "active" : "secondary"} onClick={() => setView("contacts")}>WhatsApp Contacts</button>
+      <button type="button" className={view === "email" ? "active" : "secondary"} onClick={() => setView("email")}>Email Marketing List</button>
+    </div>
+  );
+
+  if (view === "email") return <div className="products-layout"><div className="panel table-panel">{tabs}<EmailSubscribersPanel /></div></div>;
 
   // Only the true "no contacts exist at all" case (no active search)
   // replaces the whole panel, matching every other list panel's EmptyState
@@ -2816,12 +2862,13 @@ function CrmPanel() {
   // nothing keeps the search box visible with an inline "no matches" row,
   // same distinction those other panels make for their own filters.
   if (!loading && contacts.length === 0 && !search) {
-    return <EmptyState title="No contacts yet" detail="Captured automatically from POS checkout or inbound WhatsApp messages." />;
+    return <div className="products-layout"><div className="panel table-panel">{tabs}<EmptyState title="No contacts yet" detail="Captured automatically from POS checkout or inbound WhatsApp messages." /></div></div>;
   }
 
   return (
     <div className="products-layout">
       <div className="panel table-panel">
+        {tabs}
         <div className="crm-search">
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, phone, or tag…" />
         </div>
@@ -2842,6 +2889,107 @@ function CrmPanel() {
         </table>
       </div>
       {selectedId && <CrmContactDetailPanel contactId={selectedId} onClose={() => setSelectedId(null)} onChanged={load} />}
+    </div>
+  );
+}
+
+// Email marketing list: subscribers auto-captured from order checkouts
+// (see db.upsertEmailSubscriber), manually addable, and the target of a
+// one-off news/deals broadcast — independent of the WhatsApp contacts
+// above and of the order-notification emails in Settings.
+function EmailSubscribersPanel() {
+  const [subs, setSubs] = useState<EmailSubscriber[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [newEmail, setNewEmail] = useState("");
+  const [newName, setNewName] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendResult, setSendResult] = useState("");
+
+  const load = () => {
+    setLoading(true);
+    api.emailSubscribers.list().then(setSubs).catch(() => undefined).finally(() => setLoading(false));
+  };
+  useEffect(load, []);
+
+  const subscribedCount = subs.filter((s) => s.status === "subscribed").length;
+
+  const addSub = async () => {
+    if (!/\S+@\S+\.\S+/.test(newEmail)) return;
+    setAdding(true);
+    try { await api.emailSubscribers.add(newEmail.trim(), newName.trim()); setNewEmail(""); setNewName(""); load(); }
+    finally { setAdding(false); }
+  };
+
+  const toggleStatus = async (s: EmailSubscriber) => {
+    await api.emailSubscribers.setStatus(s.id, s.status === "subscribed" ? "unsubscribed" : "subscribed");
+    load();
+  };
+
+  const remove = async (id: string) => {
+    await api.emailSubscribers.remove(id);
+    load();
+  };
+
+  const sendCampaign = async () => {
+    if (!subject.trim() || !body.trim()) return;
+    setSending(true); setSendResult("");
+    try {
+      const result = await api.emailSubscribers.sendCampaign(subject.trim(), body.trim());
+      setSendResult(`Queued for ${result.queued} subscriber${result.queued === 1 ? "" : "s"}.`);
+      setSubject(""); setBody("");
+    } catch (err) {
+      setSendResult(err instanceof Error ? err.message : "Failed to send campaign");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="setting-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+        <strong>Send a campaign</strong>
+        <p className="settings-hint">Send a news/deals email to every subscribed address below. Each recipient gets a working unsubscribe link.</p>
+        <input placeholder="Subject" value={subject} onChange={(e) => setSubject(e.target.value)} />
+        <textarea placeholder="Message" rows={5} value={body} onChange={(e) => setBody(e.target.value)} />
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <button type="button" disabled={sending || !subject.trim() || !body.trim()} onClick={() => void sendCampaign()}>
+            {sending ? "Sending…" : `Send to ${subscribedCount} subscriber${subscribedCount === 1 ? "" : "s"}`}
+          </button>
+          {sendResult && <span className="muted">{sendResult}</span>}
+        </div>
+      </div>
+
+      <div className="setting-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 8, marginTop: 16 }}>
+        <strong>Add a subscriber</strong>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input placeholder="Name (optional)" value={newName} onChange={(e) => setNewName(e.target.value)} />
+          <input placeholder="Email address" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} />
+          <button type="button" disabled={adding || !newEmail.trim()} onClick={() => void addSub()}>Add</button>
+        </div>
+      </div>
+
+      <table style={{ marginTop: 16 }}>
+        <thead><tr><th>Name</th><th>Email</th><th>Source</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          {loading && <tr><td colSpan={5} className="muted">Loading…</td></tr>}
+          {!loading && subs.length === 0 && <tr><td colSpan={5} className="muted">No subscribers yet — captured automatically once orders start carrying an email address.</td></tr>}
+          {!loading && subs.map((s) => (
+            <tr key={s.id}>
+              <td>{s.name || <span className="muted">Unnamed</span>}</td>
+              <td>{s.email}</td>
+              <td>{s.source}</td>
+              <td><span className={`consent-badge consent-${s.status === "subscribed" ? "opted_in" : "opted_out"}`}>{s.status === "subscribed" ? "Subscribed" : "Unsubscribed"}</span></td>
+              <td style={{ display: "flex", gap: 8 }}>
+                <button type="button" className="secondary" onClick={() => void toggleStatus(s)}>{s.status === "subscribed" ? "Unsubscribe" : "Resubscribe"}</button>
+                <button type="button" className="secondary" onClick={() => void remove(s.id)}>Delete</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -3419,7 +3567,7 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
         <div className="setting-row">
           <div className="setting-info">
             <strong>Product catalog</strong>
-            <p>Import a CSV to bulk-add or update products (columns: name, category, unitDefault, pricePerUnit, prepNotes, department, costPerUnit — cost is optional but recommended, matched by "cost"/"costPerUnit"/"costPrice"). Export downloads the full product list, cost price included, as a CSV.</p>
+            <p>Import a CSV to bulk-add or update products (columns: name, category, unitDefault, pricePerUnit, prepNotes, department, costPerUnit. Sell price is also matched by "price"/"sellPrice"/"sellingPrice"/"unitPrice"/"retailPrice"; cost is optional but recommended, matched by "cost"/"costPerUnit"/"costPrice"). Export downloads the full product list, cost price included, as a CSV.</p>
           </div>
           <div className="setting-actions">
             <input ref={csvInputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => void handleImport(e)} />
@@ -4345,13 +4493,17 @@ function MarginSummaryCard({ current, previous }: { current: number; previous: n
 // functions are called from many places outside the component tree.
 
 // Builds a per-department or master order receipt, in either thermal
-// (80mm, for receipt printers) or A4 (full-page) layout.
-function buildReceiptHtml(order: Order, type: "kitchen" | "counter" | "master", style: "thermal" | "a4"): string {
+// (80mm, for receipt printers) or A4 (full-page) layout. `forEmail`
+// narrows the layout to a fixed max-width (email clients have no concept
+// of "A4 page", so the unconstrained A4 body would otherwise render as
+// full-viewport-wide in a reading pane) — only ever passed by
+// EmailReceiptModal, never by the print path.
+function buildReceiptHtml(order: Order, type: "kitchen" | "counter" | "master", style: "thermal" | "a4", forEmail = false): string {
   const items = type === "master" ? order.items : order.items.filter((i) => i.department === type);
   const d = new Date(order.createdAt);
   const dateStr = d.toLocaleDateString(appSettings.locale);
   const timeStr = d.toLocaleTimeString(appSettings.locale, { hour: "2-digit", minute: "2-digit" });
-  const logoUrl = assetUrl(receiptBranding.logoUrl || "/logo.jpg");
+  const logoUrl = logoDataUri ?? assetUrl(receiptBranding.logoUrl || "/logo.jpg");
   const siteName = esc(receiptBranding.siteName || "NemenchPos");
   const { blue, blueDark } = deriveShades(/^#[0-9a-f]{6}$/i.test(receiptBranding.themeColor) ? receiptBranding.themeColor : "#1a47a0");
 
@@ -4378,7 +4530,7 @@ function buildReceiptHtml(order: Order, type: "kitchen" | "counter" | "master", 
   // elsewhere" for reconciliation purposes.
   const paymentLine = isReceipt
     ? order.paymentMethod === "cash"
-      ? `Paid: Cash — Tendered ${currency.format(order.cashTendered ?? totalDue)}, Change ${currency.format(Math.max(0, (order.cashTendered ?? totalDue) - totalDue))}`
+      ? `Paid: Cash - Tendered ${currency.format(order.cashTendered ?? totalDue)}, Change ${currency.format(Math.max(0, (order.cashTendered ?? totalDue) - totalDue))}`
       : "Paid: Card"
     : "";
 
@@ -4416,10 +4568,12 @@ th{color:#fff;padding:8px 12px;text-align:left;font-size:11px;font-weight:600;te
 td{padding:9px 12px;border-bottom:1px solid #e8eef7;font-size:13px;vertical-align:top}
 tr:nth-child(even) td{background:#f8f9fc}tr:last-child td{border-bottom:none}
 .note{font-size:11px;color:#666;margin-top:2px}
-.totals{margin-left:auto;width:280px;margin-top:4px}
-.totals-row{display:flex;justify-content:space-between;padding:4px 0;font-size:13px;color:#444}
-.totals-row.grand{font-size:17px;font-weight:800;color:#1a1a2e;border-top:2px solid ${blueDark};padding-top:8px;margin-top:4px}
+.totals{margin-left:auto;width:280px;margin-top:4px;border-collapse:collapse}
+.totals td{padding:4px 0;font-size:13px;color:#444;border:none}
+.totals td:last-child{text-align:right}
+.totals .grand td{font-size:17px;font-weight:800;color:#1a1a2e;border-top:2px solid ${blueDark};padding-top:8px}
 .footer{margin-top:40px;text-align:center;color:#888;font-size:12px;border-top:1px solid #e0e6f0;padding-top:12px}
+${forEmail ? "body{max-width:480px;padding:16px;margin:0 auto}" : ""}
 </style></head><body>
 <div class="hdr">
   <div class="hdr-left">
@@ -4444,14 +4598,14 @@ ${order.customerName ? `<div class="cbox">
 </div>` : ""}
 <table><thead><tr><th>Item</th><th>Kg</th><th>Qty</th>${isReceipt ? "<th>Price</th>" : ""}</tr></thead>
 <tbody>${rows}</tbody></table>
-${isReceipt ? `<div class="totals">
-  <div class="totals-row"><span>Subtotal</span><span>${currency.format(subtotal)}</span></div>
-  ${discountAmount > 0 ? `<div class="totals-row"><span>Discount</span><span>-${currency.format(discountAmount)}</span></div>` : ""}
-  ${receiptBranding.vatRegistered ? `<div class="totals-row"><span>VAT incl. (15%)</span><span>${currency.format(vatAmount)}</span></div>` : ""}
-  <div class="totals-row grand"><span>Total</span><span>${currency.format(totalDue)}</span></div>
-  ${paymentLine ? `<div class="totals-row"><span>${esc(paymentLine)}</span><span></span></div>` : ""}
-</div>` : ""}
-<div class="footer">Thank you for your order — ${siteName}</div>
+${isReceipt ? `<table class="totals"><tbody>
+  <tr><td>Subtotal</td><td>${currency.format(subtotal)}</td></tr>
+  ${discountAmount > 0 ? `<tr><td>Discount</td><td>-${currency.format(discountAmount)}</td></tr>` : ""}
+  ${receiptBranding.vatRegistered ? `<tr><td>VAT incl. (15%)</td><td>${currency.format(vatAmount)}</td></tr>` : ""}
+  <tr class="grand"><td>Total</td><td>${currency.format(totalDue)}</td></tr>
+  ${paymentLine ? `<tr><td colspan="2">${esc(paymentLine)}</td></tr>` : ""}
+</tbody></table>` : ""}
+<div class="footer">Thank you for your order - ${siteName}</div>
 </body></html>`;
   }
 
@@ -4459,7 +4613,7 @@ ${isReceipt ? `<div class="totals">
   const rows = items.map((i) => {
     const qty = [i.kg ? `${i.kg} kg` : i.wantedPrice ? `${currency.format(i.wantedPrice)} (to weigh)` : "", i.quantity ? `×${i.quantity}` : ""].filter(Boolean).join("  ");
     const priceLine = isReceipt && i.lineTotal != null ? `<div class="iprice">${currency.format(i.lineTotal)}</div>` : "";
-    return `<div class="item"><div class="iname">${esc(i.name)}</div><div class="isub">${esc(qty)}${i.notes ? `  — ${esc(i.notes)}` : ""}</div>${priceLine}</div>`;
+    return `<div class="item"><div class="iname">${esc(i.name)}</div><div class="isub">${esc(qty)}${i.notes ? `  - ${esc(i.notes)}` : ""}</div>${priceLine}</div>`;
   }).join("");
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(label)} — ${esc(order.ticketNumber)}</title><style>
@@ -4477,9 +4631,12 @@ body{font-family:'Courier New',Courier,monospace;font-size:12px;width:72mm;paddi
 .by{font-size:10px;color:#666;margin-top:2px}
 .item{margin:5px 0}.iname{font-weight:bold}.isub{color:#444;font-size:11px;margin-top:1px}
 .iprice{text-align:right;font-weight:bold;font-size:12px;margin-top:1px}
-.totals-row{display:flex;justify-content:space-between;font-size:12px;margin:2px 0}
-.totals-row.grand{font-size:15px;font-weight:bold;border-top:1px solid #000;padding-top:4px;margin-top:4px}
+.totals{width:100%;border-collapse:collapse;margin:2px 0}
+.totals td{font-size:12px;padding:1px 0}
+.totals td:last-child{text-align:right}
+.totals .grand td{font-size:15px;font-weight:bold;border-top:1px solid #000;padding-top:4px}
 .footer{font-size:11px;color:#555}
+${forEmail ? "body{max-width:380px;padding:16px;margin:0 auto}" : ""}
 </style></head><body>
 <div class="center">
   <img class="logo" src="${logoUrl}" alt="${siteName}">
@@ -4506,10 +4663,12 @@ ${order.customerName ? `<div class="cust">
 ${rows}
 <hr class="sep">
 ${isReceipt ? `
-<div class="totals-row"><span>Subtotal</span><span>${currency.format(subtotal)}</span></div>
-${discountAmount > 0 ? `<div class="totals-row"><span>Discount</span><span>-${currency.format(discountAmount)}</span></div>` : ""}
-${receiptBranding.vatRegistered ? `<div class="totals-row"><span>VAT incl. (15%)</span><span>${currency.format(vatAmount)}</span></div>` : ""}
-<div class="totals-row grand"><span>Total</span><span>${currency.format(totalDue)}</span></div>
+<table class="totals"><tbody>
+<tr><td>Subtotal</td><td>${currency.format(subtotal)}</td></tr>
+${discountAmount > 0 ? `<tr><td>Discount</td><td>-${currency.format(discountAmount)}</td></tr>` : ""}
+${receiptBranding.vatRegistered ? `<tr><td>VAT incl. (15%)</td><td>${currency.format(vatAmount)}</td></tr>` : ""}
+<tr class="grand"><td>Total</td><td>${currency.format(totalDue)}</td></tr>
+</tbody></table>
 ${paymentLine ? `<div class="center" style="font-size:11px;margin-top:4px">${esc(paymentLine)}</div>` : ""}
 <hr class="sep">` : ""}
 <div class="center footer">Thank you for your order</div>
@@ -4532,7 +4691,7 @@ function esc(s: string): string {
 // distinguishable from a real one.
 function buildWeighInSummaryHtml(dateIso: string, lines: WeighInLine[], products: Product[], heading = "WEIGH-IN SUMMARY"): string {
   const siteName = esc(receiptBranding.siteName || "NemenchPos");
-  const logoUrl = assetUrl(receiptBranding.logoUrl || "/logo.jpg");
+  const logoUrl = logoDataUri ?? assetUrl(receiptBranding.logoUrl || "/logo.jpg");
   const { blue, blueDark } = deriveShades(/^#[0-9a-f]{6}$/i.test(receiptBranding.themeColor) ? receiptBranding.themeColor : "#1a47a0");
   const d = new Date(dateIso);
   const dateStr = d.toLocaleString(appSettings.locale, { dateStyle: "medium", timeStyle: "short" });
@@ -4781,7 +4940,7 @@ function EmailReceiptModal({ order, printStyle, onClose }: { order: Order; print
     if (!trimmed) return;
     setSending(true); setResult("");
     try {
-      const html = buildReceiptHtml(order, "master", resolvePrintStyle("master", printStyle));
+      const html = buildReceiptHtml(order, "master", resolvePrintStyle("master", printStyle), true);
       await api.orders.emailReceipt(order.id, trimmed, html);
       setResult("Sent!");
       window.setTimeout(onClose, 1200);

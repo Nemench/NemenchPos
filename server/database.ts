@@ -17,7 +17,7 @@ import type {
   StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview,
   MarginStat, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, PendingYieldItem,
   CrmContact, CrmContactInput, CrmMessage, MessageDirection, MessageType, MessageStatus,
-  WhatsappOutboxItem, CrmAutomationRule, ConsentStatus, CrmContactDetail, CrmTag, EmailOutboxItem
+  WhatsappOutboxItem, CrmAutomationRule, ConsentStatus, CrmContactDetail, CrmTag, EmailOutboxItem, EmailSubscriber
 } from "../src/shared/types.js";
 import { generateInternalBarcode } from "../src/shared/internalBarcode.js";
 import { weightedMarginPct } from "../src/shared/margin.js";
@@ -706,7 +706,7 @@ export class KotDatabase {
     "products", "crm_contact_tags", "crm_messages", "whatsapp_outbox", "crm_automation_rules",
     "orders", "order_items", "weigh_in_batches", "weigh_in_lines",
     "product_cost_history", "product_yield_estimates", "pending_yield_conversions", "pending_yield_items",
-    "product_stock", "email_outbox"
+    "product_stock", "email_outbox", "email_subscribers"
   ];
 
   private tableColumns(table: string): string[] {
@@ -1516,11 +1516,30 @@ export class KotDatabase {
         sent_at TEXT
       );
 
+      -- ── Email marketing list ────────────────────────────────────────────
+      -- Every distinct customerEmail seen at checkout is auto-captured here
+      -- (name + email, status defaulting to 'subscribed') so admins can send
+      -- one-off news/deals campaigns without re-typing a mailing list by
+      -- hand. Independent of email_outbox above (order receipts) and
+      -- crm_contacts (phone/WhatsApp) — this is purely a name+email list,
+      -- consulted only when composing a campaign (see server/email/campaign.ts).
+      CREATE TABLE IF NOT EXISTS email_subscribers (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        status TEXT NOT NULL DEFAULT 'subscribed',
+        unsubscribe_token TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'order',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_crm_contacts_phone ON crm_contacts(phone_number);
       CREATE INDEX IF NOT EXISTS idx_crm_messages_contact ON crm_messages(contact_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_email_outbox_status ON email_outbox(status);
       CREATE INDEX IF NOT EXISTS idx_whatsapp_outbox_status ON whatsapp_outbox(status);
       CREATE INDEX IF NOT EXISTS idx_orders_crm_contact ON orders(crmContactId);
+      CREATE INDEX IF NOT EXISTS idx_email_subscribers_status ON email_subscribers(status);
 
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
@@ -2023,6 +2042,91 @@ export class KotDatabase {
     } else {
       this.db.prepare("UPDATE email_outbox SET attempts = attempts + 1 WHERE id = ?").run(id);
     }
+  }
+
+  // ── Email marketing list ─────────────────────────────────────────────────
+
+  // Called once per order that carries a customerEmail (see
+  // server/routes/orders.ts) — a no-op re-insert on repeat orders from the
+  // same address, except it refreshes the name if the order supplied one
+  // and the subscriber didn't previously have one (walk-in orders often
+  // capture email without a name on later visits, or vice versa). Never
+  // resurrects a subscriber who explicitly unsubscribed.
+  upsertEmailSubscriber(email: string, name: string | null, source = "order"): void {
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail) return;
+    const now = new Date().toISOString();
+    const existing = this.db.prepare("SELECT id, name, status FROM email_subscribers WHERE email = ? COLLATE NOCASE").get(trimmedEmail) as { id: string; name: string | null; status: string } | null;
+    if (existing) {
+      if (!existing.name && name?.trim()) {
+        this.db.prepare("UPDATE email_subscribers SET name = ?, updated_at = ? WHERE id = ?").run(name.trim(), now, existing.id);
+      }
+      return;
+    }
+    this.db
+      .prepare("INSERT INTO email_subscribers (id, name, email, status, unsubscribe_token, source, created_at, updated_at) VALUES (?, ?, ?, 'subscribed', ?, ?, ?, ?)")
+      .run(randomUUID(), name?.trim() || null, trimmedEmail, randomUUID(), source, now, now);
+  }
+
+  listEmailSubscribers(): EmailSubscriber[] {
+    return this.db
+      .prepare("SELECT id, name, email, status, source, created_at as createdAt, updated_at as updatedAt FROM email_subscribers ORDER BY created_at DESC")
+      .all() as EmailSubscriber[];
+  }
+
+  // Unlike upsertEmailSubscriber (auto-capture from orders, which never
+  // resurrects an unsubscribe), an admin manually adding an address here is
+  // an explicit action — re-subscribes it if it previously opted out.
+  addEmailSubscriber(email: string, name: string | null): EmailSubscriber {
+    const trimmedEmail = email.trim();
+    const now = new Date().toISOString();
+    const existing = this.db.prepare("SELECT id FROM email_subscribers WHERE email = ? COLLATE NOCASE").get(trimmedEmail) as { id: string } | null;
+    if (existing) {
+      this.db.prepare("UPDATE email_subscribers SET status = 'subscribed', name = COALESCE(NULLIF(?, ''), name), updated_at = ? WHERE id = ?").run(name?.trim() || "", now, existing.id);
+    } else {
+      this.db
+        .prepare("INSERT INTO email_subscribers (id, name, email, status, unsubscribe_token, source, created_at, updated_at) VALUES (?, ?, ?, 'subscribed', ?, 'manual', ?, ?)")
+        .run(randomUUID(), name?.trim() || null, trimmedEmail, randomUUID(), now, now);
+    }
+    return this.db.prepare("SELECT id, name, email, status, source, created_at as createdAt, updated_at as updatedAt FROM email_subscribers WHERE email = ? COLLATE NOCASE").get(trimmedEmail) as EmailSubscriber;
+  }
+
+  setEmailSubscriberStatus(id: string, status: "subscribed" | "unsubscribed"): EmailSubscriber {
+    const now = new Date().toISOString();
+    this.db.prepare("UPDATE email_subscribers SET status = ?, updated_at = ? WHERE id = ?").run(status, now, id);
+    const row = this.db.prepare("SELECT id, name, email, status, source, created_at as createdAt, updated_at as updatedAt FROM email_subscribers WHERE id = ?").get(id) as EmailSubscriber | undefined;
+    if (!row) throw new Error("Subscriber not found");
+    return row;
+  }
+
+  // Token lookup for the public, no-auth unsubscribe link embedded in
+  // campaign emails — deliberately not the subscriber's id (would let
+  // anyone unsubscribe anyone by guessing/incrementing ids).
+  unsubscribeByToken(token: string): boolean {
+    const row = this.db.prepare("SELECT id FROM email_subscribers WHERE unsubscribe_token = ?").get(token) as { id: string } | null;
+    if (!row) return false;
+    this.db.prepare("UPDATE email_subscribers SET status = 'unsubscribed', updated_at = ? WHERE id = ?").run(new Date().toISOString(), row.id);
+    return true;
+  }
+
+  getEmailSubscriberToken(id: string): string | null {
+    const row = this.db.prepare("SELECT unsubscribe_token as token FROM email_subscribers WHERE id = ?").get(id) as { token: string } | null;
+    return row?.token ?? null;
+  }
+
+  deleteEmailSubscriber(id: string): void {
+    this.db.prepare("DELETE FROM email_subscribers WHERE id = ?").run(id);
+  }
+
+  // Every currently-subscribed address, for the "send campaign" broadcast —
+  // queues one email_outbox row per recipient (order_id null, this isn't
+  // tied to any single order) with the unsubscribe link already baked into
+  // htmlBody by the caller (server/email/campaign.ts), same fire-and-forget
+  // posture as order-notification emails: the worker owns retries.
+  listSubscribedEmails(): EmailSubscriber[] {
+    return this.db
+      .prepare("SELECT id, name, email, status, source, created_at as createdAt, updated_at as updatedAt FROM email_subscribers WHERE status = 'subscribed'")
+      .all() as EmailSubscriber[];
   }
 
   // Populates a brand-new database with a default admin login (Admin/0000

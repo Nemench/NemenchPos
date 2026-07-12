@@ -1,7 +1,7 @@
 // Thin typed wrapper around the backend REST API. Every call goes through
 // req()/download(), which attach the JWT and centrally handle a 401 (token
 // missing/expired) by clearing it and forcing a reload back to the login screen.
-import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput, StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, CrmContact, CrmContactInput, CrmContactDetail, CrmTag, CrmMessage, CrmAutomationRule, ConsentStatus } from "../shared/types";
+import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput, StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, CrmContact, CrmContactInput, CrmContactDetail, CrmTag, CrmMessage, CrmAutomationRule, ConsentStatus, EmailSubscriber } from "../shared/types";
 import { tokenStorage } from "./tokenStorage";
 
 // The native Android app now live-loads its own server's page directly
@@ -168,5 +168,12 @@ export const api = {
       req<CrmAutomationRule>("PUT", `/crm/automation-rules/${eventName}`, { templateName, enabled }),
     send: (id: string, data: { freeformBody?: string; templateName?: string; templateParams?: unknown[] }) =>
       req<CrmMessage>("POST", `/crm/contacts/${id}/send`, data)
+  },
+  emailSubscribers: {
+    list: () => req<EmailSubscriber[]>("GET", "/email-subscribers"),
+    add: (email: string, name: string) => req<EmailSubscriber>("POST", "/email-subscribers", { email, name }),
+    setStatus: (id: string, status: "subscribed" | "unsubscribed") => req<EmailSubscriber>("PATCH", `/email-subscribers/${id}`, { status }),
+    remove: (id: string) => req<{ success: boolean }>("DELETE", `/email-subscribers/${id}`),
+    sendCampaign: (subject: string, body: string) => req<{ queued: number }>("POST", "/email-subscribers/send-campaign", { subject, body })
   }
 };

@@ -59,6 +59,12 @@ router.post("/", (req: AuthRequest, res) => {
   }
   try {
     const order = db.createOrder(req.body as CreateOrderInput, req.user!.id);
+    // Auto-captures every order email into the marketing list (see
+    // server/email/campaign.ts) — deliberately not opt-in gated the way
+    // WhatsApp consent is, since this is a free-text email address the
+    // customer typed in themselves, not a phone number resolved through
+    // Meta's messaging channel.
+    if (order.customerEmail) db.upsertEmailSubscriber(order.customerEmail, order.customerName);
     // "payment_received" only has a real trigger point for completeImmediately
     // (POS) sales — those are the only orders paid for at creation time in
     // this codebase; regular KOT tickets aren't paid until much later, if

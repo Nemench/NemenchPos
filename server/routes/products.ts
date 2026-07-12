@@ -94,11 +94,12 @@ router.put("/:id/yield-estimates", requireAdmin, (req, res) => {
 });
 
 // Bulk-creates/updates products from a CSV upload. Column order is
-// flexible — matched by header name (case-insensitive, punctuation-stripped)
+// flexible - matched by header name (case-insensitive, punctuation-stripped)
 // rather than position, and a few columns accept common alias names
-// (e.g. "price" or "priceperunit"; "cost", "costPerUnit", or "costPrice"
-// for cost — applied via the same dedup-by-value guard as the manual edit
-// form, see importProducts).
+// (sell price: "price", "pricePerUnit", "sellPrice", "sellingPrice",
+// "unitPrice", "retailPrice"; cost: "cost", "costPerUnit", "costPrice" -
+// applied via the same dedup-by-value guard as the manual edit form, see
+// importProducts).
 router.post("/import", requireAdmin, (req: AuthRequest, res) => {
   try {
     const { csv } = req.body as { csv: string };
@@ -133,7 +134,7 @@ router.post("/import", requireAdmin, (req: AuthRequest, res) => {
         name: col(r, "name"),
         category: col(r, "category"),
         unitDefault: col(r, "unitdefault") || col(r, "unit"),
-        pricePerUnit: col(r, "priceperunit") || col(r, "price"),
+        pricePerUnit: col(r, "priceperunit") || col(r, "price") || col(r, "sellprice") || col(r, "sellingprice") || col(r, "unitprice") || col(r, "retailprice"),
         prepNotes: col(r, "prepnotes") || col(r, "notes"),
         department: col(r, "department") || col(r, "dept"),
         costPerUnit: col(r, "costperunit") || col(r, "cost") || col(r, "costprice"),

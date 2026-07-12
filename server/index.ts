@@ -28,6 +28,8 @@ import weighInRouter from "./routes/weighIn.js";
 import statisticsRouter from "./routes/statistics.js";
 import crmRouter from "./routes/crm.js";
 import whatsappWebhookRouter from "./routes/whatsappWebhook.js";
+import emailSubscribersRouter from "./routes/emailSubscribers.js";
+import emailUnsubscribeRouter from "./routes/emailUnsubscribe.js";
 import { startControlPlaneSync } from "./controlPlaneSync.js";
 import { startOutboxWorker } from "./whatsapp/outboxWorker.js";
 import { startEmailOutboxWorker } from "./email/worker.js";
@@ -156,6 +158,14 @@ app.use("/api/crm", crmRouter);
 // like a normal client (see server/routes/whatsappWebhook.ts's top comment
 // re: signature verification not yet implemented).
 app.use("/api/whatsapp", whatsappWebhookRouter);
+app.use("/api/email-subscribers", emailSubscribersRouter);
+// Public — no requireAuth — clicked from a recipient's mail client, which
+// can't send a session cookie (see server/routes/emailUnsubscribe.ts).
+// A separate top-level path, not nested under /api/email-subscribers:
+// that router applies requireAuth to every request under its prefix via
+// router.use(), before any route-level matching happens, so nesting here
+// would block this public link before it ever reached the handler.
+app.use("/api/unsubscribe", emailUnsubscribeRouter);
 
 if (isProd) {
   // Serve the Vite-built SPA and fall back to index.html for any

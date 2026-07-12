@@ -460,6 +460,20 @@ export interface EmailOutboxItem {
   sentAt: string | null;
 }
 
+// Auto-captured from orders' customerName/customerEmail at checkout (see
+// KotDatabase.upsertEmailSubscriber) so admins have a ready-made mailing
+// list for news/deals campaigns without re-typing it by hand. Independent
+// of EmailOutboxItem (order receipts) and CrmContact (phone/WhatsApp).
+export interface EmailSubscriber {
+  id: string;
+  name: string | null;
+  email: string;
+  status: "subscribed" | "unsubscribed";
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // A contact plus enough context for the admin CRM "send message" box to
 // decide what it's allowed to show — computed server-side (see GET
 // /api/crm/contacts/:id) rather than the client re-deriving the 24h
