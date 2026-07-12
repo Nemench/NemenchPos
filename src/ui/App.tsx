@@ -75,7 +75,8 @@ import type {
   ConsentStatus,
   EmailSubscriber,
   LabelFormat,
-  LabelData
+  LabelData,
+  DiscoveredPrinter
 } from "../shared/types";
 import { api, assetUrl } from "./api";
 import { useBarcodeScan } from "./useBarcodeScan";
@@ -340,6 +341,23 @@ function LicenseStatusBanner() {
   );
 }
 
+// Bridge so plain functions living outside the component tree (printReceipt,
+// printTestPage — called from many places: TicketCard, HistoryView, Queue,
+// Settings, none of which have MainApp's own notify() in scope) can still
+// surface a toast. MainApp registers the real setter on mount; before that
+// (or if MainApp never mounted) this is just a no-op, same graceful-no-op
+// posture as every other "optional dependency not wired up yet" spot in
+// this app. This is specifically what was missing before: printReceipt and
+// printTestPage used to catch a failed server-side print and silently fall
+// back to the browser print dialog with zero indication anything went
+// wrong — so a broken/misconfigured named printer looked exactly like a
+// working one from the staff member's side, they'd just quietly get a
+// browser print dialog instead of paper coming out of the till printer.
+let globalToast: ((text: string, tone: "info" | "error") => void) | null = null;
+function showToast(text: string, tone: "info" | "error" = "info") {
+  globalToast?.(text, tone);
+}
+
 // ── Main app ──────────────────────────────────────────────────────────────────
 
 // The logged-in shell: sidebar nav (gated per role) + whichever panel the
@@ -354,6 +372,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
   const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
   const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState<"info" | "error">("info");
   const [autoPrint, setAutoPrint] = useState(false);
   const [printStyle, setPrintStyle] = useState("thermal");
   const [printerMap, setPrinterMap] = useState({ kitchen: "", counter: "", master: "" });
@@ -399,10 +418,19 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
     return () => clearInterval(id);
   }, []);
 
-  const notify = (text: string) => {
+  const notify = (text: string, tone: "info" | "error" = "info") => {
     setMessage(text);
-    window.setTimeout(() => setMessage(""), 2500);
+    setMessageTone(tone);
+    window.setTimeout(() => setMessage(""), tone === "error" ? 6000 : 2500);
   };
+
+  // Registers the module-level bridge (see globalToast/showToast above the
+  // component) so printReceipt/printTestPage — plain functions with no
+  // access to this component's own notify — can still show a toast.
+  useEffect(() => {
+    globalToast = notify;
+    return () => { globalToast = null; };
+  }, []);
 
   // Confirmed because an accidental tap (easy on the compact mobile/app nav)
   // would otherwise drop the user straight back to the login screen mid-task.
@@ -492,7 +520,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
           </button>
         </header>
 
-        {message && <div className="toast">{message}</div>}
+        {message && <div className={`toast${messageTone === "error" ? " toast-error" : ""}`}>{message}</div>}
 
         {/* Admin-only, and hidden on POS/Queue even for an admin using those
             tabs themselves — this is informational for the business owner,
@@ -3752,7 +3780,7 @@ const EMAIL_PROVIDER_PRESETS: Record<string, { host: string; port: string; help:
 // full-database backup/restore.
 function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleChange, printerMap, onPrinterMapChange, branding, onBrandingChange }: { autoPrint: boolean; onAutoPrintChange: (v: boolean) => void; printStyle: string; onPrintStyleChange: (v: string) => void; printerMap: Record<string, string>; onPrinterMapChange: (v: { kitchen: string; counter: string; master: string }) => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void }) {
   const [msg, setMsg] = useState("");
-  const [availablePrinters, setAvailablePrinters] = useState<string[]>([]);
+  const [availablePrinters, setAvailablePrinters] = useState<DiscoveredPrinter[]>([]);
   const [loadingPrinters, setLoadingPrinters] = useState(false);
   const [importing, setImporting] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -4112,27 +4140,36 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
             Hit <b>Test</b> to send a test page and confirm it works.
           </p>
           <datalist id="printer-list">
-            {availablePrinters.map((p) => <option key={p} value={p} />)}
+            {availablePrinters.map((p) => <option key={p.name} value={p.name}>{p.ready ? p.name : `${p.name} (not set up yet)`}</option>)}
           </datalist>
           <div className="printer-assignments">
-            {([ ["Kitchen printer", "kitchenPrinter", "kitchen"], ["Counter printer", "counterPrinter", "counter"], ["Master / cashier printer", "masterPrinter", "master"] ] as [string, string, string][]).map(([label, key, mapKey]) => (
-              <div className="printer-row" key={key}>
-                <span className="printer-row-label">{label}</span>
-                <div className="printer-row-inputs">
-                  <input
-                    type="text"
-                    list="printer-list"
-                    placeholder="— Browser dialog —"
-                    value={printerMap[mapKey] ?? ""}
-                    onChange={(e) => void changePrinter(key, e.target.value)}
-                    onBlur={(e) => void changePrinter(key, e.target.value)}
-                  />
-                  <button type="button" className="secondary sm" onClick={() => void printTestPage(printerMap[mapKey] ?? "")}>
-                    Test
-                  </button>
+            {([ ["Kitchen printer", "kitchenPrinter", "kitchen"], ["Counter printer", "counterPrinter", "counter"], ["Master / cashier printer", "masterPrinter", "master"] ] as [string, string, string][]).map(([label, key, mapKey]) => {
+              const assigned = printerMap[mapKey] ?? "";
+              const match = availablePrinters.find((p) => p.name === assigned);
+              return (
+                <div className="printer-row" key={key}>
+                  <span className="printer-row-label">{label}</span>
+                  <div className="printer-row-inputs">
+                    <input
+                      type="text"
+                      list="printer-list"
+                      placeholder="— Browser dialog —"
+                      value={assigned}
+                      onChange={(e) => void changePrinter(key, e.target.value)}
+                      onBlur={(e) => void changePrinter(key, e.target.value)}
+                    />
+                    <button type="button" className="secondary sm" onClick={() => void printTestPage(assigned)}>
+                      Test
+                    </button>
+                  </div>
+                  {match && !match.ready && (
+                    <p className="form-error">
+                      "{match.name}" was only found on the network (mDNS), not yet set up in CUPS — printing to it will fail until it's added as a real print queue (see the commands below).
+                    </p>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           {availablePrinters.length === 0 && !loadingPrinters && (
             <div className="printer-help">
@@ -5730,7 +5767,15 @@ async function printReceipt(order: Order, type: "kitchen" | "counter" | "master"
   const html = buildReceiptHtml(order, type, resolved);
 
   if (printerName) {
-    try { await api.print(printerName, html); return; } catch { /* fall through to browser print */ }
+    try { await api.print(printerName, html); return; }
+    catch (err) {
+      // Falls back to the browser print dialog so the ticket still gets
+      // produced somehow, but staff need to actually know the named
+      // printer failed — silently substituting a browser dialog for what's
+      // supposed to be a direct-to-till-printer job is exactly how this
+      // used to go unnoticed (see globalToast's comment above MainApp).
+      showToast(`Couldn't print to "${printerName}" (${err instanceof Error ? err.message : "unknown error"}) — opening browser print instead.`, "error");
+    }
   }
   printHtml(html);
 }
@@ -5804,7 +5849,19 @@ hr{border:none;border-top:1px dashed #999;margin:6px 0}
 </body></html>`;
 
   if (printerName) {
-    try { await api.print(printerName, html); return; } catch { /* fall through to browser */ }
+    try {
+      await api.print(printerName, html);
+      showToast(`Test page sent to "${printerName}".`, "info");
+      return;
+    } catch (err) {
+      // The whole point of this button is confirming whether the named
+      // printer actually works — silently falling back to a browser
+      // dialog here would make a genuinely broken printer look identical
+      // to a working one (the browser dialog opens either way), which is
+      // exactly the trap that led to this fix in the first place.
+      showToast(`Test print to "${printerName}" failed: ${err instanceof Error ? err.message : "unknown error"}`, "error");
+      return;
+    }
   }
   printHtml(html);
 }

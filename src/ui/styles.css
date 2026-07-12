@@ -298,6 +298,11 @@ h2 { font-size: 17px; color: var(--accent-text); }
   padding: 12px 16px;
   box-shadow: 0 8px 24px rgba(13,43,107,0.25);
   font-weight: 600;
+  max-width: 360px;
+}
+
+.toast-error {
+  background: var(--red);
 }
 
 /* ── Panel ── */

@@ -494,6 +494,15 @@ export interface OrderMessageTemplate {
 // buildThermalPrintHtml/buildA4SheetHtml) — a physical label size/grid
 // preset, editable without a code change. sheetCols..gapYMm are only
 // meaningful for type: "a4_sheet" (always null for "thermal").
+// A printer name discovered by the server (see server/routes/printers.ts).
+// ready:false means it was only spotted via mDNS network discovery, not
+// yet a real CUPS destination — `lp -d` against it will fail until it's
+// actually added as a print queue.
+export interface DiscoveredPrinter {
+  name: string;
+  ready: boolean;
+}
+
 export interface LabelFormat {
   id: string;
   name: string;
