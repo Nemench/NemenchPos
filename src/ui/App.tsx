@@ -2477,16 +2477,17 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
           </label>
         ) : (
           <label>
-            Item code (scale PLU) <span className="optional-hint">(optional)</span>
+            Item code (scale PLU) <span className="optional-hint">(optional — auto-assigned on save if left blank)</span>
             <div className="barcode-field-row">
               <input value={editing.itemCode ?? ""} onChange={(e) => setEditing({ ...editing, itemCode: e.target.value })} placeholder="e.g. 00550" maxLength={5} />
               <button type="button" className="secondary sm" onClick={() => setWeighScanOpen(true)}><ScanLine size={16} /> Scan weigh-label</button>
             </div>
             <p className="settings-hint">
               A product sold by weight on the scale has no single barcode — the price changes every time it's weighed, so the barcode is
-              different every label. This 5-digit item code is its stable identity instead: it must match whatever PLU is actually
-              programmed into the physical scale, so it's never auto-generated — enter it manually or use "Scan weigh-label" to read one
-              off an existing label. Use the <b>Print Labels</b> tab to print a fresh weigh-barcode label for this product.
+              different every label. This 5-digit item code is its stable identity instead. Leave it blank to have the system assign the
+              next free code automatically (checked against every other product so none can collide); if this product's PLU is already
+              programmed into the physical scale, enter that exact number instead, or use "Scan weigh-label" to read one off an existing
+              label. Use the <b>Print Labels</b> tab to print a fresh weigh-barcode label for this product.
             </p>
           </label>
         )}

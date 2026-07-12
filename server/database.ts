@@ -310,17 +310,38 @@ export class KotDatabase {
       .get(itemCode) as Product | null;
   }
 
+  // Picks a free 5-digit item code (scale PLU) for a weighed product that
+  // wasn't given one explicitly — scans every itemCode already in use and
+  // returns the lowest unused number, so two products can never collide.
+  // excludeId lets an update check against everyone ELSE's code without
+  // tripping over the row's own current value. A butcher who needs the
+  // system's assignment to match a *specific* physical PLU already
+  // programmed into the scale can still just type that number into the
+  // item code field themselves — this only fills the gap when they don't.
+  private generateItemCode(excludeId?: number): string {
+    const used = new Set(
+      (this.db.prepare("SELECT id, itemCode FROM products WHERE itemCode IS NOT NULL").all() as { id: number; itemCode: string }[])
+        .filter((r) => r.id !== excludeId)
+        .map((r) => r.itemCode)
+    );
+    for (let n = 1; n <= 99999; n++) {
+      const candidate = String(n).padStart(5, "0");
+      if (!used.has(candidate)) return candidate;
+    }
+    throw new Error("No available item codes left (00001-99999 all in use)");
+  }
+
   // If no barcode is entered for a FIXED-UNIT product, one is auto-
   // generated from the product's own id (see generateInternalBarcode)
   // rather than left null — every fixed-unit product ends up scannable,
   // whether or not it has a real manufacturer barcode. A WEIGHED product
-  // never gets this treatment: it has no single static barcode to
-  // generate in the first place (see weighBarcode.ts) — its itemCode is
-  // the identity instead, and that's never auto-generated (has to match
-  // whatever's actually programmed into the physical scale). For a
-  // brand-new fixed-unit product the id doesn't exist until after the
-  // INSERT, so that case generates it in a follow-up UPDATE rather than
-  // up front.
+  // gets the same treatment for its itemCode (see generateItemCode above)
+  // when none is entered — checked against every other product's code so
+  // two items can never end up sharing a PLU. Entering a specific item
+  // code still always wins over auto-assignment (e.g. to match a code
+  // already programmed into the physical scale). For a brand-new product
+  // the id doesn't exist until after the INSERT, so both auto-assignments
+  // happen in a follow-up UPDATE rather than up front.
   //
   // costPerUnit is handled separately from the rest of the fields: if
   // provided, it appends a new product_cost_history row (see
@@ -330,13 +351,14 @@ export class KotDatabase {
     const now = new Date().toISOString();
     const isWeighed = input.unitDefault !== "qty";
     const providedBarcode = input.barcode?.trim() || null;
-    const itemCode = input.itemCode?.trim() || null;
-    if (itemCode && !/^\d{5}$/.test(itemCode)) {
-      throw new Error(`Item code "${itemCode}" must be exactly 5 digits`);
+    const providedItemCode = input.itemCode?.trim() || null;
+    if (providedItemCode && !/^\d{5}$/.test(providedItemCode)) {
+      throw new Error(`Item code "${providedItemCode}" must be exactly 5 digits`);
     }
     const isRawIntake = input.isRawIntake ? 1 : 0;
     if (input.id) {
       const barcode = isWeighed ? providedBarcode : (providedBarcode ?? generateInternalBarcode(input.id));
+      const itemCode = isWeighed ? (providedItemCode ?? this.generateItemCode(input.id)) : providedItemCode;
       this.db
         .prepare("UPDATE products SET name=?, category=?, unitDefault=?, pricePerUnit=?, prepNotes=?, department=?, lowStockThreshold=?, barcode=?, itemCode=?, isRawIntake=?, updatedAt=? WHERE id=?")
         .run(input.name.trim(), input.category.trim(), input.unitDefault, input.pricePerUnit ?? null, input.prepNotes.trim(), input.department, input.lowStockThreshold ?? null, barcode, itemCode, isRawIntake, now, input.id);
@@ -344,10 +366,13 @@ export class KotDatabase {
     } else {
       const result = this.db
         .prepare("INSERT INTO products (name, category, unitDefault, pricePerUnit, prepNotes, department, lowStockThreshold, barcode, itemCode, isRawIntake, isActive, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)")
-        .run(input.name.trim(), input.category.trim(), input.unitDefault, input.pricePerUnit ?? null, input.prepNotes.trim(), input.department, input.lowStockThreshold ?? null, providedBarcode, itemCode, isRawIntake, now, now);
+        .run(input.name.trim(), input.category.trim(), input.unitDefault, input.pricePerUnit ?? null, input.prepNotes.trim(), input.department, input.lowStockThreshold ?? null, providedBarcode, providedItemCode, isRawIntake, now, now);
       const newId = Number(result.lastInsertRowid);
       if (!isWeighed && !providedBarcode) {
         this.db.prepare("UPDATE products SET barcode = ? WHERE id = ?").run(generateInternalBarcode(newId), newId);
+      }
+      if (isWeighed && !providedItemCode) {
+        this.db.prepare("UPDATE products SET itemCode = ? WHERE id = ?").run(this.generateItemCode(newId), newId);
       }
       return this.db.prepare(`SELECT p.*, ${KotDatabase.currentCostSql()} FROM products p WHERE p.id = ?`).get(newId) as Product;
     }
