@@ -13,3 +13,27 @@ export function ean13CheckDigit(first12Digits: string): number {
   }
   return (10 - (sum % 10)) % 10;
 }
+
+// Full structural validation for any barcode entering the system (manual
+// entry, CSV import, a preset scanned from a real product) — exactly 13
+// digits, and the 13th must match what ean13CheckDigit computes from the
+// first 12. Used to reject/flag a malformed preset barcode before saving,
+// per CASE 1's requirement.
+export function isValidEan13(code: string): boolean {
+  if (!/^\d{13}$/.test(code)) return false;
+  return ean13CheckDigit(code.slice(0, 12)) === Number(code[12]);
+}
+
+// Recalculates the correct check digit for any 12-or-13-digit numeric
+// string, returning a corrected 13-digit code — useful for imports/manual
+// entry where the first 12 digits are right but the check digit was
+// mistyped or never computed. Throws on anything that isn't 12-13 plain
+// digits, since there's nothing sensible to "recalculate" from garbage
+// input (that's a job for isValidEan13 + a user-facing rejection, not this).
+export function recalculateEan13CheckDigit(code: string): string {
+  if (!/^\d{12,13}$/.test(code)) {
+    throw new Error(`recalculateEan13CheckDigit: "${code}" must be 12 or 13 digits`);
+  }
+  const first12 = code.slice(0, 12);
+  return first12 + ean13CheckDigit(first12);
+}

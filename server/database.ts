@@ -1214,7 +1214,7 @@ export class KotDatabase {
     if (order.consolidatedAt) throw new Error("This order has already been consolidated — no more scanning needed");
 
     const weigh = parseWeighBarcode(rawCode);
-    const product = this.getProductByBarcode(weigh ? weigh.plu : rawCode);
+    const product = this.getProductByBarcode(weigh ? weigh.itemCode : rawCode);
     if (!product) throw new Error(`No product found for barcode "${rawCode}"`);
 
     const match = order.items.find((i) => i.productId === product.id && !i.scannedAt);

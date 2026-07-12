@@ -1314,7 +1314,7 @@ function BarcodeAddModal({ defaultDept, onAdd, onClose }: { defaultDept: Departm
     // 5-digit PLU instead of the full scanned code, and carry the decoded
     // price along to prefill as this line's "wanted price."
     const weigh = parseWeighBarcode(code);
-    const lookupCode = weigh ? weigh.plu : code;
+    const lookupCode = weigh ? weigh.itemCode : code;
     try {
       const product = await api.products.getByBarcode(lookupCode);
       onAdd(product, weigh?.price);
@@ -2592,7 +2592,7 @@ function WeighLabelScanModal({ onResolved, onClose }: { onResolved: (plu: string
   const handleCode = (code: string) => {
     const weigh = parseWeighBarcode(code);
     if (!weigh) { setError(`"${code}" isn't a recognized scale weigh-label barcode.`); return; }
-    onResolved(weigh.plu, weigh.price);
+    onResolved(weigh.itemCode, weigh.price);
   };
 
   const { videoRef, isNative, cameraSupported } = useBarcodeScan({

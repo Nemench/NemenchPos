@@ -53,7 +53,7 @@ error() { echo -e "${RED}✘ $*${NC}"; exit 1; }
 info "Installing system dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq curl git build-essential python3 cups-client avahi-utils
+apt-get install -y -qq curl git build-essential python3 cups-client avahi-utils wkhtmltopdf
 
 # ── Caddy (HTTPS reverse proxy) ───────────────────────────────────────────────
 # Clean up any leftover files from a previous failed install attempt
