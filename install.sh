@@ -53,7 +53,25 @@ error() { echo -e "${RED}✘ $*${NC}"; exit 1; }
 info "Installing system dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq curl git build-essential python3 cups-client avahi-utils wkhtmltopdf
+apt-get install -y -qq curl git build-essential python3 cups-client avahi-utils
+
+# Google Chrome (headless) — used by server/routes/print.ts to render a
+# receipt/label to PDF before handing it to `lp`. Not wkhtmltopdf: that
+# project was dropped from Debian/Ubuntu's own repos years ago (its
+# rendering engine is unmaintained and doesn't support CSS Grid, which
+# this app's own A4 label sheets use), and Chrome is the same engine the
+# browser-based print fallback already relies on, so there's no risk of
+# the two disagreeing on how a receipt should look. Installed via Google's
+# own .deb (also not in Ubuntu's default repos) rather than the
+# snap-packaged `chromium-browser` some Ubuntu versions offer instead —
+# snap's sandboxing can interfere with a headless service reading/writing
+# temp files outside its confinement.
+if ! command -v google-chrome-stable &>/dev/null; then
+  info "Installing Google Chrome (for PDF rendering)..."
+  curl -fsSL -o /tmp/google-chrome-stable.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+  apt-get install -y -qq /tmp/google-chrome-stable.deb || apt-get install -y -qq -f
+  rm -f /tmp/google-chrome-stable.deb
+fi
 
 # ── Caddy (HTTPS reverse proxy) ───────────────────────────────────────────────
 # Clean up any leftover files from a previous failed install attempt
