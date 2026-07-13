@@ -51,6 +51,41 @@ export class KotDatabase {
     this.db.pragma("foreign_keys = ON");
     this.migrate();
     this.seed();
+    // Startup reconciliation pass (index.ts calls initialize() once, at
+    // boot) — see reconcileMissingBarcodes' own comment for why this is
+    // needed even though upsertProduct already auto-generates a barcode
+    // for a normal product save.
+    this.reconcileMissingBarcodes();
+  }
+
+  // Fixed-unit products should always end up with a real, scannable
+  // barcode (see upsertProduct's schema comment) — upsertProduct already
+  // auto-generates one on every normal save, but that's not the only way
+  // a row can reach the products table: CSV import (importProducts,
+  // below) writes directly with raw SQL and never touches barcode at
+  // all, and a database created before this feature existed could have
+  // old rows that predate it too. This is the catch-all safety net for
+  // both — run automatically at startup (see the constructor) and again
+  // at the end of every CSV import, with NO human confirmation required,
+  // since "every qty product is scannable" is a structural invariant of
+  // this app, not an optional cleanup a human should have to approve.
+  // Weighed products are deliberately excluded — they never have a
+  // static barcode by design (see weighBarcode.ts). Never overwrites an
+  // existing barcode, only fills a genuinely null/empty one, and returns
+  // the ids it touched so callers can log them for an audit trail.
+  reconcileMissingBarcodes(): number[] {
+    const missing = this.db
+      .prepare("SELECT id FROM products WHERE isActive = 1 AND unitDefault = 'qty' AND (barcode IS NULL OR barcode = '')")
+      .all() as { id: number }[];
+    const fixedIds: number[] = [];
+    for (const { id } of missing) {
+      this.db.prepare("UPDATE products SET barcode = ? WHERE id = ?").run(generateInternalBarcode(id), id);
+      fixedIds.push(id);
+    }
+    if (fixedIds.length > 0) {
+      console.log(`[barcode-reconcile] Generated barcodes for ${fixedIds.length} product(s) that had none: ${fixedIds.join(", ")}`);
+    }
+    return fixedIds;
   }
 
   // ── Users ──────────────────────────────────────────────────────────────────
@@ -697,7 +732,16 @@ export class KotDatabase {
         const name = row.name?.trim();
         if (!name) { errors.push(`Row ${i + 2}: name is required`); continue; }
         const category = row.category?.trim() || "General";
-        const unitDefault = ["kg", "each", "g", "pack"].includes(row.unitDefault) ? row.unitDefault : "kg";
+        // Whitelist against the REAL UnitDefault values ("kg"|"qty"|
+        // "kg_qty" — see shared/types.ts). This used to check against a
+        // pre-rename set ("kg"/"each"/"g"/"pack") that no longer matches
+        // anything real, silently coercing every imported row to "kg"
+        // (weighed) regardless of what was actually in the CSV — meaning
+        // a fixed-unit ("qty") product could never be created via import
+        // at all, and so could never pick up an auto-generated barcode
+        // either (see reconcileMissingBarcodes/upsertProduct, which both
+        // only ever act on unitDefault='qty' products).
+        const unitDefault = ["kg", "qty", "kg_qty"].includes(row.unitDefault) ? row.unitDefault : "kg";
         const price = row.pricePerUnit ? parseFloat(row.pricePerUnit) : null;
         const dept = row.department === "kitchen" ? "kitchen" : "counter";
         const prepNotes = row.prepNotes?.trim() || "";
@@ -725,6 +769,10 @@ export class KotDatabase {
       }
     });
     upsert();
+    // CSV import writes rows directly rather than through upsertProduct,
+    // so it never gets that method's own barcode auto-generation — this
+    // fixes any newly-imported/updated qty product left without one.
+    this.reconcileMissingBarcodes();
     return { imported, errors };
   }
 
