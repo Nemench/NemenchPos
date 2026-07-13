@@ -77,7 +77,8 @@ import type {
   EmailSubscriber,
   LabelFormat,
   LabelData,
-  DiscoveredPrinter
+  DiscoveredPrinter,
+  UnitDefault
 } from "../shared/types";
 import { api, assetUrl } from "./api";
 import { useBarcodeScan } from "./useBarcodeScan";
@@ -2541,7 +2542,7 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
     }
     setBusy(true); setStockMessage("");
     try {
-      const saved = await api.products.save({ ...editing, name, unitDefault: "kg", category: editing.category.trim() || "General", prepNotes: editing.prepNotes.trim() });
+      const saved = await api.products.save({ ...editing, name, category: editing.category.trim() || "General", prepNotes: editing.prepNotes.trim() });
       // Stays populated with the saved product (rather than resetting to
       // EMPTY_PRODUCT) so a barcode auto-generated on this save — see
       // upsertProduct — is immediately visible/printable, not silently
@@ -2619,7 +2620,14 @@ function Products({ products, onChanged }: { products: Product[]; onChanged: () 
           </select>
         </label>
         <label>
-          R/kg (sell price)
+          Sold by
+          <select value={editing.unitDefault} onChange={(e) => setEditing({ ...editing, unitDefault: e.target.value as UnitDefault })}>
+            <option value="kg">Weight (kg) — scale item, priced per kg</option>
+            <option value="qty">Fixed unit (each) — barcoded item, priced per item</option>
+          </select>
+        </label>
+        <label>
+          {editing.unitDefault === "qty" ? "Sell price (each)" : "Sell price (R/kg)"}
           <input type="number" min="0" step="0.01" value={editing.pricePerUnit ?? ""} onChange={(e) => setEditing({ ...editing, pricePerUnit: e.target.value ? Number(e.target.value) : null })} />
         </label>
         <label>
