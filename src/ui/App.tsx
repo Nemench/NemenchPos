@@ -405,7 +405,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
   const [messageTone, setMessageTone] = useState<"info" | "error">("info");
   const [autoPrint, setAutoPrint] = useState(false);
   const [printStyle, setPrintStyle] = useState("thermal");
-  const [printerMap, setPrinterMap] = useState({ kitchen: "", counter: "", master: "" });
+  const [printerMap, setPrinterMap] = useState({ kitchen: "", counter: "", master: "", label: "" });
   const [lowStockCount, setLowStockCount] = useState(0);
 
   // Full refresh — products + orders. Only on mount and after mutations.
@@ -430,7 +430,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
     api.settings.get().then((s) => {
       setAutoPrint(s.autoPrint === "true");
       setPrintStyle(s.printStyle ?? "thermal");
-      setPrinterMap({ kitchen: s.kitchenPrinter ?? "", counter: s.counterPrinter ?? "", master: s.masterPrinter ?? "" });
+      setPrinterMap({ kitchen: s.kitchenPrinter ?? "", counter: s.counterPrinter ?? "", master: s.masterPrinter ?? "", label: s.labelPrinter ?? "" });
       setPrintPrefs({ forcePreview: s.printForcePreview === "true", colorMode: s.printColorMode === "grayscale" ? "grayscale" : "color" });
     }).catch(() => undefined);
   }, []);
@@ -582,7 +582,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
         {tab === "consolidate" && (currentUser.role === "kitchen" || currentUser.role === "counter" || currentUser.role === "cashier" || currentUser.role === "admin") && (
           <ConsolidationPanel printStyle={printStyle} printerMap={printerMap} />
         )}
-        {tab === "printLabels" && (currentUser.role === "counter" || currentUser.role === "admin") && <PrintLabelsPanel products={products} />}
+        {tab === "printLabels" && (currentUser.role === "counter" || currentUser.role === "admin") && <PrintLabelsPanel products={products} printerName={printerMap.label} />}
         {tab === "products" && (currentUser.role === "admin" || isStockTaker) && <StockPanel products={products} currentUser={currentUser} onChanged={refresh} />}
         {tab === "weighIn" && (currentUser.role === "admin" || isStockTaker) && <WeighInPanel products={products} currentUser={currentUser} onChanged={refresh} />}
         {tab === "users" && currentUser.role === "admin" && <UsersPanel />}
@@ -2117,7 +2117,7 @@ function toCustomFormatInput(form: CustomFormatFormState): LabelFormatInput {
 // "captured selection" that could go stale: the preview reads the exact
 // same batchEntries/format/blockedPositions state the print button does,
 // on every render.
-function PrintLabelsPanel({ products }: { products: Product[] }) {
+function PrintLabelsPanel({ products, printerName }: { products: Product[]; printerName: string }) {
   const [search, setSearch] = useState("");
   const [rows, setRows] = useState<LabelBatchRow[]>([]);
   const [formats, setFormats] = useState<LabelFormat[]>([]);
@@ -2259,7 +2259,7 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
     await loadFormats();
   };
 
-  const print = () => {
+  const print = async () => {
     if (!format || rows.length === 0) return;
     for (const r of rows) {
       const isWeighed = r.product.unitDefault !== "qty";
@@ -2271,10 +2271,24 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
     setPrinting(true); setMessage("");
     try {
       const flat = flattenBatch(batchEntries);
-      const html = format.type === "thermal"
+      const html = applyColorMode(format.type === "thermal"
         ? buildThermalPrintHtml(flat, format)
-        : buildA4SheetHtml(flat, format, blockedPositions);
-      printHtml(applyColorMode(html));
+        : buildA4SheetHtml(flat, format, blockedPositions));
+      // Same silent-print-then-fallback pattern as printReceipt/
+      // printTestPage: send straight to the assigned label printer
+      // unless "Force print preview" (Settings > Printing) is on, in
+      // which case (or with no printer assigned) fall through to the
+      // browser print dialog. This used to always go straight to
+      // printHtml regardless of the printer assignment or the force-
+      // preview setting — turning the setting off had no effect here
+      // since this path never even checked it.
+      if (printerName && !printPrefs.forcePreview) {
+        try { await api.print(printerName, html); return; }
+        catch (err) {
+          showToast(`Couldn't print to "${printerName}" (${err instanceof Error ? err.message : "unknown error"}) — opening browser print instead.`, "error");
+        }
+      }
+      printHtml(html);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Could not build the label print job.");
     } finally {
@@ -2498,7 +2512,7 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
           {message && <p className="form-error">{message}</p>}
 
           <footer className="actions">
-            <button type="button" disabled={printing || !format || rows.length === 0} onClick={print}>
+            <button type="button" disabled={printing || !format || rows.length === 0} onClick={() => void print()}>
               <Printer size={16} /> {printing ? "Printing…" : `Print ${totalCount} label${totalCount === 1 ? "" : "s"}`}
             </button>
           </footer>
@@ -4275,7 +4289,7 @@ const EMAIL_PROVIDER_PRESETS: Record<string, { host: string; port: string; help:
 // color — also pushed live into buildReceiptHtml via setReceiptBranding so
 // printed receipts match immediately), product CSV import/export, and
 // full-database backup/restore.
-function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleChange, printerMap, onPrinterMapChange, branding, onBrandingChange }: { autoPrint: boolean; onAutoPrintChange: (v: boolean) => void; printStyle: string; onPrintStyleChange: (v: string) => void; printerMap: Record<string, string>; onPrinterMapChange: (v: { kitchen: string; counter: string; master: string }) => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void }) {
+function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleChange, printerMap, onPrinterMapChange, branding, onBrandingChange }: { autoPrint: boolean; onAutoPrintChange: (v: boolean) => void; printStyle: string; onPrintStyleChange: (v: string) => void; printerMap: Record<string, string>; onPrinterMapChange: (v: { kitchen: string; counter: string; master: string; label: string }) => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void }) {
   const [msg, setMsg] = useState("");
   const [availablePrinters, setAvailablePrinters] = useState<DiscoveredPrinter[]>([]);
   const [loadingPrinters, setLoadingPrinters] = useState(false);
@@ -4568,7 +4582,7 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
 
   const changePrinter = async (key: string, value: string) => {
     await api.settings.set({ [key]: value });
-    onPrinterMapChange({ ...printerMap, [key.replace("Printer", "")]: value } as { kitchen: string; counter: string; master: string });
+    onPrinterMapChange({ ...printerMap, [key.replace("Printer", "")]: value } as { kitchen: string; counter: string; master: string; label: string });
     setMsg("Printer assignment saved");
     window.setTimeout(() => setMsg(""), 2500);
   };
@@ -4708,7 +4722,7 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
             {availablePrinters.map((p) => <option key={p.name} value={p.name}>{p.ready ? p.name : `${p.name} (not set up yet)`}</option>)}
           </datalist>
           <div className="printer-assignments">
-            {([ ["Kitchen printer", "kitchenPrinter", "kitchen"], ["Counter printer", "counterPrinter", "counter"], ["Master / cashier printer", "masterPrinter", "master"] ] as [string, string, string][]).map(([label, key, mapKey]) => {
+            {([ ["Kitchen printer", "kitchenPrinter", "kitchen"], ["Counter printer", "counterPrinter", "counter"], ["Master / cashier printer", "masterPrinter", "master"], ["Label / sticker printer", "labelPrinter", "label"] ] as [string, string, string][]).map(([label, key, mapKey]) => {
               const assigned = printerMap[mapKey] ?? "";
               const match = availablePrinters.find((p) => p.name === assigned);
               return (

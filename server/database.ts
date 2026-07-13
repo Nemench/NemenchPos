@@ -2035,6 +2035,7 @@ export class KotDatabase {
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('kitchenPrinter', '')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('counterPrinter', '')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('masterPrinter', '')").run();
+    this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('labelPrinter', '')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('historyDays', '30')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('siteName', 'NemenchPos')").run();
     this.db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('logoUrl', '')").run();
