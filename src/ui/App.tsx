@@ -2195,13 +2195,15 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
   const sheetsNeeded = useMemo(() => perSheet > 0 ? placeOnSheets(flat, perSheet, blockedPositions).length : 0, [flat, perSheet, blockedPositions]);
   const sheetHtml = useMemo(() => {
     if (!format || format.type !== "a4_sheet" || perSheet === 0) return "";
-    if (alignmentMode) return buildAlignmentSheetHtml(format);
     // Only render enough labels to fill page 1 — the preview only ever
     // shows that page, so there's no reason to build (and hide) HTML for
-    // sheets 2..N of a large batch.
+    // sheets 2..N of a large batch. Always the real, filled content —
+    // "check alignment" is a grid-line overlay drawn on TOP of this (see
+    // SheetPositionPicker below), never a swap to a blank sheet, so the
+    // actual label content is never hidden by turning it on.
     const available1 = Math.max(0, perSheet - blockedPositions.size);
     return buildA4SheetHtml(flat.slice(0, available1), format, blockedPositions);
-  }, [format, perSheet, alignmentMode, flat, blockedPositions]);
+  }, [format, perSheet, flat, blockedPositions]);
 
   // Everything — search, the batch list, the sheet format picker, the
   // print trigger, AND the live grid preview — lives inside this single
@@ -2215,7 +2217,7 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
         <h2>{totalCount} label{totalCount === 1 ? "" : "s"} selected</h2>
         {format?.type === "a4_sheet" && perSheet > 0 && (
           <button type="button" className={alignmentMode ? "toggle-on" : "toggle-off"} onClick={() => setAlignmentMode((v) => !v)}>
-            {alignmentMode ? "Showing blank alignment grid" : "Check alignment"}
+            {alignmentMode ? "Hide alignment grid" : "Check alignment"}
           </button>
         )}
       </div>
@@ -2313,17 +2315,14 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
 
             {format.type === "a4_sheet" && format.sheetCols && format.sheetRows && (
               <div className="label-preview-sheet">
-                <h3>{alignmentMode ? "Blank grid — alignment check" : `Sheet layout (page 1 of ${Math.max(1, sheetsNeeded)})`}</h3>
-                <ScaledSheetFrame srcDoc={sheetHtml} pageWidthMm={pageWidthMm} pageHeightMm={pageHeightMm} />
-                {!alignmentMode && (
-                  <>
-                    <p className="settings-hint">
-                      Click a cell below to mark it as already used on a partially-used sheet — the print job will skip it and fill the remaining gaps instead.
-                      {blockedPositions.size > 0 && ` (${blockedPositions.size} marked used)`}
-                    </p>
-                    <SheetPositionPicker cols={format.sheetCols} rows={format.sheetRows} blocked={blockedPositions} onToggle={toggleBlockedPosition} />
-                  </>
-                )}
+                <h3>Sheet layout (page 1 of {Math.max(1, sheetsNeeded)})</h3>
+                <ScaledSheetFrame srcDoc={sheetHtml} pageWidthMm={pageWidthMm} pageHeightMm={pageHeightMm}>
+                  <SheetPositionPicker cols={format.sheetCols} rows={format.sheetRows} format={format} blocked={blockedPositions} onToggle={toggleBlockedPosition} showGrid={alignmentMode} />
+                </ScaledSheetFrame>
+                <p className="settings-hint">
+                  Click directly on a label above to mark it as already used on a partially-used sheet — the print job will skip it and fill the remaining gaps instead.
+                  {blockedPositions.size > 0 && ` (${blockedPositions.size} marked used)`}
+                </p>
               </div>
             )}
           </div>
@@ -6012,29 +6011,6 @@ ${LABEL_CELL_STYLE}
 </style></head><body>${pages}</body></html>`;
 }
 
-// Blank grid — no barcode/name/price, just the cell outlines — so a
-// physical alignment check can be run on scrap paper without burning a
-// real batch's worth of data (and without needing any product selected
-// at all). One sheet only; blockedPositions doesn't apply here since the
-// whole point is checking where every cell on a FRESH sheet lands.
-function buildAlignmentSheetHtml(format: LabelFormat): string {
-  if (format.type !== "a4_sheet" || !format.sheetCols || !format.sheetRows) {
-    throw new Error("buildAlignmentSheetHtml requires an a4_sheet format with sheetCols/sheetRows set");
-  }
-  const perSheet = format.sheetCols * format.sheetRows;
-  const gapX = format.gapXMm ?? 0;
-  const gapY = format.gapYMm ?? 0;
-  const pageW = format.pageWidthMm ?? 210;
-  const pageH = format.pageHeightMm ?? 297;
-  const cells = Array.from({ length: perSheet }, () => `<div class="label-align-box"></div>`).join("");
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Alignment check</title><style>
-@page{size:${pageW}mm ${pageH}mm;margin:0}*{box-sizing:border-box;margin:0;padding:0}
-body{background:#fff;color:#000}
-.sheet{width:${pageW}mm;height:${pageH}mm;padding:${format.marginTopMm ?? 0}mm 0 0 ${format.marginLeftMm ?? 0}mm;display:grid;grid-template-columns:repeat(${format.sheetCols},${format.widthMm}mm);grid-template-rows:repeat(${format.sheetRows},${format.heightMm}mm);column-gap:${gapX}mm;row-gap:${gapY}mm}
-.label-align-box{width:${format.widthMm}mm;height:${format.heightMm}mm;border:0.5pt dashed #000;box-sizing:border-box}
-</style></head><body><div class="sheet">${cells}</div></body></html>`;
-}
-
 // The sheet preview used to size its iframe by CSS alone (max-width:420px
 // on the wrapper) while the iframe's *content* was the real, physically-
 // sized page HTML — a browser doesn't shrink an iframe's content to fit a
@@ -6044,7 +6020,15 @@ body{background:#fff;color:#000}
 // uses — A4, Letter, or landscape) and scaling the whole thing down with
 // a CSS transform, recomputed on resize so it always exactly fills
 // whatever width the panel gives it.
-function ScaledSheetFrame({ srcDoc, pageWidthMm, pageHeightMm }: { srcDoc: string; pageWidthMm: number; pageHeightMm: number }) {
+//
+// `children` (see SheetPositionPicker) is rendered into a second element
+// stacked exactly on top of the iframe, sized and scaled identically —
+// same px dimensions, same transform — so any mm-based CSS grid inside
+// it lines up cell-for-cell with the iframe's own `.sheet` grid without
+// needing to duplicate the scale math. That's what makes the position-
+// picker/alignment-grid a true overlay on the real preview rather than a
+// separate grid rendered below it.
+function ScaledSheetFrame({ srcDoc, pageWidthMm, pageHeightMm, children }: { srcDoc: string; pageWidthMm: number; pageHeightMm: number; children?: React.ReactNode }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
   // CSS reference pixels (1mm = 96/25.4px, the same fixed ratio the
@@ -6063,31 +6047,50 @@ function ScaledSheetFrame({ srcDoc, pageWidthMm, pageHeightMm }: { srcDoc: strin
     return () => ro.disconnect();
   }, [pxW]);
 
+  const scaledBoxStyle = { width: `${pxW}px`, height: `${pxH}px`, transform: `scale(${scale})` };
+
   return (
     <div ref={wrapRef} className="label-preview-frame label-preview-frame-a4" style={{ aspectRatio: `${pageWidthMm} / ${pageHeightMm}` }}>
-      <iframe title="Sheet preview" srcDoc={srcDoc} style={{ width: `${pxW}px`, height: `${pxH}px`, transform: `scale(${scale})` }} />
+      <iframe title="Sheet preview" srcDoc={srcDoc} style={scaledBoxStyle} />
+      {children && <div className="label-preview-overlay" style={scaledBoxStyle}>{children}</div>}
     </div>
   );
 }
 
-// Click-to-toggle grid mirroring the sheet's real cols x rows — lets an
-// admin mark exactly which cells are already peeled off a partially-used
-// physical sheet (in any pattern, not just a leading run) so a print job
-// lands only in the gaps that are actually still blank.
-function SheetPositionPicker({ cols, rows, blocked, onToggle }: { cols: number; rows: number; blocked: Set<number>; onToggle: (pos: number) => void }) {
+// Click-to-toggle grid mirroring the sheet's real cols x rows, rendered
+// as a transparent overlay directly on top of the live preview (see
+// ScaledSheetFrame) rather than a separate numbered grid below it — the
+// admin clicks the actual label they want to mark as already used,
+// instead of matching a position number back to a cell by eye. Uses the
+// exact same mm-based grid-template/padding/gap as the generated sheet
+// HTML's own `.sheet` rule so it lines up with the real cells regardless
+// of format. `showGrid` additionally draws a dashed outline on every
+// cell — the alignment check — layered on top of the real label content
+// rather than replacing it, so turning it on never hides what's already
+// on the sheet.
+function SheetPositionPicker({ cols, rows, format, blocked, onToggle, showGrid }: { cols: number; rows: number; format: LabelFormat; blocked: Set<number>; onToggle: (pos: number) => void; showGrid: boolean }) {
   const perSheet = cols * rows;
+  const gapX = format.gapXMm ?? 0;
+  const gapY = format.gapYMm ?? 0;
   return (
-    <div className="sheet-position-picker" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
+    <div
+      className="sheet-position-overlay"
+      style={{
+        padding: `${format.marginTopMm ?? 0}mm 0 0 ${format.marginLeftMm ?? 0}mm`,
+        gridTemplateColumns: `repeat(${cols}, ${format.widthMm}mm)`,
+        gridTemplateRows: `repeat(${rows}, ${format.heightMm}mm)`,
+        columnGap: `${gapX}mm`,
+        rowGap: `${gapY}mm`
+      }}
+    >
       {Array.from({ length: perSheet }, (_, i) => i + 1).map((pos) => (
         <button
           type="button"
           key={pos}
-          className={`sheet-pos${blocked.has(pos) ? " blocked" : ""}`}
+          className={`sheet-pos-cell${blocked.has(pos) ? " blocked" : ""}${showGrid ? " show-grid" : ""}`}
           onClick={() => onToggle(pos)}
           title={blocked.has(pos) ? "Already used — click to mark as available" : "Available — click to mark as already used"}
-        >
-          {pos}
-        </button>
+        />
       ))}
     </div>
   );
