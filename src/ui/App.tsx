@@ -2037,15 +2037,18 @@ interface LabelBatchRow {
 
 // Search, add one or more products to a batch (each with its own
 // quantity, and weight if sold by weight), pick a sheet/roll format, and
-// print — a live preview (see LabelPreview) reflects every change
-// instantly since it's just a normal React re-render off the same
-// `batchEntries` the print button reads from, not a separate "preview"
-// step that could drift out of sync with what actually prints.
+// print. Selection controls and the live preview are rendered by this
+// SAME component into one panel (see the return statement below) — not
+// a separate component instantiated alongside it — so there's no
+// "captured selection" that could go stale: the preview reads the exact
+// same batchEntries/format/blockedPositions state the print button does,
+// on every render.
 function PrintLabelsPanel({ products }: { products: Product[] }) {
   const [search, setSearch] = useState("");
   const [rows, setRows] = useState<LabelBatchRow[]>([]);
   const [formats, setFormats] = useState<LabelFormat[]>([]);
   const [formatId, setFormatId] = useState("");
+  const [formatQuery, setFormatQuery] = useState("");
   const [blockedPositions, setBlockedPositions] = useState<Set<number>>(new Set());
   const [alignmentMode, setAlignmentMode] = useState(false);
   const [printing, setPrinting] = useState(false);
@@ -2151,76 +2154,179 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
     return groups;
   }, [formats]);
 
+  // Fuzzy/partial live search over the whole format table — matches
+  // brand, vendor code, name, and either dimension, so "102" finds W102,
+  // "50" surfaces every ~50mm format (round or otherwise), and "tower"
+  // narrows to just that brand. No submit step: filteredFormats just
+  // recomputes on every keystroke. Browsing with an empty query falls
+  // back to the full brand-grouped list (formatsByBrand) so the picker is
+  // still useful before anyone's typed anything.
+  const filteredFormats = useMemo(() => {
+    const q = formatQuery.trim().toLowerCase();
+    if (!q) return formats;
+    return formats.filter((f) =>
+      (f.brand ?? "").toLowerCase().includes(q) ||
+      (f.code ?? "").toLowerCase().includes(q) ||
+      f.name.toLowerCase().includes(q) ||
+      String(f.widthMm).includes(q) ||
+      String(f.heightMm).includes(q)
+    );
+  }, [formats, formatQuery]);
+
+  const describeFormat = (f: LabelFormat): string => {
+    const labelSize = `${f.widthMm} x ${f.heightMm}mm label`;
+    if (f.type === "thermal") return `${labelSize} · thermal roll`;
+    const pageSize = `${f.pageWidthMm ?? 210} x ${f.pageHeightMm ?? 297}mm sheet`;
+    const perSheet = f.sheetCols && f.sheetRows ? `${f.sheetCols * f.sheetRows} per sheet` : "? per sheet";
+    return `${pageSize} · ${labelSize} · ${perSheet}`;
+  };
+
+  // ── Live preview, derived from the exact same batchEntries/format/
+  // blockedPositions state the controls above and the print() button
+  // read from — this is what makes the preview and the print output
+  // structurally unable to drift apart, not just visually similar.
+  const flat = useMemo(() => flattenBatch(batchEntries), [batchEntries]);
+  const pageWidthMm = format?.pageWidthMm ?? 210;
+  const pageHeightMm = format?.pageHeightMm ?? 297;
+  const singleHtml = useMemo(() => (format && flat.length > 0) ? buildThermalPrintHtml(flat.slice(0, 1), format) : "", [flat, format]);
+  const perSheet = format?.type === "a4_sheet" && format.sheetCols && format.sheetRows ? format.sheetCols * format.sheetRows : 0;
+  const sheetsNeeded = useMemo(() => perSheet > 0 ? placeOnSheets(flat, perSheet, blockedPositions).length : 0, [flat, perSheet, blockedPositions]);
+  const sheetHtml = useMemo(() => {
+    if (!format || format.type !== "a4_sheet" || perSheet === 0) return "";
+    if (alignmentMode) return buildAlignmentSheetHtml(format);
+    // Only render enough labels to fill page 1 — the preview only ever
+    // shows that page, so there's no reason to build (and hide) HTML for
+    // sheets 2..N of a large batch.
+    const available1 = Math.max(0, perSheet - blockedPositions.size);
+    return buildA4SheetHtml(flat.slice(0, available1), format, blockedPositions);
+  }, [format, perSheet, alignmentMode, flat, blockedPositions]);
+
+  // Everything — search, the batch list, the sheet format picker, the
+  // print trigger, AND the live grid preview — lives inside this single
+  // panel, in one component's JSX tree. There is no separate "selection"
+  // component rendered next to a "preview" component: the controls below
+  // are literally nested inside .label-preview, the same persistent
+  // surface the live grid renders into.
   return (
-    <div className="products-layout">
-      <div className="panel">
-        <h2>Print Labels</h2>
-        <input placeholder="Search products by name, barcode or item code…" value={search} onChange={(e) => setSearch(e.target.value)} autoFocus />
-        {matches.length > 0 && (
-          <div className="print-labels-matches">
-            {matches.map((p) => (
-              <button type="button" key={p.id} className="secondary" onClick={() => addProduct(p)}>
-                {p.name} {p.barcode ? <span className="muted">({p.barcode})</span> : p.itemCode ? <span className="muted">({p.itemCode})</span> : <span className="muted">(no code)</span>}
-              </button>
-            ))}
-          </div>
-        )}
-        {search.trim() && matches.length === 0 && <p className="settings-hint">No products match.</p>}
-
-        {rows.length > 0 && (
-          <div className="label-batch-list">
-            {rows.map((r) => {
-              const isWeighed = r.product.unitDefault !== "qty";
-              return (
-                <div className="label-batch-row" key={r.id}>
-                  <div className="label-batch-row-info">
-                    <strong>{r.product.name}</strong>
-                    <span className="muted">
-                      {r.product.pricePerUnit != null ? `${currency.format(r.product.pricePerUnit)}${isWeighed ? "/kg" : ""}` : "No price set"}
-                      {" · "}
-                      {isWeighed ? (r.product.itemCode || "No item code") : (r.product.barcode || "No barcode")}
-                    </span>
-                  </div>
-                  {isWeighed && (
-                    <input type="number" min="0" step="0.001" className="label-batch-weight" placeholder="kg" value={r.weightKgText} onChange={(e) => updateRow(r.id, { weightKgText: e.target.value })} />
-                  )}
-                  <input type="number" min="1" max="5000" className="label-batch-qty" value={r.quantity} onChange={(e) => updateRow(r.id, { quantity: Math.max(1, Number(e.target.value) || 1) })} />
-                  <button type="button" className="icon-button danger" onClick={() => removeRow(r.id)} title="Remove from batch" aria-label="Remove from batch"><Trash2 size={16} /></button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        <label>Label / sticker sheet format
-          <select value={formatId} onChange={(e) => changeFormat(e.target.value)}>
-            {[...formatsByBrand.entries()].map(([brand, list]) => (
-              <optgroup key={brand} label={brand}>
-                {list.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-              </optgroup>
-            ))}
-          </select>
-        </label>
-
-        {message && <p className="form-error">{message}</p>}
-
-        <footer className="actions">
-          <button type="button" disabled={printing || !format || rows.length === 0} onClick={print}>
-            <Printer size={16} /> {printing ? "Printing…" : `Print ${totalCount} label${totalCount === 1 ? "" : "s"}`}
+    <div className="panel label-preview label-print-panel">
+      <div className="label-preview-header">
+        <h2>{totalCount} label{totalCount === 1 ? "" : "s"} selected</h2>
+        {format?.type === "a4_sheet" && perSheet > 0 && (
+          <button type="button" className={alignmentMode ? "toggle-on" : "toggle-off"} onClick={() => setAlignmentMode((v) => !v)}>
+            {alignmentMode ? "Showing blank alignment grid" : "Check alignment"}
           </button>
-        </footer>
+        )}
       </div>
 
-      {format && (
-        <LabelPreview
-          batch={batchEntries}
-          format={format}
-          blockedPositions={blockedPositions}
-          onToggleBlocked={toggleBlockedPosition}
-          alignmentMode={alignmentMode}
-          onToggleAlignmentMode={() => setAlignmentMode((v) => !v)}
-        />
-      )}
+      <div className="label-print-body">
+        <div className="label-print-controls">
+          <input placeholder="Search products by name, barcode or item code…" value={search} onChange={(e) => setSearch(e.target.value)} autoFocus />
+          {matches.length > 0 && (
+            <div className="print-labels-matches">
+              {matches.map((p) => (
+                <button type="button" key={p.id} className="secondary" onClick={() => addProduct(p)}>
+                  {p.name} {p.barcode ? <span className="muted">({p.barcode})</span> : p.itemCode ? <span className="muted">({p.itemCode})</span> : <span className="muted">(no code)</span>}
+                </button>
+              ))}
+            </div>
+          )}
+          {search.trim() && matches.length === 0 && <p className="settings-hint">No products match.</p>}
+
+          {rows.length > 0 && (
+            <div className="label-batch-list">
+              {rows.map((r) => {
+                const isWeighed = r.product.unitDefault !== "qty";
+                return (
+                  <div className="label-batch-row" key={r.id}>
+                    <div className="label-batch-row-info">
+                      <strong>{r.product.name}</strong>
+                      <span className="muted">
+                        {r.product.pricePerUnit != null ? `${currency.format(r.product.pricePerUnit)}${isWeighed ? "/kg" : ""}` : "No price set"}
+                        {" · "}
+                        {isWeighed ? (r.product.itemCode || "No item code") : (r.product.barcode || "No barcode")}
+                      </span>
+                    </div>
+                    {isWeighed && (
+                      <input type="number" min="0" step="0.001" className="label-batch-weight" placeholder="kg" value={r.weightKgText} onChange={(e) => updateRow(r.id, { weightKgText: e.target.value })} />
+                    )}
+                    <input type="number" min="1" max="5000" className="label-batch-qty" value={r.quantity} onChange={(e) => updateRow(r.id, { quantity: Math.max(1, Number(e.target.value) || 1) })} />
+                    <button type="button" className="icon-button danger" onClick={() => removeRow(r.id)} title="Remove from batch" aria-label="Remove from batch"><Trash2 size={16} /></button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="format-picker">
+            <label htmlFor="label-format-search">Label / sticker sheet format</label>
+            {format && (
+              <p className="format-picker-selected">
+                <strong>{format.brand ? `${format.brand}${format.code ? ` ${format.code}` : ""}` : format.name}</strong> — {describeFormat(format)}
+              </p>
+            )}
+            <input
+              id="label-format-search"
+              placeholder="Search by brand, code or size (e.g. &quot;102&quot;, &quot;50&quot;, &quot;tower&quot;)…"
+              value={formatQuery}
+              onChange={(e) => setFormatQuery(e.target.value)}
+            />
+            <div className="format-picker-results">
+              {(formatQuery.trim() ? [["Results", filteredFormats] as [string, LabelFormat[]]] : [...formatsByBrand.entries()]).map(([brand, list]) => (
+                <div className="format-picker-group" key={brand}>
+                  <div className="format-picker-group-label">{brand}</div>
+                  {list.map((f) => (
+                    <button
+                      type="button"
+                      key={f.id}
+                      className={`format-picker-row${f.id === formatId ? " active" : ""}`}
+                      onClick={() => changeFormat(f.id)}
+                    >
+                      <span className="format-picker-name">{f.brand ? `${f.brand} ${f.code ?? f.name}` : f.name}</span>
+                      <span className="format-picker-meta">{describeFormat(f)}</span>
+                    </button>
+                  ))}
+                </div>
+              ))}
+              {formatQuery.trim() && filteredFormats.length === 0 && <p className="settings-hint">No formats match &quot;{formatQuery}&quot;.</p>}
+            </div>
+          </div>
+
+          {message && <p className="form-error">{message}</p>}
+
+          <footer className="actions">
+            <button type="button" disabled={printing || !format || rows.length === 0} onClick={print}>
+              <Printer size={16} /> {printing ? "Printing…" : `Print ${totalCount} label${totalCount === 1 ? "" : "s"}`}
+            </button>
+          </footer>
+        </div>
+
+        {format && (
+          <div className="label-print-preview">
+            <div className="label-preview-single">
+              <h3>Single label</h3>
+              <div className="label-preview-frame" style={{ aspectRatio: `${format.widthMm} / ${format.heightMm}` }}>
+                {singleHtml ? <iframe title="Label preview" srcDoc={singleHtml} /> : <div className="label-preview-empty">Add a product to preview</div>}
+              </div>
+            </div>
+
+            {format.type === "a4_sheet" && format.sheetCols && format.sheetRows && (
+              <div className="label-preview-sheet">
+                <h3>{alignmentMode ? "Blank grid — alignment check" : `Sheet layout (page 1 of ${Math.max(1, sheetsNeeded)})`}</h3>
+                <ScaledSheetFrame srcDoc={sheetHtml} pageWidthMm={pageWidthMm} pageHeightMm={pageHeightMm} />
+                {!alignmentMode && (
+                  <>
+                    <p className="settings-hint">
+                      Click a cell below to mark it as already used on a partially-used sheet — the print job will skip it and fill the remaining gaps instead.
+                      {blockedPositions.size > 0 && ` (${blockedPositions.size} marked used)`}
+                    </p>
+                    <SheetPositionPicker cols={format.sheetCols} rows={format.sheetRows} blocked={blockedPositions} onToggle={toggleBlockedPosition} />
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -5749,9 +5855,9 @@ svg{width:100%;max-height:${svgMax}mm}
 // Distinct from buildBarcodeStickerHtml/LabelPrefs above (the Stock panel's
 // quick single-sticker reprint, fixed to 3 hardcoded sizes) — this is the
 // fuller "Print Labels" tab: DB-configurable formats (thermal AND A4 sheet
-// grids), a weighed-price field, and a live on-screen preview that reuses
-// this exact HTML (see LabelPreview) rather than a parallel React
-// re-implementation that could drift from what actually prints.
+// grids), a weighed-price field, and a live on-screen preview (rendered by
+// PrintLabelsPanel, below) that reuses this exact HTML rather than a
+// parallel React re-implementation that could drift from what actually prints.
 
 const LABEL_CELL_STYLE = `
 .label{box-sizing:border-box;padding:1.5mm;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;overflow:hidden;font-family:Inter,Arial,sans-serif}
@@ -5939,84 +6045,6 @@ function SheetPositionPicker({ cols, rows, blocked, onToggle }: { cols: number; 
           {pos}
         </button>
       ))}
-    </div>
-  );
-}
-
-// Reuses the exact same HTML the print button will send — an iframe
-// showing real generated markup, not a parallel React re-implementation
-// that could drift from what actually prints. Three views: a prominent
-// "X labels selected" count (so a selection bug is obvious at a glance
-// rather than only discoverable after printing), a zoomed single-label
-// view of the first item in the batch, and for a4_sheet formats, the
-// first sheet's full grid — either showing the real batch content, or (in
-// alignment mode) a blank grid of cell outlines for test-printing on
-// scrap paper without needing any product selected at all.
-function LabelPreview({ batch, format, blockedPositions, onToggleBlocked, alignmentMode, onToggleAlignmentMode }: {
-  batch: LabelBatchEntry[];
-  format: LabelFormat;
-  blockedPositions: Set<number>;
-  onToggleBlocked: (pos: number) => void;
-  alignmentMode: boolean;
-  onToggleAlignmentMode: () => void;
-}) {
-  const flat = useMemo(() => flattenBatch(batch), [batch]);
-  const totalCount = flat.length;
-  const pageWidthMm = format.pageWidthMm ?? 210;
-  const pageHeightMm = format.pageHeightMm ?? 297;
-
-  const singleHtml = useMemo(() => flat.length > 0 ? buildThermalPrintHtml(flat.slice(0, 1), format) : "", [flat, format]);
-
-  const perSheet = format.type === "a4_sheet" && format.sheetCols && format.sheetRows ? format.sheetCols * format.sheetRows : 0;
-  const sheetsNeeded = useMemo(() => perSheet > 0 ? placeOnSheets(flat, perSheet, blockedPositions).length : 0, [flat, perSheet, blockedPositions]);
-
-  const sheetHtml = useMemo(() => {
-    if (format.type !== "a4_sheet" || perSheet === 0) return "";
-    if (alignmentMode) return buildAlignmentSheetHtml(format);
-    // Only render enough labels to fill page 1 — the preview only ever
-    // shows that page, so there's no reason to build (and hide) HTML for
-    // sheets 2..N of a large batch.
-    const available1 = Math.max(0, perSheet - blockedPositions.size);
-    return buildA4SheetHtml(flat.slice(0, available1), format, blockedPositions);
-  }, [format, perSheet, alignmentMode, flat, blockedPositions]);
-
-  return (
-    <div className="panel label-preview">
-      <div className="label-preview-header">
-        <h2>{totalCount} label{totalCount === 1 ? "" : "s"} selected</h2>
-        {format.type === "a4_sheet" && perSheet > 0 && (
-          <button type="button" className={alignmentMode ? "toggle-on" : "toggle-off"} onClick={onToggleAlignmentMode}>
-            {alignmentMode ? "Showing blank alignment grid" : "Check alignment"}
-          </button>
-        )}
-      </div>
-
-      <div className="label-preview-single">
-        <h3>Single label</h3>
-        <div className="label-preview-frame" style={{ aspectRatio: `${format.widthMm} / ${format.heightMm}` }}>
-          {singleHtml ? <iframe title="Label preview" srcDoc={singleHtml} /> : <div className="label-preview-empty">Add a product below to preview</div>}
-        </div>
-      </div>
-
-      {format.type === "a4_sheet" && format.sheetCols && format.sheetRows && (
-        <div className="label-preview-sheet">
-          <h3>{alignmentMode ? "Blank grid — alignment check" : `Sheet layout (page 1 of ${Math.max(1, sheetsNeeded)})`}</h3>
-          <ScaledSheetFrame srcDoc={sheetHtml} pageWidthMm={pageWidthMm} pageHeightMm={pageHeightMm} />
-          {!alignmentMode && (
-            <>
-              <p className="settings-hint">
-                Click a cell below to mark it as already used on a partially-used sheet — the print job will skip it and fill the remaining gaps instead.
-                {blockedPositions.size > 0 && ` (${blockedPositions.size} marked used)`}
-              </p>
-              <SheetPositionPicker cols={format.sheetCols} rows={format.sheetRows} blocked={blockedPositions} onToggle={onToggleBlocked} />
-            </>
-          )}
-        </div>
-      )}
-
-      {!(format.type === "a4_sheet" && format.sheetCols && format.sheetRows) && (
-        <p className="settings-hint">{totalCount} label{totalCount === 1 ? "" : "s"} to print</p>
-      )}
     </div>
   );
 }

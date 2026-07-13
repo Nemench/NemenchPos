@@ -805,6 +805,32 @@ th {
   margin: 0 0 8px;
 }
 
+/* Print Labels: selection controls and the live preview are two columns
+   inside the SAME .label-preview panel (see PrintLabelsPanel) — not two
+   separate panels side by side. */
+.label-print-body {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+.label-print-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.label-print-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+@media (max-width: 920px) {
+  .label-print-body { grid-template-columns: 1fr; }
+}
+
 /* The "X labels selected" count needs to be the most visually prominent
    thing in the preview panel — it's the at-a-glance check that catches a
    selection bug (wrong count = something's wrong) before a print job
@@ -865,6 +891,79 @@ th {
 .label-batch-qty {
   width: 64px;
   flex-shrink: 0;
+}
+
+/* Searchable sheet format picker — a live-filtered results list (no
+   submit step) rather than a plain <select>, since a plain dropdown has
+   no way to search and hides sheet-size/label-size/count-per-sheet
+   behind whatever single-line text fits in an <option>. */
+.format-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.format-picker-selected {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.format-picker-results {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.format-picker-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 6px 8px 2px;
+}
+
+.format-picker-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.format-picker-row:hover {
+  background: var(--panel-alt, rgba(127, 127, 127, 0.1));
+}
+
+.format-picker-row.active {
+  background: var(--accent, #1a47a0);
+  color: #fff;
+}
+
+.format-picker-row.active .format-picker-meta {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.format-picker-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.format-picker-meta {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 /* Single-label view is genuinely zoomed in (fixed width, not scaled to

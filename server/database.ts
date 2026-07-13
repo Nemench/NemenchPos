@@ -2141,13 +2141,55 @@ export class KotDatabase {
       { id: "tw_w104", name: "Tower W104 - 4/sheet",   type: "a4_sheet", brand: "Tower", code: "W104", w: 98,   h: 139,  cols: 2, rows: 2,  mt: 9.5,   ml: 7,    gx: 0,   gy: 0, pw: null, ph: null, sort: 48 }, // TODO: unverified, calibrate
       { id: "tw_w114", name: "Tower W114 - 4/sheet",   type: "a4_sheet", brand: "Tower", code: "W114", w: 105,  h: 149,  cols: 2, rows: 2,  mt: 0,     ml: 0,    gx: 0,   gy: 0, pw: null, ph: null, sort: 49 }, // TODO: unverified, calibrate — published height (149x2=298mm) is 1mm over nominal A4 (297mm), normal rounding for this kind of sheet
       { id: "tw_w105", name: "Tower W105 - 2/sheet",   type: "a4_sheet", brand: "Tower", code: "W105", w: 199.5,h: 145.5,cols: 1, rows: 2,  mt: 3,     ml: 5.25, gx: 0,   gy: 0, pw: null, ph: null, sort: 50 }, // TODO: unverified, calibrate
-      { id: "tw_w106", name: "Tower W106 - 1/sheet (full page)", type: "a4_sheet", brand: "Tower", code: "W106", w: 210, h: 297, cols: 1, rows: 1, mt: 0, ml: 0, gx: 0, gy: 0, pw: null, ph: null, sort: 51 },
+      { id: "tw_w106", name: "Tower W106/TM106 - 1/sheet (full page)", type: "a4_sheet", brand: "Tower", code: "W106/TM106", w: 210, h: 297, cols: 1, rows: 1, mt: 0, ml: 0, gx: 0, gy: 0, pw: null, ph: null, sort: 51 },
+      // Per-sheet count wasn't given for these — computed as the max grid
+      // that fits the page with a 0mm gap (same TODO/unverified caveat).
+      { id: "tw_w240", name: "Tower W240 - 176/sheet",  type: "a4_sheet", brand: "Tower", code: "W240", w: 26,   h: 13.5, cols: 8, rows: 22, mt: 0,     ml: 1,    gx: 0, gy: 0, pw: null, ph: null, sort: 70 }, // TODO: unverified, calibrate — per-sheet count computed (not given)
+      { id: "tw_w225", name: "Tower W225 - 104/sheet",  type: "a4_sheet", brand: "Tower", code: "W225", w: 46,   h: 11.1, cols: 4, rows: 26, mt: 4.2,   ml: 13,   gx: 0, gy: 0, pw: null, ph: null, sort: 71 }, // TODO: unverified, calibrate — per-sheet count computed (not given)
+      { id: "tw_w121", name: "Tower W121 - 16/sheet",   type: "a4_sheet", brand: "Tower", code: "W121", w: 99,   h: 33.9, cols: 2, rows: 8,  mt: 12.9,  ml: 6,    gx: 0, gy: 0, pw: null, ph: null, sort: 72 }, // TODO: unverified, calibrate — per-sheet count computed (not given); ≈ a4_16/L7162
+      { id: "tw_w223", name: "Tower W223 - 12/sheet",   type: "a4_sheet", brand: "Tower", code: "W223", w: 76.2, h: 46,   cols: 2, rows: 6,  mt: 10.5,  ml: 28.8, gx: 0, gy: 0, pw: null, ph: null, sort: 73 }, // TODO: unverified, calibrate
+      { id: "tw_w227", name: "Tower W227 - 10/sheet",   type: "a4_sheet", brand: "Tower", code: "W227", w: 70,   h: 52,   cols: 2, rows: 5,  mt: 18.5,  ml: 35,   gx: 0, gy: 0, pw: null, ph: null, sort: 74 }, // TODO: unverified, calibrate
+      { id: "tw_w235", name: "Tower W235 - 9/sheet",    type: "a4_sheet", brand: "Tower", code: "W235", w: 67,   h: 90,   cols: 3, rows: 3,  mt: 13.5,  ml: 4.5,  gx: 0, gy: 0, pw: null, ph: null, sort: 75 }, // TODO: unverified, calibrate
+      { id: "tw_w221", name: "Tower W221 - 8/sheet",    type: "a4_sheet", brand: "Tower", code: "W221", w: 70,   h: 70,   cols: 2, rows: 4,  mt: 8.5,   ml: 35,   gx: 0, gy: 0, pw: null, ph: null, sort: 76 }, // TODO: unverified, calibrate
+      // W232 (139x99.1mm, 4/sheet) only fits an A4 sheet used in
+      // LANDSCAPE, same reasoning as W111 above.
+      { id: "tw_w232", name: "Tower W232 - 4/sheet (landscape)", type: "a4_sheet", brand: "Tower", code: "W232", w: 139, h: 99.1, cols: 2, rows: 2, mt: 5.9, ml: 9.5, gx: 0, gy: 0, pw: 297, ph: 210, sort: 77 }, // TODO: unverified, calibrate
+      // Round labels (W228/W116/W117/W118): this app's label renderer
+      // only draws rectangular cells (see buildLabelCellHtml) — there's
+      // no round-label-specific rendering, so these are stored using the
+      // circle's diameter as a square bounding box for grid math. The
+      // printed content will fill that square, not clipped to a circle —
+      // fine for cutting a printed sheet against a physical round
+      // sticker sheet (the backing paper's circles are what actually
+      // define the visible shape), but be aware the rendered rectangle
+      // itself isn't round.
+      { id: "tw_w228", name: "Tower W228 - 2/sheet (Ø117mm CD/DVD)", type: "a4_sheet", brand: "Tower", code: "W228", w: 117, h: 117, cols: 1, rows: 2, mt: 31.5, ml: 46.5, gx: 0, gy: 0, pw: null, ph: null, sort: 78 }, // TODO: unverified, calibrate — round label, bounding-box only (see comment above)
+      { id: "tw_w116", name: "Tower W116 - 54/sheet (Ø32mm round)",   type: "a4_sheet", brand: "Tower", code: "W116", w: 32,  h: 32,  cols: 6, rows: 9,  mt: 4.5,  ml: 9,    gx: 0, gy: 0, pw: null, ph: null, sort: 79 }, // TODO: unverified, calibrate — round label, bounding-box only; per-sheet count computed (not given)
+      { id: "tw_w117", name: "Tower W117 - 20/sheet (Ø50mm round)",   type: "a4_sheet", brand: "Tower", code: "W117", w: 50,  h: 50,  cols: 4, rows: 5,  mt: 23.5, ml: 5,    gx: 0, gy: 0, pw: null, ph: null, sort: 80 }, // TODO: unverified, calibrate — round label, bounding-box only; per-sheet count computed (not given)
+      { id: "tw_w118", name: "Tower W118 - 6/sheet (Ø80mm round)",    type: "a4_sheet", brand: "Tower", code: "W118", w: 80,  h: 80,  cols: 2, rows: 3,  mt: 28.5, ml: 25,   gx: 0, gy: 0, pw: null, ph: null, sort: 81 }, // TODO: unverified, calibrate — round label, bounding-box only; per-sheet count computed (not given)
+      { id: "tw_w330", name: "Tower W330 - 4/sheet (lever arch)",     type: "a4_sheet", brand: "Tower", code: "W330", w: 200, h: 60,  cols: 1, rows: 4,  mt: 28.5, ml: 5,    gx: 0, gy: 0, pw: null, ph: null, sort: 82 }, // TODO: unverified, calibrate
+      { id: "tw_w231", name: "Tower W231 - 1/sheet",    type: "a4_sheet", brand: "Tower", code: "W231", w: 199.6,h: 289,  cols: 1, rows: 1,  mt: 4,     ml: 5.2,  gx: 0, gy: 0, pw: null, ph: null, sort: 83 }, // TODO: unverified, calibrate
 
       // ── Avery (international / US Letter — NOT A4, see comment above) ──
       { id: "av_5160", name: "Avery 5160/8160 - 30/sheet (US Letter)", type: "a4_sheet", brand: "Avery", code: "5160/8160", w: 66.7,  h: 25.4, cols: 3, rows: 10, mt: 12.7, ml: 4.8,  gx: 3.2, gy: 0, pw: 215.9, ph: 279.4, sort: 60 },
       { id: "av_5163", name: "Avery 5163/8163 - 10/sheet (US Letter)", type: "a4_sheet", brand: "Avery", code: "5163/8163", w: 101.6, h: 50.8, cols: 2, rows: 5,  mt: 12.7, ml: 6.35, gx: 0,   gy: 0, pw: 215.9, ph: 279.4, sort: 61 },
       { id: "av_5164", name: "Avery 5164 - 6/sheet (US Letter)",       type: "a4_sheet", brand: "Avery", code: "5164",      w: 101.6, h: 84.7, cols: 2, rows: 3,  mt: 12.65,ml: 6.35, gx: 0,   gy: 0, pw: 215.9, ph: 279.4, sort: 62 },
-      { id: "av_5167", name: "Avery 5167 - 80/sheet (US Letter)",      type: "a4_sheet", brand: "Avery", code: "5167",      w: 44.5,  h: 12.7, cols: 4, rows: 20, mt: 12.7, ml: 18.95,gx: 0,   gy: 0, pw: 215.9, ph: 279.4, sort: 63 } // TODO: side margin is a rough estimate, not cross-checked — verify against Avery's own template before a bulk run
+      { id: "av_5167", name: "Avery 5167 - 80/sheet (US Letter)",      type: "a4_sheet", brand: "Avery", code: "5167",      w: 44.5,  h: 12.7, cols: 4, rows: 20, mt: 12.7, ml: 18.95,gx: 0,   gy: 0, pw: 215.9, ph: 279.4, sort: 63 }, // TODO: side margin is a rough estimate, not cross-checked — verify against Avery's own template before a bulk run
+      // Requested as "33.9 x 66.7mm" — that doesn't tile onto any A4 or
+      // Letter page at 14/sheet (checked both ways round). Avery's own
+      // published spec for 5262/8462 is a 1-1/3" x 4" (33.9 x 101.6mm)
+      // address label used LANDSCAPE (101.6mm wide x 33.9mm tall), 2
+      // columns x 7 rows = 14/sheet — used that verified size/orientation
+      // instead of the requested figure, which would never have printed
+      // correctly.
+      { id: "av_5262", name: "Avery 5262/8462 - 14/sheet (US Letter)", type: "a4_sheet", brand: "Avery", code: "5262/8462", w: 101.6, h: 33.9, cols: 2, rows: 7, mt: 21.05, ml: 6.35, gx: 0, gy: 0, pw: 215.9, ph: 279.4, sort: 64 }
+      // Deliberately NOT adding a separate "Avery 7160" entry: every
+      // independent source checked for this says "7160" is simply
+      // Avery's own shorthand for L7160 — the same 63.5x38.1mm,
+      // 21-per-sheet A4 layout already seeded above as a4_21/tw_w108.
+      // There's no genuine distinct 30-per-sheet A4 product by that name
+      // (that count only exists on 5160's US Letter page) — adding one
+      // under a fabricated size would just be wrong data.
     ]) {
       seedLabelFormat.run(f.id, f.name, f.type, f.brand, f.code, f.w, f.h, f.cols, f.rows, f.mt, f.ml, f.gx, f.gy, f.pw, f.ph, f.sort, nowIso);
     }
