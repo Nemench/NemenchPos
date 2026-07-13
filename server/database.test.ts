@@ -66,3 +66,88 @@ describe("reconcileMissingBarcodes", () => {
     expect(db.reconcileMissingBarcodes()).toEqual([]);
   });
 });
+
+describe("reconcileMissingItemCodes", () => {
+  let dataDir: string;
+  let originalDataDir: string | undefined;
+
+  beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemenchpos-test-"));
+    originalDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = dataDir;
+  });
+
+  afterEach(() => {
+    if (originalDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = originalDataDir;
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("fills in a 5-digit item code for every weighed product missing one, leaves existing item codes and qty products untouched", () => {
+    const db = new KotDatabase();
+    db.initialize();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = (db as any).db as BetterSqlite3.Database;
+    const now = new Date().toISOString();
+    const insert = raw.prepare(
+      "INSERT INTO products (name, category, unitDefault, department, itemCode, isActive, createdAt, updatedAt) VALUES (?, ?, ?, 'counter', ?, 1, ?, ?)"
+    );
+    const missingId = Number(insert.run("Baguette", "Bakery", "kg", null, now, now).lastInsertRowid);
+    const existingId = Number(insert.run("Brown Bread Loaf", "Bakery", "kg", "00777", now, now).lastInsertRowid);
+    const qtyId = Number(insert.run("Ciabatta Rolls (4pk)", "Bakery", "qty", null, now, now).lastInsertRowid);
+
+    const fixedIds = db.reconcileMissingItemCodes();
+
+    expect(fixedIds).toEqual([missingId]);
+
+    const rows = raw.prepare("SELECT id, itemCode FROM products WHERE id IN (?, ?, ?)").all(missingId, existingId, qtyId) as { id: number; itemCode: string | null }[];
+    const byId = new Map(rows.map((r) => [r.id, r.itemCode]));
+
+    expect(byId.get(missingId)).toMatch(/^\d{5}$/);
+    // Never overwrites an item code that was already there.
+    expect(byId.get(existingId)).toBe("00777");
+    // qty products deliberately never get an item code — they use barcode.
+    expect(byId.get(qtyId)).toBeNull();
+  });
+});
+
+describe("reconcileMissingCodes", () => {
+  let dataDir: string;
+  let originalDataDir: string | undefined;
+
+  beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemenchpos-test-"));
+    originalDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = dataDir;
+  });
+
+  afterEach(() => {
+    if (originalDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = originalDataDir;
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("leaves no active product without SOME code, regardless of type", () => {
+    const db = new KotDatabase();
+    db.initialize();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = (db as any).db as BetterSqlite3.Database;
+    const now = new Date().toISOString();
+    const insert = raw.prepare(
+      "INSERT INTO products (name, category, unitDefault, department, isActive, createdAt, updatedAt) VALUES (?, ?, ?, 'counter', 1, ?, ?)"
+    );
+    insert.run("Baguette", "Bakery", "kg", now, now);
+    insert.run("Ciabatta Rolls (4pk)", "Bakery", "qty", now, now);
+
+    db.reconcileMissingCodes();
+
+    const withoutCode = raw.prepare(`
+      SELECT id, name, unitDefault, barcode, itemCode FROM products
+      WHERE isActive = 1
+        AND ((unitDefault = 'qty' AND (barcode IS NULL OR barcode = ''))
+          OR (unitDefault != 'qty' AND (itemCode IS NULL OR itemCode = '')))
+    `).all();
+
+    expect(withoutCode).toEqual([]);
+  });
+});

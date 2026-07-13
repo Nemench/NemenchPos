@@ -52,10 +52,10 @@ export class KotDatabase {
     this.migrate();
     this.seed();
     // Startup reconciliation pass (index.ts calls initialize() once, at
-    // boot) — see reconcileMissingBarcodes' own comment for why this is
-    // needed even though upsertProduct already auto-generates a barcode
-    // for a normal product save.
-    this.reconcileMissingBarcodes();
+    // boot) — see reconcileMissingCodes' own comment for why this is
+    // needed even though upsertProduct already auto-generates a
+    // barcode/itemCode for a normal product save.
+    this.reconcileMissingCodes();
   }
 
   // Fixed-unit products should always end up with a real, scannable
@@ -86,6 +86,42 @@ export class KotDatabase {
       console.log(`[barcode-reconcile] Generated barcodes for ${fixedIds.length} product(s) that had none: ${fixedIds.join(", ")}`);
     }
     return fixedIds;
+  }
+
+  // The weighed-product counterpart to reconcileMissingBarcodes above —
+  // same gap, same fix. upsertProduct already auto-assigns an itemCode
+  // (scale PLU) for a weighed product missing one on every normal save
+  // (see generateItemCode), but CSV import and any pre-existing/legacy
+  // row bypass that entirely, exactly like the barcode case. Every
+  // active product must end up with SOME code — a static barcode if
+  // fixed-unit, an item code if weighed — never neither. Never
+  // overwrites an existing itemCode, only fills a genuinely null/empty
+  // one.
+  reconcileMissingItemCodes(): number[] {
+    const missing = this.db
+      .prepare("SELECT id FROM products WHERE isActive = 1 AND unitDefault != 'qty' AND (itemCode IS NULL OR itemCode = '')")
+      .all() as { id: number }[];
+    const fixedIds: number[] = [];
+    for (const { id } of missing) {
+      this.db.prepare("UPDATE products SET itemCode = ? WHERE id = ?").run(this.generateItemCode(id), id);
+      fixedIds.push(id);
+    }
+    if (fixedIds.length > 0) {
+      console.log(`[itemcode-reconcile] Generated item codes for ${fixedIds.length} product(s) that had none: ${fixedIds.join(", ")}`);
+    }
+    return fixedIds;
+  }
+
+  // Single entry point for "every active product has some code" — called
+  // at startup and after every CSV import (see initialize()/
+  // importProducts() below). Barcodes first: reconcileMissingItemCodes
+  // calls generateItemCode, which scans every OTHER product's itemCode to
+  // avoid a collision, and running barcode reconciliation first doesn't
+  // affect that scan either way, but keeping a fixed order here makes the
+  // audit log output deterministic run to run.
+  reconcileMissingCodes(): void {
+    this.reconcileMissingBarcodes();
+    this.reconcileMissingItemCodes();
   }
 
   // ── Users ──────────────────────────────────────────────────────────────────
@@ -770,9 +806,10 @@ export class KotDatabase {
     });
     upsert();
     // CSV import writes rows directly rather than through upsertProduct,
-    // so it never gets that method's own barcode auto-generation — this
-    // fixes any newly-imported/updated qty product left without one.
-    this.reconcileMissingBarcodes();
+    // so it never gets that method's own barcode/itemCode auto-
+    // generation — this fixes any newly-imported/updated product left
+    // without a code.
+    this.reconcileMissingCodes();
     return { imported, errors };
   }
 
