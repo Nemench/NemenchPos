@@ -865,13 +865,23 @@ th {
   margin: 12px 0;
 }
 
+/* One row per product in the batch, stacked two-high: name + remove on
+   top (full width, so a long product name has room to actually show
+   instead of truncating after 3 characters), quantity/weight fields
+   below with their own mini-labels rather than two bare number boxes. */
 .label-batch-row {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+.label-batch-row-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 .label-batch-row-info {
@@ -887,31 +897,74 @@ th {
   white-space: nowrap;
 }
 
-.label-batch-weight,
-.label-batch-qty {
-  width: 64px;
-  flex-shrink: 0;
+.label-batch-row-bottom {
+  display: flex;
+  gap: 12px;
+}
+
+.label-batch-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.label-batch-field input {
+  width: 84px;
 }
 
 /* Searchable sheet format picker — a live-filtered results list (no
    submit step) rather than a plain <select>, since a plain dropdown has
    no way to search and hides sheet-size/label-size/count-per-sheet
-   behind whatever single-line text fits in an <option>. */
+   behind whatever single-line text fits in an <option>. Collapsed to a
+   single summary line + "Change" button outside of active picking, so
+   the (potentially long) results list doesn't compete for sidebar width
+   with the batch list above it. */
 .format-picker {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.format-picker-selected {
-  margin: 0;
-  font-size: 13px;
+.format-picker-label {
+  font-size: 12px;
+  font-weight: 600;
   color: var(--muted);
+}
+
+.format-picker-collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.format-picker-selected {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.format-picker-selected strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.format-picker-selected .muted {
+  font-size: 12px;
 }
 
 .format-picker-results {
   max-height: 260px;
   overflow-y: auto;
+  overflow-x: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 6px;
@@ -974,11 +1027,17 @@ th {
 .format-picker-name {
   font-weight: 600;
   font-size: 13px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .format-picker-meta {
   font-size: 12px;
   color: var(--muted);
+  max-width: 100%;
+  overflow-wrap: break-word;
 }
 
 .custom-format-form {

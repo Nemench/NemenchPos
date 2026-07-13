@@ -2123,6 +2123,12 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
   const [formats, setFormats] = useState<LabelFormat[]>([]);
   const [formatId, setFormatId] = useState("");
   const [formatQuery, setFormatQuery] = useState("");
+  // The results list only takes over the panel while actively picking a
+  // format — collapsed to a single summary line the rest of the time, so
+  // it doesn't compete for space with the batch list below it (this was
+  // previously always-expanded, which is what made the sidebar cramped
+  // enough to force a horizontal scrollbar on long rows).
+  const [formatPickerOpen, setFormatPickerOpen] = useState(false);
   const [blockedPositions, setBlockedPositions] = useState<Set<number>>(new Set());
   const [alignmentMode, setAlignmentMode] = useState(false);
   const [printing, setPrinting] = useState(false);
@@ -2197,6 +2203,8 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
     setFormatId(id);
     setBlockedPositions(new Set());
     localStorage.setItem(LAST_LABEL_FORMAT_KEY, id);
+    setFormatPickerOpen(false);
+    setFormatQuery("");
   };
 
   const toggleBlockedPosition = (pos: number) => {
@@ -2236,6 +2244,8 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
         : await api.labels.createFormat(input);
       await loadFormats(saved.id);
       closeCustomFormatForm();
+      setFormatPickerOpen(false);
+      setFormatQuery("");
     } catch (err) {
       setCustomFormError(err instanceof Error ? err.message : "Could not save this format.");
     } finally {
@@ -2368,19 +2378,27 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
                 const isWeighed = r.product.unitDefault !== "qty";
                 return (
                   <div className="label-batch-row" key={r.id}>
-                    <div className="label-batch-row-info">
-                      <strong>{r.product.name}</strong>
-                      <span className="muted">
-                        {r.product.pricePerUnit != null ? `${currency.format(r.product.pricePerUnit)}${isWeighed ? "/kg" : ""}` : "No price set"}
-                        {" · "}
-                        {isWeighed ? (r.product.itemCode || "No item code") : (r.product.barcode || "No barcode")}
-                      </span>
+                    <div className="label-batch-row-top">
+                      <div className="label-batch-row-info">
+                        <strong title={r.product.name}>{r.product.name}</strong>
+                        <span className="muted">
+                          {r.product.pricePerUnit != null ? `${currency.format(r.product.pricePerUnit)}${isWeighed ? "/kg" : ""}` : "No price set"}
+                          {" · "}
+                          {isWeighed ? (r.product.itemCode || "No item code") : (r.product.barcode || "No barcode")}
+                        </span>
+                      </div>
+                      <button type="button" className="icon-button danger sm" onClick={() => removeRow(r.id)} title="Remove from batch" aria-label="Remove from batch"><Trash2 size={16} /></button>
                     </div>
-                    {isWeighed && (
-                      <input type="number" min="0" step="0.001" className="label-batch-weight" placeholder="kg" value={r.weightKgText} onChange={(e) => updateRow(r.id, { weightKgText: e.target.value })} />
-                    )}
-                    <input type="number" min="1" max="5000" className="label-batch-qty" value={r.quantity} onChange={(e) => updateRow(r.id, { quantity: Math.max(1, Number(e.target.value) || 1) })} />
-                    <button type="button" className="icon-button danger" onClick={() => removeRow(r.id)} title="Remove from batch" aria-label="Remove from batch"><Trash2 size={16} /></button>
+                    <div className="label-batch-row-bottom">
+                      {isWeighed && (
+                        <label className="label-batch-field">Weight (kg)
+                          <input type="number" min="0" step="0.001" placeholder="0.000" value={r.weightKgText} onChange={(e) => updateRow(r.id, { weightKgText: e.target.value })} />
+                        </label>
+                      )}
+                      <label className="label-batch-field">Qty
+                        <input type="number" min="1" max="5000" value={r.quantity} onChange={(e) => updateRow(r.id, { quantity: Math.max(1, Number(e.target.value) || 1) })} />
+                      </label>
+                    </div>
                   </div>
                 );
               })}
@@ -2388,42 +2406,55 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
           )}
 
           <div className="format-picker">
-            <label htmlFor="label-format-search">Label / sticker sheet format</label>
-            {format && (
-              <p className="format-picker-selected">
-                <strong>{format.brand ? `${format.brand}${format.code ? ` ${format.code}` : ""}` : format.name}</strong> — {describeFormat(format)}
-              </p>
-            )}
-            <input
-              id="label-format-search"
-              placeholder="Search by brand, code or size (e.g. &quot;102&quot;, &quot;50&quot;, &quot;tower&quot;)…"
-              value={formatQuery}
-              onChange={(e) => setFormatQuery(e.target.value)}
-            />
-            <div className="format-picker-results">
-              {(formatQuery.trim() ? [["Results", filteredFormats] as [string, LabelFormat[]]] : [...formatsByBrand.entries()]).map(([brand, list]) => (
-                <div className="format-picker-group" key={brand}>
-                  <div className="format-picker-group-label">{brand}</div>
-                  {list.map((f) => (
-                    <div className={`format-picker-row-wrap${f.id === formatId ? " active" : ""}`} key={f.id}>
-                      <button type="button" className="format-picker-row" onClick={() => changeFormat(f.id)}>
-                        <span className="format-picker-name">{f.brand ? `${f.brand} ${f.code ?? f.name}` : f.name}</span>
-                        <span className="format-picker-meta">{describeFormat(f)}</span>
-                      </button>
-                      {f.id.startsWith("custom_") && (
-                        <span className="format-picker-row-actions">
-                          <button type="button" className="icon-button sm" title="Edit this custom format" aria-label="Edit" onClick={() => openEditCustomFormat(f)}><Pencil size={14} /></button>
-                          <button type="button" className="icon-button danger sm" title="Delete this custom format" aria-label="Delete" onClick={() => void deleteCustomFormat(f)}><Trash2 size={14} /></button>
-                        </span>
-                      )}
+            <span className="format-picker-label">Label / sticker sheet format</span>
+            {!formatPickerOpen ? (
+              <div className="format-picker-collapsed">
+                {format ? (
+                  <div className="format-picker-selected">
+                    <strong>{format.brand ? `${format.brand}${format.code ? ` ${format.code}` : ""}` : format.name}</strong>
+                    <span className="muted">{describeFormat(format)}</span>
+                  </div>
+                ) : (
+                  <span className="muted">Loading formats…</span>
+                )}
+                <button type="button" className="secondary sm" onClick={() => setFormatPickerOpen(true)}>Change</button>
+              </div>
+            ) : (
+              <>
+                <input
+                  id="label-format-search"
+                  placeholder="Search by brand, code or size (e.g. &quot;102&quot;, &quot;50&quot;, &quot;tower&quot;)…"
+                  value={formatQuery}
+                  onChange={(e) => setFormatQuery(e.target.value)}
+                  autoFocus
+                />
+                <div className="format-picker-results">
+                  {(formatQuery.trim() ? [["Results", filteredFormats] as [string, LabelFormat[]]] : [...formatsByBrand.entries()]).map(([brand, list]) => (
+                    <div className="format-picker-group" key={brand}>
+                      <div className="format-picker-group-label">{brand}</div>
+                      {list.map((f) => (
+                        <div className={`format-picker-row-wrap${f.id === formatId ? " active" : ""}`} key={f.id}>
+                          <button type="button" className="format-picker-row" onClick={() => changeFormat(f.id)}>
+                            <span className="format-picker-name">{f.brand ? `${f.brand} ${f.code ?? f.name}` : f.name}</span>
+                            <span className="format-picker-meta">{describeFormat(f)}</span>
+                          </button>
+                          {f.id.startsWith("custom_") && (
+                            <span className="format-picker-row-actions">
+                              <button type="button" className="icon-button sm" title="Edit this custom format" aria-label="Edit" onClick={() => openEditCustomFormat(f)}><Pencil size={14} /></button>
+                              <button type="button" className="icon-button danger sm" title="Delete this custom format" aria-label="Delete" onClick={() => void deleteCustomFormat(f)}><Trash2 size={14} /></button>
+                            </span>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   ))}
+                  {formatQuery.trim() && filteredFormats.length === 0 && <p className="settings-hint">No formats match &quot;{formatQuery}&quot;.</p>}
                 </div>
-              ))}
-              {formatQuery.trim() && filteredFormats.length === 0 && <p className="settings-hint">No formats match &quot;{formatQuery}&quot;.</p>}
-            </div>
+                <button type="button" className="secondary sm" onClick={() => { setFormatPickerOpen(false); setFormatQuery(""); }}>Done</button>
+              </>
+            )}
 
-            {!customFormOpen ? (
+            {formatPickerOpen && (!customFormOpen ? (
               <button type="button" className="secondary sm" onClick={openAddCustomFormat}><Plus size={14} /> Add a sheet not listed above</button>
             ) : (
               <div className="custom-format-form">
@@ -2461,7 +2492,7 @@ function PrintLabelsPanel({ products }: { products: Product[] }) {
                   </button>
                 </footer>
               </div>
-            )}
+            ))}
           </div>
 
           {message && <p className="form-error">{message}</p>}
