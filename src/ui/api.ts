@@ -73,7 +73,6 @@ export const api = {
   },
   products: {
     list: () => req<Product[]>("GET", "/products"),
-    quickPicks: () => req<Product[]>("GET", "/products/quick-picks"),
     save: (data: ProductInput) =>
       data.id ? req<Product>("PUT", `/products/${data.id}`, data) : req<Product>("POST", "/products", data),
     delete: (id: number) => req<void>("DELETE", `/products/${id}`),
