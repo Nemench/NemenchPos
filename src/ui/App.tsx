@@ -81,10 +81,12 @@ import type {
   LabelFormatInput,
   LabelData,
   DiscoveredPrinter,
+  PrintQueueJob,
   UnitDefault
 } from "../shared/types";
 import { api, assetUrl } from "./api";
 import { useBarcodeScan } from "./useBarcodeScan";
+import { calculateLineTotal, buildCartLine } from "../shared/posCart";
 import { iconSwitcher, type IconVariant } from "./iconSwitcher";
 import { applyTheme, applyThemeMode, deriveShades, initThemeMode, ThemeMode } from "./theme";
 import { tokenStorage } from "./tokenStorage";
@@ -827,9 +829,24 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
   };
 
   const [search, setSearch] = useState("");
-  const [category, setCategory] = useState("All");
+  // Which category's product list is expanded below the category-button
+  // row — null (the idle default) shows no product list at all, only the
+  // scan panel/quick picks/category buttons themselves, so the full
+  // catalog is never rendered at once (see categoryProducts below).
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
+  const [quickPicks, setQuickPicks] = useState<Product[]>([]);
+  const [scanError, setScanError] = useState("");
   const [cart, setCart] = useState<OrderItemInput[]>(() => loadSavedSale().cart);
   const [discount, setDiscount] = useState(() => loadSavedSale().discount);
+  // Which cart line the numeric keypad is currently editing — set
+  // automatically to whichever line was just added (see the effect
+  // below), or by tapping a line in the till slip.
+  const [selectedLine, setSelectedLine] = useState<number | null>(null);
+  const [keypadValue, setKeypadValue] = useState("");
+  // Briefly highlighted till-slip line index — the "brief background
+  // flash" confirmation that an add (scan OR manual tap/quick-pick —
+  // deliberately the same for both, see addToCart) actually landed.
+  const [flashLineIndex, setFlashLineIndex] = useState<number | null>(null);
   // Opens a dedicated modal to enter/change the discount, rather than a
   // plain always-visible number field — a bare inline input next to a
   // dozen other numbers on the receipt is too easy to miss as an actual
@@ -903,14 +920,15 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
     localStorage.setItem(posSaleKey, JSON.stringify({ cart, discount }));
   }, [cart, discount]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const categories = useMemo(() => ["All", ...Array.from(new Set(products.map((p) => p.category || "Other"))).sort()], [products]);
+  // "All" deliberately excluded — there's no idle-state "show everything"
+  // button; category → filtered list only on demand (see categoryProducts).
+  const categories = useMemo(() => Array.from(new Set(products.map((p) => p.category || "Other"))).sort(), [products]);
 
   // Fixed hue order (never reassigned by filtering/sorting elsewhere) so a
   // category's color stays put — the 9th+ category folds into a neutral
   // "other" badge rather than wrapping back onto an already-used hue.
-  const sortedCategories = useMemo(() => categories.filter((c) => c !== "All"), [categories]);
   const categoryBadgeClass = (cat: string) => {
-    const idx = sortedCategories.indexOf(cat);
+    const idx = categories.indexOf(cat);
     return idx >= 0 && idx < 8 ? `pos-cat-${idx + 1}` : "pos-cat-other";
   };
 
@@ -922,23 +940,64 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
     return words.length > 1 ? (words[0][0] + words[1][0]).toUpperCase() : name.slice(0, 2).toUpperCase();
   };
 
-  const visibleProducts = useMemo(() => {
+  // Only computed/rendered while a category is actually expanded — the
+  // idle screen never mounts a product grid at all.
+  const categoryProducts = useMemo(() => {
+    if (!expandedCategory) return [];
+    return products.filter((p) => (p.category || "Other") === expandedCategory).sort((a, b) => a.name.localeCompare(b.name));
+  }, [products, expandedCategory]);
+
+  // Manual-fallback search matches — a small results list under the scan
+  // panel, same "search reveals results, nothing shown otherwise" pattern
+  // used elsewhere in this app (Print Labels, Stock).
+  const searchMatches = useMemo(() => {
     const q = search.trim().toLowerCase();
+    if (!q) return [];
     return products
-      .filter((p) => category === "All" || (p.category || "Other") === category)
-      .filter((p) => !q || p.name.toLowerCase().includes(q))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [products, category, search]);
+      .filter((p) => p.name.toLowerCase().includes(q) || (p.barcode ?? "").includes(q) || (p.itemCode ?? "").includes(q))
+      .slice(0, 8);
+  }, [products, search]);
+
+  useEffect(() => {
+    api.products.quickPicks().then(setQuickPicks).catch(() => undefined);
+  }, []);
+
+  // Auto-selects AND flashes whichever line was just appended — same
+  // behavior regardless of how it got there (scan, tile tap, quick pick,
+  // or a search-result click all funnel through addToCart below), so
+  // there is exactly one "a line was added" code path, not a scan-specific
+  // one layered on top of a manual one. Only fires on growth, not on
+  // every cart change (editing/removing a line shouldn't yank the
+  // selection away from what the cashier is actively working on).
+  const prevCartLength = useRef(cart.length);
+  useEffect(() => {
+    if (cart.length > prevCartLength.current) {
+      const newIndex = cart.length - 1;
+      setSelectedLine(newIndex);
+      const line = cart[newIndex];
+      setKeypadValue(line ? String(line.kg ?? line.quantity ?? "") : "");
+      setFlashLineIndex(newIndex);
+      window.setTimeout(() => setFlashLineIndex(null), 500);
+    }
+    prevCartLength.current = cart.length;
+  }, [cart]);
 
   // Tapping a tile either bumps an existing line's qty (count-priced items,
-  // where "tap 3 times" is the natural touch gesture) or adds a new 1kg line
-  // (weight-priced items, where the weight still needs confirming/editing —
-  // see the stepper below) rather than trying to guess a sensible default kg.
-  // Blocked entirely for a product with no recorded cost price — the
-  // server enforces this too (see createOrder's cost check), this is just
-  // the earlier, friendlier stop.
-  const addToCart = (p: Product) => {
+  // where "tap 3 times" is the natural touch gesture) or adds a new line
+  // (weight-priced items, where the weight still needs confirming via the
+  // keypad below) rather than trying to guess a sensible default kg.
+  // `wantedPrice`, when given (a scanned weigh-label decoded a real
+  // price), pre-fills the actual weight that label was for instead of a
+  // generic 1kg placeholder. buildCartLine (shared/posCart.ts) is the
+  // SAME function every add path calls — manual tile tap, quick pick,
+  // search-result click, or a barcode scan (see handleScan below) — so
+  // there is no separate/divergent "scan add" implementation. Blocked
+  // entirely for a product with no recorded cost price — the server
+  // enforces this too (see createOrder's cost check), this is just the
+  // earlier, friendlier stop.
+  const addToCart = (p: Product, wantedPrice?: number) => {
     if (p.currentCost == null) { setError(`"${p.name}" has no cost price set — add one in Stock before selling it.`); return; }
+    setError(""); setScanError("");
     setCart((cur) => {
       if (p.unitDefault === "qty") {
         const idx = cur.findIndex((i) => i.productId === p.id);
@@ -949,14 +1008,66 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
           return next;
         }
       }
-      const line: OrderItemInput = {
-        productId: p.id, name: p.name, notes: "", department: "counter", unitPrice: p.pricePerUnit,
-        kg: p.unitDefault === "qty" ? null : 1,
-        quantity: p.unitDefault === "qty" ? 1 : null,
-        wantedPrice: null, lineTotal: null
-      };
-      return [...cur, { ...line, lineTotal: calculateLineTotal(line) }];
+      return [...cur, buildCartLine(p, wantedPrice)];
     });
+  };
+
+  // Scanner capture — the "always-focused hidden input" pattern proven
+  // working in isolation on /dev/scan-test (see ScanTestPage), now wired
+  // into the real screen. No timing/burst-speed heuristics: a hardware
+  // scanner just types its decoded digits followed by Enter into
+  // whatever currently has focus, so keeping a dedicated hidden input
+  // focused by default is the entire mechanism.
+  //
+  // "A real field currently in use" is tracked via document-level
+  // focusin/focusout (not per-field onFocus/onBlur wiring, which is easy
+  // to forget when a new field gets added later) — refocusing the hidden
+  // input is deferred one tick on focusout so document.activeElement has
+  // already settled on wherever focus actually landed next before
+  // deciding whether to steal it back.
+  const hiddenScanRef = useRef<HTMLInputElement>(null);
+  const HIDDEN_SCAN_ID = "pos-hidden-scan-input";
+  const [hiddenScanValue, setHiddenScanValue] = useState("");
+
+  useEffect(() => {
+    const isRealInput = (el: Element | null): boolean =>
+      el instanceof HTMLElement && (el.tagName === "INPUT" || el.tagName === "TEXTAREA") && el.id !== HIDDEN_SCAN_ID;
+
+    const refocusHidden = () => {
+      if (!isRealInput(document.activeElement)) hiddenScanRef.current?.focus({ preventScroll: true });
+    };
+
+    const onFocusOut = () => window.setTimeout(refocusHidden, 0);
+
+    document.addEventListener("focusout", onFocusOut);
+    refocusHidden(); // claim focus on mount
+    return () => document.removeEventListener("focusout", onFocusOut);
+  }, []);
+
+  const handleHiddenScanKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const code = hiddenScanValue.trim();
+    setHiddenScanValue(""); // always clear immediately — ready for the next scan regardless of outcome
+    if (code) void handleScan(code);
+  };
+
+  // Reused by both the hidden scanner input above and the manual search
+  // box's Enter fallback (same lookup, same add — see addToCart) — a
+  // weigh-label decodes to an itemCode + the actual price that label was
+  // printed for (see parseWeighBarcode); a plain product barcode is
+  // looked up as-is. On a miss, shows a brief, non-blocking inline
+  // message near the scan panel rather than adding a blank/error line.
+  const handleScan = async (code: string) => {
+    const weigh = parseWeighBarcode(code);
+    const lookupCode = weigh ? weigh.itemCode : code;
+    try {
+      const product = weigh ? await api.products.getByItemCode(lookupCode) : await api.products.getByBarcode(lookupCode);
+      addToCart(product, weigh?.price);
+    } catch {
+      setScanError(`Barcode not recognized: "${code}"`);
+      window.setTimeout(() => setScanError(""), 3000);
+    }
   };
 
   const updateLine = (index: number, patch: Partial<OrderItemInput>) =>
@@ -966,9 +1077,18 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
       return { ...next, lineTotal: calculateLineTotal(next) };
     }));
 
-  const removeLine = (index: number) => setCart((cur) => cur.filter((_, i) => i !== index));
+  const removeLine = (index: number) => {
+    setCart((cur) => cur.filter((_, i) => i !== index));
+    setSelectedLine((cur) => (cur == null ? null : cur === index ? null : cur > index ? cur - 1 : cur));
+  };
 
-  const clearSale = () => { setCart([]); setDiscount(0); setBuyerName(""); setBuyerAddress(""); setPaymentMethod(null); setCashTendered(""); setCustomerNumber(""); setCustomerEmail(""); setError(""); };
+  const selectLine = (index: number) => {
+    setSelectedLine(index);
+    const line = cart[index];
+    setKeypadValue(line ? String(line.kg ?? line.quantity ?? "") : "");
+  };
+
+  const clearSale = () => { setCart([]); setDiscount(0); setBuyerName(""); setBuyerAddress(""); setPaymentMethod(null); setCashTendered(""); setCustomerNumber(""); setCustomerEmail(""); setError(""); setSelectedLine(null); setKeypadValue(""); setExpandedCategory(null); };
 
   // South African retail prices are required to be displayed VAT-inclusive
   // (Consumer Protection Act / VAT Act) — pricePerUnit is already the
@@ -981,6 +1101,22 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
   const clampedDiscount = Math.min(Math.max(0, discount), subtotal);
   const total = subtotal - clampedDiscount;
   const vat = total * (VAT_RATE / (1 + VAT_RATE));
+
+  // Numeric keypad, below the slip preview — the manual weight/quantity
+  // entry point for whichever line is selected (see selectLine), instead
+  // of inline +/- steppers cluttering the receipt-styled slip itself.
+  const selectedLineItem = selectedLine != null ? cart[selectedLine] : undefined;
+  const keypadDigit = (d: string) => setKeypadValue((cur) => (cur === "0" ? d : cur + d));
+  const keypadDecimal = () => setKeypadValue((cur) => (cur.includes(".") ? cur : cur ? cur + "." : "0."));
+  const keypadBackspace = () => setKeypadValue((cur) => cur.slice(0, -1));
+  const keypadClear = () => setKeypadValue("");
+  const applyKeypad = () => {
+    if (selectedLine == null || !selectedLineItem) return;
+    const n = Number(keypadValue);
+    if (!Number.isFinite(n) || n <= 0) return;
+    if (selectedLineItem.quantity != null) updateLine(selectedLine, { quantity: Math.round(n) });
+    else updateLine(selectedLine, { kg: Number(n.toFixed(3)) });
+  };
 
   // SARS requires a full tax invoice (buyer name + address, not just a
   // till slip) for any single sale over R5,000 — see the SARS Tax Invoice
@@ -1037,19 +1173,52 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
   return (
     <div className="pos-panel">
       <div className="pos-catalog">
-        <div className="pos-catalog-controls">
+        <div className="pos-scan-panel">
+          <label htmlFor="pos-scan-search" className="pos-scan-label">Scan or search a product</label>
           <div className="pos-search-row">
-            <input className="pos-search" placeholder="Search items…" value={search} onChange={(e) => setSearch(e.target.value)} />
+            {/* Manual fallback only — a real, ordinary input, separate
+                from the hidden scanner input below. Typing updates
+                `search` for the live matches list; Enter reuses the same
+                handleScan lookup a real scan uses. */}
+            <input
+              id="pos-scan-search"
+              className="pos-search"
+              placeholder="Scan a barcode, or type a name…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && search.trim()) { void handleScan(search.trim()); setSearch(""); } }}
+            />
             <button type="button" className="secondary" onClick={() => { setReorderError(""); setReorderScanOpen(true); }} title="Scan a past receipt to add its items to this sale">
               <ScanLine size={16} /> Reorder
             </button>
           </div>
-          <div className="pos-category-tabs">
-            {categories.map((c) => (
-              <button key={c} type="button" className={`pos-category-tab ${category === c ? "active" : ""}`} onClick={() => setCategory(c)}>{c}</button>
-            ))}
-          </div>
+
+          {/* The actual scanner target — permanently focused by default,
+              1x1px/opacity:0 but still a real, focusable input. */}
+          <input
+            ref={hiddenScanRef}
+            id={HIDDEN_SCAN_ID}
+            className="pos-hidden-scan-input"
+            value={hiddenScanValue}
+            onChange={(e) => setHiddenScanValue(e.target.value)}
+            onKeyDown={handleHiddenScanKeyDown}
+            aria-hidden="true"
+            tabIndex={-1}
+          />
+
+          {searchMatches.length > 0 && (
+            <div className="pos-search-matches">
+              {searchMatches.map((p) => (
+                <button type="button" key={p.id} className="pos-search-match" onClick={() => { addToCart(p); setSearch(""); }}>
+                  <span>{p.name}</span>
+                  <span className="muted">{p.pricePerUnit != null ? `${currency.format(p.pricePerUnit)}${p.unitDefault === "qty" ? " ea" : "/kg"}` : "—"}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {scanError && <p className="form-error">{scanError}</p>}
         </div>
+
         {reorderScanOpen && (
           <ScanCodeModal
             key={reorderScanAttempt}
@@ -1061,59 +1230,96 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
             onClose={() => setReorderScanOpen(false)}
           />
         )}
-        <div className="pos-product-grid">
-          {visibleProducts.map((p) => (
+
+        {quickPicks.length > 0 && (
+          <div className="pos-quickpicks">
+            <div className="pos-section-label">Quick picks</div>
+            <div className="pos-quickpicks-row">
+              {quickPicks.map((p) => (
+                <button
+                  key={p.id} type="button"
+                  className={`pos-product-tile ${p.currentCost == null ? "pos-product-tile-nocost" : ""}`}
+                  onClick={() => addToCart(p)}
+                  title={p.currentCost == null ? "No cost price set — can't be sold yet" : undefined}
+                >
+                  <span className={`pos-product-badge ${categoryBadgeClass(p.category || "Other")}`}>{initials(p.name)}</span>
+                  <span className="pos-product-name">{p.name}</span>
+                  <span className="pos-product-price">{p.pricePerUnit != null ? `${currency.format(p.pricePerUnit)}${p.unitDefault === "qty" ? " ea" : "/kg"}` : "—"}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="pos-section-label">Categories</div>
+        <div className="pos-category-tabs">
+          {categories.map((c) => (
             <button
-              key={p.id} type="button"
-              className={`pos-product-tile ${p.currentCost == null ? "pos-product-tile-nocost" : ""}`}
-              onClick={() => addToCart(p)}
-              title={p.currentCost == null ? "No cost price set — can't be sold yet" : undefined}
+              key={c} type="button"
+              className={`pos-category-tab ${expandedCategory === c ? "active" : ""}`}
+              onClick={() => setExpandedCategory((cur) => (cur === c ? null : c))}
             >
-              <span className={`pos-product-badge ${categoryBadgeClass(p.category || "Other")}`}>{initials(p.name)}</span>
-              <span className="pos-product-name">{p.name}</span>
-              <span className="pos-product-price">{p.pricePerUnit != null ? `${currency.format(p.pricePerUnit)}${p.unitDefault === "qty" ? " ea" : "/kg"}` : "—"}</span>
-              {p.currentCost == null && <span className="pos-product-nocost-flag">No cost price</span>}
+              {c}
             </button>
           ))}
-          {visibleProducts.length === 0 && <p className="report-empty">No items match.</p>}
         </div>
+
+        {expandedCategory && (
+          <div className="pos-product-grid">
+            {categoryProducts.map((p) => (
+              <button
+                key={p.id} type="button"
+                className={`pos-product-tile ${p.currentCost == null ? "pos-product-tile-nocost" : ""}`}
+                onClick={() => addToCart(p)}
+                title={p.currentCost == null ? "No cost price set — can't be sold yet" : undefined}
+              >
+                <span className={`pos-product-badge ${categoryBadgeClass(p.category || "Other")}`}>{initials(p.name)}</span>
+                <span className="pos-product-name">{p.name}</span>
+                <span className="pos-product-price">{p.pricePerUnit != null ? `${currency.format(p.pricePerUnit)}${p.unitDefault === "qty" ? " ea" : "/kg"}` : "—"}</span>
+                {p.currentCost == null && <span className="pos-product-nocost-flag">No cost price</span>}
+              </button>
+            ))}
+            {categoryProducts.length === 0 && <p className="report-empty">No items in this category.</p>}
+          </div>
+        )}
       </div>
 
-      <div className="pos-receipt">
-        <h3>Receipt preview</h3>
-        <div className="pos-receipt-lines">
-          {cart.length === 0 && <p className="report-empty">Tap items to add them to the sale.</p>}
-          {cart.map((line, i) => (
-            <div className="pos-receipt-line" key={i}>
-              <div className="pos-receipt-line-top">
-                <span className="pos-receipt-line-name">{line.name}</span>
-                <button type="button" className="icon-button danger sm" onClick={() => setPendingRemoveIndex(i)} title="Remove" aria-label="Remove"><Trash2 size={16} /></button>
-              </div>
-              <div className="pos-receipt-line-controls">
-                {line.quantity != null ? (
-                  <div className="pos-stepper">
-                    <button type="button" onClick={() => updateLine(i, { quantity: Math.max(1, (line.quantity ?? 1) - 1) })}>−</button>
-                    <span>{line.quantity}</span>
-                    <button type="button" onClick={() => updateLine(i, { quantity: (line.quantity ?? 0) + 1 })}>+</button>
+      {/* Middle column — the till slip ONLY. Single source of truth for
+          the sale; scrolls independently (see .pos-slip-column's CSS) so
+          a long sale never pushes the right column's controls out of view. */}
+      <div className="pos-slip-column">
+        <div className="till-slip">
+          <div className="till-slip-header">
+            <div className="till-slip-business">{receiptBranding.siteName || "NemenchPos"}</div>
+            <div className="till-slip-meta">{new Date().toLocaleString(appSettings.locale, { dateStyle: "medium", timeStyle: "short" })}</div>
+          </div>
+          <div className="till-slip-divider" />
+          {cart.length === 0 ? (
+            <p className="till-slip-empty">Scan or tap an item to start the sale.</p>
+          ) : (
+            <div className="till-slip-lines">
+              {cart.map((line, i) => (
+                <button type="button" key={i} className={`till-slip-line ${selectedLine === i ? "selected" : ""} ${flashLineIndex === i ? "flash" : ""}`} onClick={() => selectLine(i)}>
+                  <div className="till-slip-line-top">
+                    <span className="till-slip-line-name">{line.name}</span>
+                    <span className="till-slip-line-total">{line.lineTotal != null ? currency.format(line.lineTotal) : "—"}</span>
                   </div>
-                ) : (
-                  <div className="pos-stepper">
-                    <button type="button" onClick={() => updateLine(i, { kg: Number(Math.max(0.1, (line.kg ?? 1) - 0.1).toFixed(2)) })}>−</button>
-                    <span>{(line.kg ?? 0).toFixed(2)} kg</span>
-                    <button type="button" onClick={() => updateLine(i, { kg: Number(((line.kg ?? 0) + 0.1).toFixed(2)) })}>+</button>
-                  </div>
-                )}
-                <span className="pos-receipt-line-total">{line.lineTotal != null ? currency.format(line.lineTotal) : "—"}</span>
-              </div>
+                  {line.kg != null && (
+                    <div className="till-slip-line-detail">{line.kg.toFixed(3)} kg @ {currency.format(line.unitPrice ?? 0)}/kg</div>
+                  )}
+                  {line.quantity != null && (
+                    <div className="till-slip-line-detail">{line.quantity} x {currency.format(line.unitPrice ?? 0)}</div>
+                  )}
+                </button>
+              ))}
             </div>
-          ))}
-        </div>
-        <div className="pos-receipt-breakdown">
-          <div className="pos-breakdown-row">
+          )}
+          <div className="till-slip-divider" />
+          <div className="till-slip-row">
             <span>Subtotal</span>
             <span>{currency.format(subtotal)}</span>
           </div>
-          <div className="pos-breakdown-row">
+          <div className="till-slip-row">
             <span>Discount</span>
             {clampedDiscount > 0 ? (
               <span>-{currency.format(clampedDiscount)} <button type="button" className="pos-discount-edit" onClick={() => setDiscountModalOpen(true)}>Edit</button></span>
@@ -1122,16 +1328,34 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
             )}
           </div>
           {receiptBranding.vatRegistered && (
-            <div className="pos-breakdown-row">
+            <div className="till-slip-row">
               <span>VAT incl. (15%)</span>
               <span>{currency.format(vat)}</span>
             </div>
           )}
-          <div className="pos-breakdown-row pos-breakdown-total">
-            <span>Total</span>
+          <div className="till-slip-divider" />
+          <div className="till-slip-row till-slip-total">
+            <span>TOTAL</span>
             <span>{currency.format(total)}</span>
           </div>
         </div>
+      </div>
+
+      {/* Right column — entry controls + checkout only. No receipt/cart
+          content lives here. */}
+      <div className="pos-controls-column">
+        <PosKeypad
+          value={keypadValue}
+          disabled={selectedLine == null}
+          unitLabel={selectedLineItem?.quantity != null ? "units" : "kg"}
+          onDigit={keypadDigit}
+          onDecimal={keypadDecimal}
+          onBackspace={keypadBackspace}
+          onClear={keypadClear}
+          onApply={applyKeypad}
+          onRemove={() => { if (selectedLine != null) setPendingRemoveIndex(selectedLine); }}
+        />
+
         {needsFullInvoice && (
           <div className="pos-invoice-fields">
             <p className="settings-hint">Sales over {currency.format(FULL_INVOICE_THRESHOLD)} legally require a full tax invoice — enter the buyer's details to continue.</p>
@@ -1184,7 +1408,7 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
         <div className="pos-receipt-actions">
           <button type="button" className="pos-clear-btn" disabled={cart.length === 0 || submitting} onClick={() => setPendingClearSale(true)}>Clear Sale</button>
           <button type="button" className="pos-charge-btn" disabled={!canCheckout} onClick={() => void checkout()}>
-            {submitting ? "Completing…" : `Charge ${currency.format(total)}`}
+            {submitting ? "Completing…" : `Pay now · ${currency.format(total)}`}
           </button>
         </div>
       </div>
@@ -1212,6 +1436,46 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
           onClose={() => setDiscountModalOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+// Manual weight/quantity entry for whichever till slip line is currently
+// selected (see POSPanel's selectLine) — deliberately separate from the
+// slip itself so the slip can stay a clean, receipt-styled read display
+// rather than having +/- steppers baked into every line.
+function PosKeypad({ value, disabled, unitLabel, onDigit, onDecimal, onBackspace, onClear, onApply, onRemove }: {
+  value: string;
+  disabled: boolean;
+  unitLabel: "kg" | "units";
+  onDigit: (d: string) => void;
+  onDecimal: () => void;
+  onBackspace: () => void;
+  onClear: () => void;
+  onApply: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className={`pos-keypad ${disabled ? "pos-keypad-disabled" : ""}`}>
+      <div className="pos-keypad-display">
+        <span>{value || "0"}</span>
+        <span className="muted">{unitLabel}</span>
+      </div>
+      <div className="pos-keypad-grid">
+        {["7", "8", "9", "4", "5", "6", "1", "2", "3", ".", "0", "⌫"].map((k) => (
+          <button
+            key={k} type="button" disabled={disabled}
+            onClick={() => { if (k === "⌫") onBackspace(); else if (k === ".") onDecimal(); else onDigit(k); }}
+          >
+            {k}
+          </button>
+        ))}
+      </div>
+      <div className="pos-keypad-actions">
+        <button type="button" className="secondary" disabled={disabled} onClick={onClear}>Clear</button>
+        <button type="button" className="danger" disabled={disabled} onClick={onRemove}>Remove item</button>
+        <button type="button" disabled={disabled || !value} onClick={onApply}>Update</button>
+      </div>
     </div>
   );
 }
@@ -1685,6 +1949,21 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
   const canAddItems = currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier";
   const [barcodeModalOpen, setBarcodeModalOpen] = useState(false);
   const [emailReceiptOpen, setEmailReceiptOpen] = useState(false);
+  // Guards the print buttons below against rapid double-clicks: with no
+  // busy state, a printer that's silently failing/garbling gives zero
+  // on-screen feedback, so a confused cashier naturally mashes "Print"
+  // several times — each click was firing a brand new job, multiplying
+  // whatever was already going wrong at the printer.
+  const [printingDept, setPrintingDept] = useState<"kitchen" | "counter" | "master" | null>(null);
+  const printOnce = async (type: "kitchen" | "counter" | "master") => {
+    if (printingDept) return;
+    setPrintingDept(type);
+    try {
+      await printReceipt(order, type, printStyle, printerMap[type] ?? "");
+    } finally {
+      setPrintingDept(null);
+    }
+  };
 
   const addScannedItem = async (p: Product, wantedPrice?: number) => {
     setBarcodeModalOpen(false);
@@ -1761,9 +2040,9 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
 
       <footer>
         <div className="ticket-actions">
-          {hasKitchen && <button className="secondary sm" onClick={() => void printReceipt(order, "kitchen", printStyle, printerMap.kitchen ?? "")} title="Print kitchen receipt">Kitchen</button>}
-          {hasCounter && <button className="secondary sm" onClick={() => void printReceipt(order, "counter", printStyle, printerMap.counter ?? "")} title="Print counter receipt">Counter</button>}
-          <button className="secondary sm" onClick={() => void printReceipt(order, "master", printStyle, printerMap.master ?? "")} title="Print master receipt"><Printer size={16} /> Receipt</button>
+          {hasKitchen && <button className="secondary sm" disabled={printingDept === "kitchen"} onClick={() => void printOnce("kitchen")} title="Print kitchen receipt">{printingDept === "kitchen" ? "Printing…" : "Kitchen"}</button>}
+          {hasCounter && <button className="secondary sm" disabled={printingDept === "counter"} onClick={() => void printOnce("counter")} title="Print counter receipt">{printingDept === "counter" ? "Printing…" : "Counter"}</button>}
+          <button className="secondary sm" disabled={printingDept === "master"} onClick={() => void printOnce("master")} title="Print master receipt"><Printer size={16} /> {printingDept === "master" ? "Printing…" : "Receipt"}</button>
           {canAddItems && <button className="secondary sm" onClick={() => setEmailReceiptOpen(true)} title="Email receipt"><Mail size={16} /> Email</button>}
           {canAddItems && order.status !== "Done" && (
             <button className="secondary sm" onClick={() => setBarcodeModalOpen(true)}><ScanLine size={16} /> Scan</button>
@@ -1805,6 +2084,18 @@ function HistoryView({ orders, printStyle, printerMap }: { orders: Order[]; prin
   const [search, setSearch] = useState("");
   const [scanOpen, setScanOpen] = useState(false);
   const [emailReceiptOrder, setEmailReceiptOrder] = useState<Order | null>(null);
+  // Same double-click guard as TicketCard's printOnce — keyed by order id
+  // since this table can have a print in flight for more than one row.
+  const [printingIds, setPrintingIds] = useState<Set<number>>(new Set());
+  const printOnce = async (order: Order) => {
+    if (printingIds.has(order.id)) return;
+    setPrintingIds((cur) => new Set(cur).add(order.id));
+    try {
+      await printReceipt(order, "master", printStyle, printerMap.master ?? "");
+    } finally {
+      setPrintingIds((cur) => { const next = new Set(cur); next.delete(order.id); return next; });
+    }
+  };
   const displayed = useMemo(() => {
     if (!search.trim()) return orders;
     const q = search.toLowerCase();
@@ -1849,7 +2140,7 @@ function HistoryView({ orders, printStyle, printerMap }: { orders: Order[]; prin
                 <td>{order.items.length}</td>
                 <td>{new Date(order.updatedAt).toLocaleString(appSettings.locale)}</td>
                 <td>
-                  <button className="secondary sm" onClick={() => void printReceipt(order, "master", printStyle, printerMap.master ?? "")} title="Print master receipt"><Printer size={16} /> Print</button>
+                  <button className="secondary sm" disabled={printingIds.has(order.id)} onClick={() => void printOnce(order)} title="Print master receipt"><Printer size={16} /> {printingIds.has(order.id) ? "Printing…" : "Print"}</button>
                   <button className="secondary sm" onClick={() => setEmailReceiptOrder(order)} title="Email receipt"><Mail size={16} /> Email</button>
                 </td>
               </tr>
@@ -1884,6 +2175,13 @@ function ConsolidationPanel({ printStyle, printerMap }: { printStyle: string; pr
   const [finalizing, setFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState("");
   const [finalized, setFinalized] = useState<Order | null>(null);
+  const [printingReceipt, setPrintingReceipt] = useState(false);
+  const printFinalReceipt = async () => {
+    if (!finalized || printingReceipt) return;
+    setPrintingReceipt(true);
+    try { await printReceipt(finalized, "master", printStyle, printerMap.master ?? ""); }
+    finally { setPrintingReceipt(false); }
+  };
 
   const load = () => {
     setLoading(true);
@@ -1947,7 +2245,7 @@ function ConsolidationPanel({ printStyle, printerMap }: { printStyle: string; pr
         <p className="settings-hint">Ticket {finalized.ticketNumber} — every item verified. One barcode now represents the whole order.</p>
         {finalized.consolidationBarcode && <BarcodeImage value={finalized.consolidationBarcode} />}
         <footer className="actions">
-          <button type="button" onClick={() => void printReceipt(finalized, "master", printStyle, printerMap.master ?? "")}><Printer size={16} /> Print receipt</button>
+          <button type="button" disabled={printingReceipt} onClick={() => void printFinalReceipt()}><Printer size={16} /> {printingReceipt ? "Printing…" : "Print receipt"}</button>
           <button type="button" className="secondary" onClick={() => setFinalized(null)}>Done</button>
         </footer>
       </div>
@@ -4770,6 +5068,8 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
         </div>
       </section>
 
+      <PrintQueueSection />
+
       <section className="settings-section span-full">
         <h3>Products</h3>
         <div className="setting-row">
@@ -5060,6 +5360,90 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
         />
       )}
     </div>
+  );
+}
+
+// Always-visible print queue for admins — added after a stuck/misrouted
+// job spooled hundreds of garbled pages with no way to see or clear it
+// short of shelling into the host directly (see server/routes/printers.ts's
+// GET/DELETE/POST /queue* routes). Polls every 5s, independent of whether
+// anyone's actively looking at it, so a runaway job shows up here fast.
+function PrintQueueSection() {
+  const [jobs, setJobs] = useState<PrintQueueJob[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [cancelingId, setCancelingId] = useState<string | null>(null);
+  const [cancelingAll, setCancelingAll] = useState(false);
+  const [err, setErr] = useState("");
+
+  const load = () => {
+    api.printers.queue()
+      .then((j) => { setJobs(j); setErr(""); })
+      .catch((e) => setErr(e instanceof Error ? e.message : "Could not load the print queue"))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 5_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const cancelJob = async (id: string) => {
+    setCancelingId(id);
+    try { await api.printers.cancelJob(id); load(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "Could not cancel that job"); }
+    finally { setCancelingId(null); }
+  };
+
+  const cancelAll = async () => {
+    if (jobs.length === 0) return;
+    if (!window.confirm(`Cancel all ${jobs.length} queued job${jobs.length === 1 ? "" : "s"} across every printer?`)) return;
+    setCancelingAll(true);
+    try { await api.printers.cancelAll(); load(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "Could not cancel the queue"); }
+    finally { setCancelingAll(false); }
+  };
+
+  return (
+    <section className="settings-section span-full">
+      <div className="settings-section-header">
+        <span>Print queue</span>
+        <div className="setting-actions">
+          <button type="button" className="secondary sm" onClick={load} disabled={loading}>
+            {loading ? "Loading…" : "Refresh"}
+          </button>
+          <button type="button" className="danger sm" onClick={() => void cancelAll()} disabled={jobs.length === 0 || cancelingAll}>
+            {cancelingAll ? "Canceling…" : "Cancel all"}
+          </button>
+        </div>
+      </div>
+      <p className="settings-hint">Every job currently spooled on any printer this server can see — refreshes automatically every 5 seconds.</p>
+      {err && <p className="form-error">{err}</p>}
+      {jobs.length === 0 ? (
+        <p className="settings-hint">No jobs queued.</p>
+      ) : (
+        <table className="print-queue-table">
+          <thead>
+            <tr><th>Job</th><th>Printer</th><th>Owner</th><th>Size</th><th>Submitted</th><th></th></tr>
+          </thead>
+          <tbody>
+            {jobs.map((j) => (
+              <tr key={j.id}>
+                <td>{j.id}</td>
+                <td>{j.printer}</td>
+                <td>{j.owner}</td>
+                <td>{(j.sizeBytes / 1024).toFixed(0)} KB</td>
+                <td>{j.submittedAt}</td>
+                <td>
+                  <button type="button" className="secondary sm" disabled={cancelingId === j.id} onClick={() => void cancelJob(j.id)}>
+                    {cancelingId === j.id ? "Canceling…" : "Cancel"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
   );
 }
 
@@ -6611,14 +6995,6 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
 function nextDeptStatus(status: DeptStatus): DeptStatus | null {
   const i = deptStatusFlow.indexOf(status);
   return i === -1 ? null : (deptStatusFlow[i + 1] ?? null);
-}
-
-function calculateLineTotal(item: OrderItemInput) {
-  if (item.wantedPrice) return Number(item.wantedPrice.toFixed(2));
-  if (!item.unitPrice) return null;
-  if (item.kg) return Number((item.kg * item.unitPrice).toFixed(2));
-  if (item.quantity) return Number((item.quantity * item.unitPrice).toFixed(2));
-  return null;
 }
 
 function tabTitle(tab: Tab) {

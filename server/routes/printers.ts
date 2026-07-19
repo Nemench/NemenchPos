@@ -1,9 +1,13 @@
 // Discovers printers installed/visible on the machine running the server,
 // so the admin can pick one from a dropdown instead of typing a driver name.
+// Also surfaces (and lets an admin cancel) whatever's actually sitting in
+// the OS print queue — added after a printer spooled hundreds of garbled
+// pages from a stuck/misrouted job with no way to see or clear it short of
+// shelling into the host directly.
 import { Router } from "express";
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { requireAuth, requireAdmin } from "../auth.js";
-import type { DiscoveredPrinter } from "../../src/shared/types.js";
+import type { DiscoveredPrinter, PrintQueueJob } from "../../src/shared/types.js";
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -14,6 +18,15 @@ router.use(requireAuth, requireAdmin);
 function run(cmd: string, timeout = 6000): Promise<string> {
   return new Promise((resolve) => {
     exec(cmd, { timeout }, (_err, stdout) => resolve(stdout ?? ""));
+  });
+}
+
+// Runs an argv-array command (no shell involved, so no quoting/injection
+// concerns even with an unsanitized argument) and resolves with stdout,
+// same best-effort swallow-errors posture as run() above.
+function runFile(cmd: string, args: string[], timeout = 6000): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout }, (_err, stdout) => resolve(stdout ?? ""));
   });
 }
 
@@ -65,5 +78,82 @@ router.get("/", async (_req, res) => {
 
   res.json([...result.values()]);
 });
+
+// GET /api/printers/queue — every job currently spooled across every
+// printer (not just one queue), so this is the one place an admin needs to
+// look regardless of which printer is acting up.
+router.get("/queue", async (_req, res) => {
+  res.json(await listQueue());
+});
+
+// DELETE /api/printers/queue/:id — cancels one specific job. `id` is
+// whatever listQueue() reported back as that job's id (opaque to the
+// client), so there's no separate "look up the job" round trip needed
+// between listing and canceling.
+router.delete("/queue/:id", async (req, res) => {
+  const id = req.params.id as string;
+  if (process.platform === "win32") {
+    if (!/^\d+$/.test(id)) { res.status(400).json({ message: "Invalid job id" }); return; }
+    await runFile("wmic", ["printjob", "where", `JobID=${id}`, "delete"]);
+  } else {
+    // CUPS job ids look like "<printer-name>-<number>" — same charset
+    // already accepted for printer names in print.ts, plus the dash.
+    if (!/^[\w.@-]+$/.test(id)) { res.status(400).json({ message: "Invalid job id" }); return; }
+    await runFile("cancel", [id]);
+  }
+  res.json({ ok: true });
+});
+
+// POST /api/printers/queue/cancel-all — clears every queued job on every
+// printer in one action, for exactly the "printer is spewing garbage
+// right now, stop everything" situation this endpoint exists for.
+router.post("/queue/cancel-all", async (_req, res) => {
+  const jobs = await listQueue();
+  if (process.platform === "win32") {
+    await Promise.all(jobs.map((j) => runFile("wmic", ["printjob", "where", `JobID=${j.id}`, "delete"])));
+  } else {
+    await Promise.all(jobs.map((j) => runFile("cancel", [j.id])));
+  }
+  res.json({ ok: true, canceled: jobs.length });
+});
+
+async function listQueue(): Promise<PrintQueueJob[]> {
+  if (process.platform === "win32") {
+    // /format:csv gives one job per line (Node,DocumentName,JobId,Owner,
+    // PrinterName,Size,SubmittedTime — alphabetical after Node), which is
+    // far easier to parse reliably than /format:list's blank-line-
+    // separated records.
+    const out = await run(`wmic printjob get DocumentName,JobId,Owner,PrinterName,Size,SubmittedTime /format:csv`);
+    const lines = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const header = lines[0]?.split(",") ?? [];
+    const idx = (col: string) => header.indexOf(col);
+    const jobs: PrintQueueJob[] = [];
+    for (const line of lines.slice(1)) {
+      const cols = line.split(",");
+      const id = cols[idx("JobId")];
+      if (!id) continue;
+      jobs.push({
+        id,
+        printer: cols[idx("PrinterName")] ?? "",
+        owner: cols[idx("Owner")] ?? "",
+        sizeBytes: Number(cols[idx("Size")]) || 0,
+        submittedAt: cols[idx("SubmittedTime")] ?? ""
+      });
+    }
+    return jobs;
+  }
+
+  // `lpstat -o` lists every job on every printer: "<job-id> <owner>
+  // <size-bytes> <weekday month day HH:MM:SS year>".
+  const out = await run("lpstat -o 2>/dev/null");
+  const jobs: PrintQueueJob[] = [];
+  for (const line of out.split("\n")) {
+    const m = /^(\S+)\s+(\S+)\s+(\d+)\s+(.+)$/.exec(line.trim());
+    if (!m) continue;
+    const [, id, owner, size, date] = m;
+    jobs.push({ id, printer: id.replace(/-\d+$/, ""), owner, sizeBytes: Number(size), submittedAt: date.trim() });
+  }
+  return jobs;
+}
 
 export default router;

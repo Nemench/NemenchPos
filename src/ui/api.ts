@@ -1,7 +1,7 @@
 // Thin typed wrapper around the backend REST API. Every call goes through
 // req()/download(), which attach the JWT and centrally handle a 401 (token
 // missing/expired) by clearing it and forcing a reload back to the login screen.
-import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput, StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, CrmContact, CrmContactInput, CrmContactDetail, CrmTag, CrmMessage, CrmAutomationRule, ConsentStatus, EmailSubscriber, CampaignPromo, LabelFormat, LabelFormatInput, DiscoveredPrinter } from "../shared/types";
+import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput, StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, CrmContact, CrmContactInput, CrmContactDetail, CrmTag, CrmMessage, CrmAutomationRule, ConsentStatus, EmailSubscriber, CampaignPromo, LabelFormat, LabelFormatInput, DiscoveredPrinter, PrintQueueJob } from "../shared/types";
 import { tokenStorage } from "./tokenStorage";
 
 // The native Android app now live-loads its own server's page directly
@@ -73,6 +73,7 @@ export const api = {
   },
   products: {
     list: () => req<Product[]>("GET", "/products"),
+    quickPicks: () => req<Product[]>("GET", "/products/quick-picks"),
     save: (data: ProductInput) =>
       data.id ? req<Product>("PUT", `/products/${data.id}`, data) : req<Product>("POST", "/products", data),
     delete: (id: number) => req<void>("DELETE", `/products/${id}`),
@@ -119,7 +120,10 @@ export const api = {
     testEmail: (to: string) => req<{ ok: boolean }>("POST", "/settings/email-test", { to })
   },
   printers: {
-    list: () => req<DiscoveredPrinter[]>("GET", "/printers")
+    list: () => req<DiscoveredPrinter[]>("GET", "/printers"),
+    queue: () => req<PrintQueueJob[]>("GET", "/printers/queue"),
+    cancelJob: (id: string) => req<{ ok: boolean }>("DELETE", `/printers/queue/${encodeURIComponent(id)}`),
+    cancelAll: () => req<{ ok: boolean; canceled: number }>("POST", "/printers/queue/cancel-all")
   },
   print: (printerName: string, html: string) =>
     req<{ ok: boolean }>("POST", "/print", { printerName, html }),

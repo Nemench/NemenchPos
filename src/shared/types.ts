@@ -515,6 +515,19 @@ export interface DiscoveredPrinter {
   ready: boolean;
 }
 
+// One queued/in-flight job on the print system (see GET/DELETE
+// /api/printers/queue in server/routes/printers.ts) — surfaced in Settings
+// so an admin can see what's actually stuck/spooling and cancel it
+// directly, without needing shell access to the machine running the
+// service.
+export interface PrintQueueJob {
+  id: string;
+  printer: string;
+  owner: string;
+  sizeBytes: number;
+  submittedAt: string;
+}
+
 export interface LabelFormat {
   id: string;
   name: string;
