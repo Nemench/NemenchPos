@@ -123,6 +123,21 @@ button:disabled {
   opacity: 0.45;
 }
 
+/* Keyboard-only focus ring — buttons/links/custom tabbable elements
+   previously had no visible focus state at all, so tabbing through the app
+   (nav, ticket actions, modals) gave no indication of where keyboard focus
+   was. Inputs/selects/textareas are excluded: they already get a
+   border+box-shadow treatment below on plain :focus, and adding this too
+   would just double up the ring on top of it. :focus-visible (not :focus)
+   so a mouse click on a button still doesn't show the ring, only real
+   keyboard navigation. */
+button:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
 button.secondary {
   background: var(--chip-bg);
   color: var(--accent-text);
@@ -287,6 +302,11 @@ h2 { font-size: 17px; color: var(--accent-text); }
 }
 
 /* ── Toast ── */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 .toast {
   position: fixed;
   right: 22px;
@@ -299,6 +319,7 @@ h2 { font-size: 17px; color: var(--accent-text); }
   box-shadow: 0 8px 24px rgba(13,43,107,0.25);
   font-weight: 600;
   max-width: 360px;
+  animation: toast-in 0.18s ease-out;
 }
 
 .toast-error {
@@ -2748,14 +2769,6 @@ button.sm {
   color: var(--muted);
 }
 
-.pos-breakdown-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 14px;
-  color: var(--muted);
-}
-
 .pos-discount-add {
   color: var(--blue);
   font-weight: 700;
@@ -2863,14 +2876,6 @@ button.sm {
   color: var(--red);
 }
 
-.pos-breakdown-total {
-  font-size: 20px;
-  font-weight: 800;
-  color: var(--text);
-  padding-top: 6px;
-  border-top: 2px solid var(--text);
-}
-
 .pos-charge-btn {
   flex: 2;
   min-height: 60px;
@@ -2892,8 +2897,14 @@ button.sm {
     grid-template-columns: 1fr;
   }
 
-  .pos-receipt {
+  .pos-slip-column,
+  .pos-controls-column {
     position: static;
+    height: auto;
     max-height: none;
+  }
+
+  .till-slip {
+    max-height: 50vh;
   }
 }

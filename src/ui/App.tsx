@@ -405,7 +405,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
   // stock_taker gets a completely separate, minimal nav (Stock Take +
   // Weigh-In only) — everything else below the ternary is for other roles.
   const isStockTaker = currentUser.role === "stock_taker";
-  const [tab, setTab] = useState<Tab>(isStockTaker ? "products" : currentUser.role === "kitchen" || currentUser.role === "counter" ? "queue" : "orders");
+  const [tab, setTab] = useState<Tab>(isStockTaker ? "products" : currentUser.role === "kitchen" || currentUser.role === "counter" ? "queue" : "pos");
   const [products, setProducts] = useState<Product[]>([]);
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
   const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
@@ -496,10 +496,10 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
           ) : (
             <>
               {(currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier") && (
-                <button className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}><Plus size={18} /><span>New</span></button>
+                <button className={tab === "pos" ? "active" : ""} onClick={() => setTab("pos")}><ShoppingCart size={18} /><span>POS</span></button>
               )}
               {(currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier") && (
-                <button className={tab === "pos" ? "active" : ""} onClick={() => setTab("pos")}><ShoppingCart size={18} /><span>POS</span></button>
+                <button className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}><Plus size={18} /><span>New</span></button>
               )}
               <button className={tab === "queue" ? "active" : ""} onClick={() => setTab("queue")}><ClipboardList size={18} /><span>Queue</span></button>
               <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}><History size={18} /><span>History</span></button>
