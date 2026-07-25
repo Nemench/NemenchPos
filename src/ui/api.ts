@@ -64,6 +64,8 @@ export const api = {
     me: () => req<User>("GET", "/auth/me"),
     setThemeMode: (themeMode: "light" | "dark") =>
       req<{ token: string; user: User }>("PATCH", "/auth/theme-mode", { themeMode }),
+    setUiMode: (uiMode: "auto" | "touch" | "compact") =>
+      req<{ token: string; user: User }>("PATCH", "/auth/ui-mode", { uiMode }),
     verifyPin: (pin: string) => req<{ ok: boolean }>("POST", "/auth/verify-pin", { pin })
   },
   users: {

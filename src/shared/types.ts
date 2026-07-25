@@ -22,6 +22,10 @@ export interface User {
   createdAt: string;
   lastSeenAt: string | null;
   themeMode: "light" | "dark" | null;
+  // Touch vs mouse/keyboard control sizing (see src/ui/theme.ts's
+  // detectInputMode/applyInputMode). "auto" resolves per-device via
+  // matchMedia; null (never set) behaves the same as "auto".
+  uiMode: "auto" | "touch" | "compact" | null;
 }
 
 export interface UserInput {

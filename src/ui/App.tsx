@@ -88,7 +88,7 @@ import { api, assetUrl } from "./api";
 import { useBarcodeScan } from "./useBarcodeScan";
 import { calculateLineTotal, buildCartLine } from "../shared/posCart";
 import { iconSwitcher, type IconVariant } from "./iconSwitcher";
-import { applyTheme, applyThemeMode, deriveShades, initThemeMode, ThemeMode } from "./theme";
+import { applyTheme, applyThemeMode, deriveShades, initThemeMode, ThemeMode, applyInputMode, initInputMode, getStoredUiModePref, UiModePref } from "./theme";
 import { tokenStorage } from "./tokenStorage";
 
 type Tab = "orders" | "pos" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "weighIn" | "statistics" | "crm" | "consolidate" | "printLabels";
@@ -96,6 +96,9 @@ type Tab = "orders" | "pos" | "queue" | "history" | "products" | "users" | "sett
 // Applied at module load (before React's first render) so there's no flash
 // of the wrong theme — reads the stored preference (or system default).
 initThemeMode();
+// Same no-flash treatment for touch-vs-mouse control sizing — resolves
+// "auto" against this device's pointer type immediately.
+initInputMode();
 
 const deptStatusFlow: DeptStatus[] = ["New", "Received", "Ready", "Done"];
 const emptyLine: OrderItemInput = { productId: null, name: "", kg: null, quantity: null, notes: "", unitPrice: null, lineTotal: null, wantedPrice: null, department: "counter" };
@@ -225,13 +228,30 @@ export function App() {
       .catch(() => undefined);
   };
 
+  // Same account-wins-over-device-fallback pattern as theme mode, for
+  // touch vs mouse/keyboard control sizing.
+  const [uiModePref, setUiModePref] = useState<UiModePref>(() => getStoredUiModePref());
+  const applyUserUiMode = (user: User) => {
+    if (user.uiMode === "auto" || user.uiMode === "touch" || user.uiMode === "compact") {
+      applyInputMode(user.uiMode);
+      setUiModePref(user.uiMode);
+    }
+  };
+  const changeUiMode = (next: UiModePref) => {
+    applyInputMode(next);
+    setUiModePref(next);
+    api.auth.setUiMode(next)
+      .then(({ token }) => tokenStorage.set(token))
+      .catch(() => undefined);
+  };
+
   // Validate any stored token against the server on load, rather than
   // trusting it blindly — also picks up server-side role changes.
   useEffect(() => {
     const token = tokenStorage.get();
     if (!token) { setBooting(false); return; }
     api.auth.me()
-      .then((user) => { setCurrentUser(user); applyUserThemeMode(user); })
+      .then((user) => { setCurrentUser(user); applyUserThemeMode(user); applyUserUiMode(user); })
       .catch(() => tokenStorage.clear())
       .finally(() => setBooting(false));
   }, []);
@@ -263,8 +283,8 @@ export function App() {
   const logout = () => { tokenStorage.clear(); setCurrentUser(null); };
 
   if (booting) return <div className="boot-screen"><Scissors size={32} /></div>;
-  if (!currentUser) return <LoginScreen onLogin={(user) => { setCurrentUser(user); applyUserThemeMode(user); }} branding={branding} />;
-  return <MainApp currentUser={currentUser} onLogout={logout} branding={branding} onBrandingChange={setBranding} themeMode={themeMode} onToggleTheme={toggleThemeMode} />;
+  if (!currentUser) return <LoginScreen onLogin={(user) => { setCurrentUser(user); applyUserThemeMode(user); applyUserUiMode(user); }} branding={branding} />;
+  return <MainApp currentUser={currentUser} onLogout={logout} branding={branding} onBrandingChange={setBranding} themeMode={themeMode} onToggleTheme={toggleThemeMode} uiModePref={uiModePref} onUiModeChange={changeUiMode} />;
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
@@ -401,7 +421,7 @@ function applyColorMode(html: string): string {
 // The logged-in shell: sidebar nav (gated per role) + whichever panel the
 // current tab selects. Owns the shared data (products/orders) that multiple
 // panels need, refreshed on mount and lightly polled while on the Queue tab.
-function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode, onToggleTheme }: { currentUser: User; onLogout: () => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void; themeMode: ThemeMode; onToggleTheme: () => void }) {
+function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode, onToggleTheme, uiModePref, onUiModeChange }: { currentUser: User; onLogout: () => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void; themeMode: ThemeMode; onToggleTheme: () => void; uiModePref: UiModePref; onUiModeChange: (mode: UiModePref) => void }) {
   // stock_taker gets a completely separate, minimal nav (Stock Take +
   // Weigh-In only) — everything else below the ternary is for other roles.
   const isStockTaker = currentUser.role === "stock_taker";
@@ -549,14 +569,27 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
             <h1>{tabTitle(tab)}</h1>
             <p>{tabSubtitle(tab)}</p>
           </div>
-          <button
-            type="button" className="icon-button secondary theme-toggle"
-            onClick={onToggleTheme}
-            title={themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            aria-label="Toggle dark mode"
-          >
-            {themeMode === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
+          <div className="topbar-controls">
+            <select
+              className="topbar-uimode-select"
+              value={uiModePref}
+              onChange={(e) => onUiModeChange(e.target.value as UiModePref)}
+              title="Control size: Auto detects touch vs mouse for this device"
+              aria-label="Touch/mouse control sizing"
+            >
+              <option value="auto">Auto (detect device)</option>
+              <option value="touch">Touch — larger controls</option>
+              <option value="compact">Compact — mouse/keyboard</option>
+            </select>
+            <button
+              type="button" className="icon-button secondary theme-toggle"
+              onClick={onToggleTheme}
+              title={themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              aria-label="Toggle dark mode"
+            >
+              {themeMode === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
+          </div>
         </header>
 
         {message && <div className={`toast${messageTone === "error" ? " toast-error" : ""}`}>{message}</div>}

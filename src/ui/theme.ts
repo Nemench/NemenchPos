@@ -85,3 +85,45 @@ export function initThemeMode(): ThemeMode {
   document.documentElement.setAttribute("data-theme", mode);
   return mode;
 }
+
+// ── Touch vs mouse/keyboard control sizing ──────────────────────────────────
+// A counter tablet and a back-office desktop need different control sizes
+// (generous touch targets vs denser, mouse-precise controls) — "auto" picks
+// between them per-device via matchMedia rather than baking one choice into
+// the account. Kept separate from the light/dark preference above: they're
+// independent axes (a touch kiosk can be light or dark; a desktop user might
+// still want touch-sized controls on a touchscreen monitor).
+
+export type UiModePref = "auto" | "touch" | "compact";
+export type ResolvedUiMode = "touch" | "compact";
+const UI_MODE_KEY = "nemenchpos-ui-mode";
+
+// (pointer: coarse) is true for touchscreens/tablets, false for a mouse —
+// the standard feature-detection query for "is the primary input touch."
+function detectInputMode(): ResolvedUiMode {
+  return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches ? "touch" : "compact";
+}
+
+function resolve(pref: UiModePref): ResolvedUiMode {
+  return pref === "auto" ? detectInputMode() : pref;
+}
+
+export function getStoredUiModePref(): UiModePref {
+  const stored = localStorage.getItem(UI_MODE_KEY);
+  return stored === "touch" || stored === "compact" || stored === "auto" ? stored : "auto";
+}
+
+// Applies (and remembers, pre-login/no-account fallback only — same
+// division of responsibility as theme mode above) a control-sizing
+// preference. Stores the raw preference (so "auto" keeps re-resolving per
+// device) but stamps the RESOLVED mode onto <html>, since that's what the
+// CSS in styles.css actually keys off of.
+export function applyInputMode(pref: UiModePref): void {
+  localStorage.setItem(UI_MODE_KEY, pref);
+  document.documentElement.setAttribute("data-input-mode", resolve(pref));
+}
+
+// Same first-load, no-flash-before-render treatment as initThemeMode.
+export function initInputMode(): void {
+  applyInputMode(getStoredUiModePref());
+}

@@ -128,7 +128,7 @@ export class KotDatabase {
 
   listUsers(): User[] {
     return this.db
-      .prepare("SELECT id, name, role, department, isActive, createdAt, lastSeenAt, themeMode FROM users ORDER BY name")
+      .prepare("SELECT id, name, role, department, isActive, createdAt, lastSeenAt, themeMode, uiMode FROM users ORDER BY name")
       .all() as User[];
   }
 
@@ -138,13 +138,13 @@ export class KotDatabase {
 
   getUser(id: number): User | null {
     return this.db
-      .prepare("SELECT id, name, role, department, isActive, createdAt, themeMode FROM users WHERE id = ?")
+      .prepare("SELECT id, name, role, department, isActive, createdAt, themeMode, uiMode FROM users WHERE id = ?")
       .get(id) as User | null;
   }
 
   getUserByName(name: string): (User & { pin: string }) | null {
     return this.db
-      .prepare("SELECT id, name, pin, role, department, isActive, createdAt, themeMode FROM users WHERE lower(name) = lower(?) AND isActive = 1")
+      .prepare("SELECT id, name, pin, role, department, isActive, createdAt, themeMode, uiMode FROM users WHERE lower(name) = lower(?) AND isActive = 1")
       .get(name) as (User & { pin: string }) | null;
   }
 
@@ -161,6 +161,16 @@ export class KotDatabase {
 
   setUserThemeMode(id: number, themeMode: "light" | "dark"): User {
     this.db.prepare("UPDATE users SET themeMode = ? WHERE id = ?").run(themeMode, id);
+    return this.getUser(id)!;
+  }
+
+  // "auto" defers to the device's own pointer type (touch vs mouse) via
+  // matchMedia — see theme.ts's detectInputMode/initInputMode — so a
+  // shared login carried between a counter tablet and a back-office
+  // desktop doesn't drag one screen's control sizing onto the other. An
+  // explicit "touch"/"compact" choice overrides that per-device guess.
+  setUserUiMode(id: number, uiMode: "auto" | "touch" | "compact"): User {
+    this.db.prepare("UPDATE users SET uiMode = ? WHERE id = ?").run(uiMode, id);
     return this.getUser(id)!;
   }
 
@@ -1561,6 +1571,7 @@ export class KotDatabase {
       const userCols = (this.db.prepare("PRAGMA table_info(users)").all() as { name: string }[]).map((c) => c.name);
       if (!userCols.includes("lastSeenAt")) this.db.exec("ALTER TABLE users ADD COLUMN lastSeenAt TEXT");
       if (!userCols.includes("themeMode")) this.db.exec("ALTER TABLE users ADD COLUMN themeMode TEXT");
+      if (!userCols.includes("uiMode")) this.db.exec("ALTER TABLE users ADD COLUMN uiMode TEXT");
     }
 
     // Add columns to orders if missing (existing databases)
@@ -1687,7 +1698,8 @@ export class KotDatabase {
         createdAt TEXT NOT NULL,
         updatedAt TEXT,
         lastSeenAt TEXT,
-        themeMode TEXT
+        themeMode TEXT,
+        uiMode TEXT
       );
 
       CREATE TABLE IF NOT EXISTS products (

@@ -36,7 +36,7 @@ export interface AuthRequest extends Request {
 // only the fields the client legitimately needs are embedded in the JWT.
 export function signToken(user: User): string {
   return jwt.sign(
-    { id: user.id, name: user.name, role: user.role, department: user.department, themeMode: user.themeMode },
+    { id: user.id, name: user.name, role: user.role, department: user.department, themeMode: user.themeMode, uiMode: user.uiMode },
     SECRET,
     { expiresIn: "8h" }
   );
