@@ -21,6 +21,7 @@ import {
   BarChart2,
   TrendingUp,
   ClipboardList,
+  CreditCard,
   FileDown,
   History,
   LogOut,
@@ -49,6 +50,7 @@ import JsBarcode from "jsbarcode";
 import { appSettings } from "../shared/settings";
 import { parseWeighBarcode, buildWeighBarcode } from "../shared/weighBarcode";
 import { generateInternalBarcode } from "../shared/internalBarcode";
+import { parseCustomerAccountBarcode } from "../shared/customerAccountBarcode";
 import { flattenBatch, totalBatchCount, placeOnSheets, type LabelBatchEntry } from "../shared/labelBatch";
 import type {
   CreateOrderInput,
@@ -82,7 +84,10 @@ import type {
   LabelData,
   DiscoveredPrinter,
   PrintQueueJob,
-  UnitDefault
+  UnitDefault,
+  CustomerAccount,
+  CustomerAccountInput,
+  CustomerAccountTransaction
 } from "../shared/types";
 import { api, assetUrl } from "./api";
 import { useBarcodeScan } from "./useBarcodeScan";
@@ -91,7 +96,7 @@ import { iconSwitcher, type IconVariant } from "./iconSwitcher";
 import { applyTheme, applyThemeMode, deriveShades, initThemeMode, ThemeMode, applyInputMode, initInputMode, getStoredUiModePref, UiModePref } from "./theme";
 import { tokenStorage } from "./tokenStorage";
 
-type Tab = "orders" | "pos" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "weighIn" | "statistics" | "crm" | "consolidate" | "printLabels";
+type Tab = "orders" | "pos" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "weighIn" | "statistics" | "crm" | "consolidate" | "printLabels" | "accounts";
 
 // Applied at module load (before React's first render) so there's no flash
 // of the wrong theme — reads the stored preference (or system default).
@@ -542,6 +547,9 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
                 <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={18} /><span>Users</span></button>
               )}
               {currentUser.role === "admin" && (
+                <button className={tab === "accounts" ? "active" : ""} onClick={() => setTab("accounts")}><CreditCard size={18} /><span>Accounts</span></button>
+              )}
+              {currentUser.role === "admin" && (
                 <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Settings size={18} /><span>Settings</span></button>
               )}
               {currentUser.role === "admin" && (
@@ -627,6 +635,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
         {tab === "products" && (currentUser.role === "admin" || isStockTaker) && <StockPanel products={products} currentUser={currentUser} onChanged={refresh} />}
         {tab === "weighIn" && (currentUser.role === "admin" || isStockTaker) && <WeighInPanel products={products} currentUser={currentUser} onChanged={refresh} />}
         {tab === "users" && currentUser.role === "admin" && <UsersPanel />}
+        {tab === "accounts" && currentUser.role === "admin" && <AccountsPanel />}
         {tab === "settings" && currentUser.role === "admin" && (
           <SettingsPanel autoPrint={autoPrint} onAutoPrintChange={setAutoPrint} printStyle={printStyle} onPrintStyleChange={setPrintStyle} printerMap={printerMap} onPrinterMapChange={setPrinterMap} branding={branding} onBrandingChange={onBrandingChange} />
         )}
@@ -885,8 +894,18 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
   // dozen other numbers on the receipt is too easy to miss as an actual
   // feature (same reasoning as why Clear Sale became a real button).
   const [discountModalOpen, setDiscountModalOpen] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<"cash" | "card" | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<"cash" | "card" | "account" | null>(null);
   const [cashTendered, setCashTendered] = useState("");
+  // The account a paymentMethod "account" sale will be charged to —
+  // selected either by scanning its card (handleScan below, decoded via
+  // parseCustomerAccountBarcode) or by searching its name (accountSearch/
+  // accountMatches). Scanning a valid card ALSO switches paymentMethod to
+  // "account" itself, so a card scan is a complete one-step selection even
+  // if a cashier hadn't already tapped the Account tab first.
+  const [customerAccount, setCustomerAccount] = useState<CustomerAccount | null>(null);
+  const [accountSearch, setAccountSearch] = useState("");
+  const [accountMatches, setAccountMatches] = useState<CustomerAccount[]>([]);
+  const [accountError, setAccountError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   // Only actually required above the R5,000 full-tax-invoice threshold
@@ -995,6 +1014,18 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
     api.products.quickPicks().then(setQuickPicks).catch(() => undefined);
   }, []);
 
+  // Name-search alternative to scanning a customer's card — server-side
+  // (accounts aren't preloaded into this component like products are), so
+  // debounced rather than filtering a local list on every keystroke.
+  useEffect(() => {
+    const q = accountSearch.trim();
+    if (!q) { setAccountMatches([]); return; }
+    const id = window.setTimeout(() => {
+      api.customerAccounts.search(q).then(setAccountMatches).catch(() => undefined);
+    }, 250);
+    return () => window.clearTimeout(id);
+  }, [accountSearch]);
+
   // Auto-selects AND flashes whichever line was just appended — same
   // behavior regardless of how it got there (scan, tile tap, quick pick,
   // or a search-result click all funnel through addToCart below), so
@@ -1092,6 +1123,26 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
   // looked up as-is. On a miss, shows a brief, non-blocking inline
   // message near the scan panel rather than adding a blank/error line.
   const handleScan = async (code: string) => {
+    // Checked first, before weigh/product lookup: a customer's account
+    // card uses its own reserved barcode prefix (see
+    // customerAccountBarcode.ts), so it can never be mistaken for a real
+    // product barcode or a weigh-label. Scanning one selects it as the
+    // sale's payment method directly — no need to tap the Account tab
+    // first — and never adds a cart line.
+    const accountId = parseCustomerAccountBarcode(code);
+    if (accountId != null) {
+      try {
+        const account = await api.customerAccounts.get(accountId);
+        setCustomerAccount(account);
+        setPaymentMethod("account");
+        setAccountError("");
+        setScanError("");
+      } catch {
+        setScanError(`Customer card not recognized: "${code}"`);
+        window.setTimeout(() => setScanError(""), 3000);
+      }
+      return;
+    }
     const weigh = parseWeighBarcode(code);
     const lookupCode = weigh ? weigh.itemCode : code;
     try {
@@ -1121,7 +1172,7 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
     setKeypadValue(line ? String(line.kg ?? line.quantity ?? "") : "");
   };
 
-  const clearSale = () => { setCart([]); setDiscount(0); setBuyerName(""); setBuyerAddress(""); setPaymentMethod(null); setCashTendered(""); setCustomerNumber(""); setCustomerEmail(""); setError(""); setSelectedLine(null); setKeypadValue(""); setExpandedCategory(null); };
+  const clearSale = () => { setCart([]); setDiscount(0); setBuyerName(""); setBuyerAddress(""); setPaymentMethod(null); setCashTendered(""); setCustomerAccount(null); setAccountSearch(""); setAccountMatches([]); setAccountError(""); setCustomerNumber(""); setCustomerEmail(""); setError(""); setSelectedLine(null); setKeypadValue(""); setExpandedCategory(null); };
 
   // South African retail prices are required to be displayed VAT-inclusive
   // (Consumer Protection Act / VAT Act) — pricePerUnit is already the
@@ -1159,10 +1210,19 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
   const needsFullInvoice = total > FULL_INVOICE_THRESHOLD;
   const tenderedAmount = Number(cashTendered) || 0;
   const changeDue = paymentMethod === "cash" ? tenderedAmount - total : 0;
+  // Mirrors the same floor server-side createOrder enforces (see
+  // database.ts) so the Pay button can already reflect an insufficient
+  // balance before submitting — the server re-checks this regardless
+  // (never trust the client for the real guarantee), this is just so a
+  // cashier isn't surprised by a rejected sale after the fact.
+  const accountFloor = customerAccount ? (customerAccount.allowCredit ? (customerAccount.creditLimit != null ? -customerAccount.creditLimit : -Infinity) : 0) : 0;
+  const accountBalanceAfter = customerAccount ? customerAccount.balance - total : null;
+  const accountHasFunds = customerAccount != null && customerAccount.balance - total >= accountFloor;
   const canCheckout = cart.length > 0 && !submitting
     && (!needsFullInvoice || (buyerName.trim() && buyerAddress.trim()))
     && paymentMethod != null
-    && (paymentMethod !== "cash" || tenderedAmount >= total);
+    && (paymentMethod !== "cash" || tenderedAmount >= total)
+    && (paymentMethod !== "account" || accountHasFunds);
 
   const checkout = async () => {
     if (!canCheckout) return;
@@ -1183,6 +1243,7 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
       discountAmount: clampedDiscount,
       paymentMethod: paymentMethod ?? "cash",
       cashTendered: paymentMethod === "cash" ? tenderedAmount : null,
+      customerAccountId: paymentMethod === "account" ? customerAccount?.id ?? null : null,
       customerNumber: customerNumber.trim() || null,
       customerEmail: customerEmail.trim() || null
     };
@@ -1423,6 +1484,7 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
           <div className="pos-payment-tabs">
             <button type="button" className={`pos-payment-tab ${paymentMethod === "cash" ? "active" : ""}`} onClick={() => setPaymentMethod("cash")}>Cash</button>
             <button type="button" className={`pos-payment-tab ${paymentMethod === "card" ? "active" : ""}`} onClick={() => { setPaymentMethod("card"); setCashTendered(""); }}>Card</button>
+            <button type="button" className={`pos-payment-tab ${paymentMethod === "account" ? "active" : ""}`} onClick={() => { setPaymentMethod("account"); setCashTendered(""); }}>Account</button>
           </div>
           {paymentMethod === "cash" && (
             <div className="pos-cash-fields">
@@ -1433,6 +1495,50 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
                 <span>{changeDue < 0 ? "Still owing" : "Change due"}</span>
                 <span>{currency.format(Math.abs(changeDue))}</span>
               </div>
+            </div>
+          )}
+          {paymentMethod === "account" && (
+            <div className="pos-account-fields">
+              {customerAccount ? (
+                <div className="pos-account-selected">
+                  <div>
+                    <strong>{customerAccount.name}</strong>
+                    <span className="settings-hint">Balance: {currency.format(customerAccount.balance)}</span>
+                  </div>
+                  <button type="button" className="secondary sm" onClick={() => { setCustomerAccount(null); setAccountSearch(""); }}>Change</button>
+                </div>
+              ) : (
+                <>
+                  <label>Find customer account
+                    <input
+                      autoFocus
+                      value={accountSearch}
+                      onChange={(e) => setAccountSearch(e.target.value)}
+                      placeholder="Type a name, or scan their card…"
+                    />
+                  </label>
+                  {accountMatches.length > 0 && (
+                    <div className="pos-search-matches">
+                      {accountMatches.map((a) => (
+                        <button
+                          type="button" key={a.id} className="pos-search-match"
+                          onClick={() => { setCustomerAccount(a); setAccountSearch(""); setAccountMatches([]); }}
+                        >
+                          <span>{a.name}</span>
+                          <span className="muted">{currency.format(a.balance)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+              {customerAccount && (
+                <div className={`pos-change-due ${!accountHasFunds ? "short" : ""}`}>
+                  <span>{!accountHasFunds ? "Insufficient balance" : "Balance after sale"}</span>
+                  <span>{currency.format(accountBalanceAfter ?? 0)}</span>
+                </div>
+              )}
+              {accountError && <p className="form-error">{accountError}</p>}
             </div>
           )}
         </div>
@@ -4204,6 +4310,240 @@ function UsersPanel() {
           onCancel={() => setPendingDeactivate(null)}
         />
       )}
+    </div>
+  );
+}
+
+// ── Customer accounts (admin) ─────────────────────────────────────────────────
+
+const EMPTY_ACCOUNT_FORM: CustomerAccountInput = { name: "", allowCredit: false, creditLimit: null };
+
+// Admin management of customer accounts (prepaid balance/credit tab — see
+// CustomerAccount in shared/types.ts): create/edit terms, top up or
+// manually adjust a balance, print a scannable card, and review a
+// transaction history. POS itself (name search / card scan / charging a
+// sale to one) lives in POSPanel, not here — this panel is account
+// bookkeeping, not the checkout flow.
+function AccountsPanel() {
+  const [accounts, setAccounts] = useState<CustomerAccount[]>([]);
+  // Own copy, not threaded down from PrintLabelsPanel (which loads the
+  // same list independently for its own tab) — just needed here to find a
+  // thermal format for printCard below.
+  const [labelFormats, setLabelFormats] = useState<LabelFormat[]>([]);
+  useEffect(() => { api.labels.formats().then(setLabelFormats).catch(() => undefined); }, []);
+  const [form, setForm] = useState<CustomerAccountInput>(EMPTY_ACCOUNT_FORM);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [topUpTarget, setTopUpTarget] = useState<CustomerAccount | null>(null);
+  const [adjustTarget, setAdjustTarget] = useState<CustomerAccount | null>(null);
+  const [historyTarget, setHistoryTarget] = useState<CustomerAccount | null>(null);
+
+  const load = () => api.customerAccounts.list().then(setAccounts).catch(() => undefined);
+  useEffect(() => { void load(); }, []);
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setMsg("");
+    try {
+      if (editingId) await api.customerAccounts.update(editingId, form);
+      else await api.customerAccounts.create(form);
+      setForm(EMPTY_ACCOUNT_FORM); setEditingId(null); setMsg("Saved.");
+      await load();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Failed to save.");
+    } finally { setBusy(false); }
+  };
+
+  const startEdit = (a: CustomerAccount) => {
+    setEditingId(a.id);
+    setForm({ name: a.name, allowCredit: !!a.allowCredit, creditLimit: a.creditLimit });
+  };
+
+  const toggleActive = async (a: CustomerAccount) => {
+    try {
+      await api.customerAccounts.update(a.id, { name: a.name, allowCredit: !!a.allowCredit, creditLimit: a.creditLimit, isActive: !a.isActive });
+      await load();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not update account");
+    }
+  };
+
+  // Prints a physical card for this account using the exact same thermal-
+  // label renderer Print Labels uses (buildThermalPrintHtml/LABEL_CELL_STYLE)
+  // — the account's cardCode is already a real, valid EAN-13 (see
+  // customerAccountBarcode.ts), so it renders exactly like a product's own
+  // barcode, just with no price line (pricePerUnit: null). Always the
+  // browser print dialog: this is a one-off, occasional action (a new
+  // account, or a replacement for a lost card), not a high-volume batch
+  // job, so it doesn't need Print Labels' printer-assignment machinery.
+  const printCard = (a: CustomerAccount) => {
+    const format = labelFormats.find((f) => f.type === "thermal");
+    if (!format || !a.cardCode) { setMsg("No thermal label format is set up yet — add one in Print Labels first."); return; }
+    const html = applyColorMode(buildThermalPrintHtml(
+      [{ name: a.name, barcode: a.cardCode, itemCode: null, pricePerUnit: null, unitDefault: "qty", weightKg: null }],
+      format
+    ));
+    printHtml(html);
+  };
+
+  return (
+    <div className="products-layout">
+      <form className="panel product-form" onSubmit={(e) => void save(e)}>
+        <h2>{editingId ? "Edit account" : "Add account"}</h2>
+        <label>Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
+        <label className="checkbox-label">
+          <input type="checkbox" checked={form.allowCredit} onChange={(e) => setForm({ ...form, allowCredit: e.target.checked, creditLimit: e.target.checked ? form.creditLimit : null })} />
+          Allow this account to run a credit tab (balance can go negative)
+        </label>
+        {form.allowCredit && (
+          <label>Credit limit <span className="settings-hint">(optional — blank means uncapped)</span>
+            <input type="number" min="0" step="0.01" value={form.creditLimit ?? ""} onChange={(e) => setForm({ ...form, creditLimit: e.target.value ? Number(e.target.value) : null })} placeholder="e.g. 500" />
+          </label>
+        )}
+        {msg && <div className="form-message">{msg}</div>}
+        <footer className="actions">
+          {editingId && <button type="button" className="secondary" onClick={() => { setEditingId(null); setForm(EMPTY_ACCOUNT_FORM); setMsg(""); }}>Cancel</button>}
+          <button type="submit" disabled={busy}><Save size={18} /> {busy ? "Saving…" : "Save"}</button>
+        </footer>
+      </form>
+
+      <div className="panel table-panel">
+        <table>
+          <thead><tr><th>Name</th><th>Balance</th><th>Terms</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {accounts.map((a) => (
+              <tr key={a.id} className={a.isActive ? "" : "inactive-row"}>
+                <td>{a.name}</td>
+                <td className={a.balance < 0 ? "margin-negative" : ""}>{currency.format(a.balance)}</td>
+                <td className="settings-hint">{a.allowCredit ? (a.creditLimit != null ? `Credit up to ${currency.format(a.creditLimit)}` : "Uncapped credit") : "Prepaid only"}</td>
+                <td>{a.isActive ? "Active" : "Inactive"}</td>
+                <td className="row-actions">
+                  <button type="button" className="secondary sm" onClick={() => startEdit(a)}>Edit</button>
+                  <button type="button" className="secondary sm" onClick={() => setTopUpTarget(a)}>Top up</button>
+                  <button type="button" className="secondary sm" onClick={() => setAdjustTarget(a)}>Adjust</button>
+                  <button type="button" className="secondary sm" onClick={() => printCard(a)}>Print card</button>
+                  <button type="button" className="secondary sm" onClick={() => setHistoryTarget(a)}>History</button>
+                  <button type="button" className="secondary sm" onClick={() => void toggleActive(a)}>{a.isActive ? "Deactivate" : "Activate"}</button>
+                </td>
+              </tr>
+            ))}
+            {accounts.length === 0 && (
+              <tr><td colSpan={5} className="report-empty">No customer accounts yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {topUpTarget && (
+        <AccountBalanceModal
+          title={`Top up ${topUpTarget.name}`}
+          submitLabel="Top up"
+          requireNote={false}
+          onSubmit={(amount, note) => api.customerAccounts.topUp(topUpTarget.id, amount, note)}
+          onDone={() => { setTopUpTarget(null); void load(); }}
+          onClose={() => setTopUpTarget(null)}
+        />
+      )}
+      {adjustTarget && (
+        <AccountBalanceModal
+          title={`Adjust ${adjustTarget.name}'s balance`}
+          submitLabel="Apply adjustment"
+          requireNote
+          allowNegative
+          onSubmit={(amount, note) => api.customerAccounts.adjust(adjustTarget.id, amount, note)}
+          onDone={() => { setAdjustTarget(null); void load(); }}
+          onClose={() => setAdjustTarget(null)}
+        />
+      )}
+      {historyTarget && (
+        <AccountHistoryModal account={historyTarget} onClose={() => setHistoryTarget(null)} />
+      )}
+    </div>
+  );
+}
+
+// Shared by "Top up" (always positive, no note required) and "Adjust"
+// (admin-only manual correction — can be signed, note mandatory since it
+// bypasses every other guardrail, including the credit limit). One modal,
+// one amount+note form, so the two actions can't drift in behavior beyond
+// the flags that actually differ between them.
+function AccountBalanceModal({ title, submitLabel, requireNote, allowNegative, onSubmit, onDone, onClose }: {
+  title: string; submitLabel: string; requireNote: boolean; allowNegative?: boolean;
+  onSubmit: (amount: number, note: string) => Promise<CustomerAccount>;
+  onDone: () => void; onClose: () => void;
+}) {
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    const n = Number(amount);
+    if (!Number.isFinite(n) || n === 0 || (!allowNegative && n <= 0)) { setError("Enter a valid amount"); return; }
+    if (requireNote && !note.trim()) { setError("A note is required"); return; }
+    setBusy(true); setError("");
+    try {
+      await onSubmit(n, note.trim());
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal-body">
+        <h2>{title}</h2>
+        <label>Amount {allowNegative && <span className="settings-hint">(negative to deduct)</span>}
+          <input type="number" step="0.01" autoFocus value={amount} onChange={(e) => setAmount(e.target.value)} />
+        </label>
+        <label>Note {!requireNote && <span className="settings-hint">(optional)</span>}
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={requireNote ? "Required — why this adjustment?" : "e.g. cash received at counter"} />
+        </label>
+        {error && <p className="form-error">{error}</p>}
+        <footer className="actions">
+          <button type="button" className="secondary" onClick={onClose}>Cancel</button>
+          <button type="button" disabled={busy} onClick={() => void submit()}>{busy ? "Saving…" : submitLabel}</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function AccountHistoryModal({ account, onClose }: { account: CustomerAccount; onClose: () => void }) {
+  const [transactions, setTransactions] = useState<CustomerAccountTransaction[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    api.customerAccounts.transactions(account.id).then(setTransactions).catch(() => undefined).finally(() => setLoading(false));
+  }, [account.id]);
+
+  return (
+    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal-body">
+        <h2>{account.name} — transaction history</h2>
+        {loading ? <p className="settings-hint">Loading…</p> : transactions.length === 0 ? (
+          <p className="report-empty">No transactions yet.</p>
+        ) : (
+          <table>
+            <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>By</th><th>Note</th></tr></thead>
+            <tbody>
+              {transactions.map((t) => (
+                <tr key={t.id}>
+                  <td>{new Date(t.createdAt).toLocaleString(appSettings.locale)}</td>
+                  <td className="settings-hint">{t.type}</td>
+                  <td className={t.amount < 0 ? "margin-negative" : ""}>{currency.format(t.amount)}</td>
+                  <td>{t.createdByName ?? "—"}</td>
+                  <td>{t.note ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <footer className="actions">
+          <button type="button" className="secondary" onClick={onClose}>Close</button>
+        </footer>
+      </div>
     </div>
   );
 }
@@ -7031,7 +7371,7 @@ function nextDeptStatus(status: DeptStatus): DeptStatus | null {
 }
 
 function tabTitle(tab: Tab) {
-  return { orders: "New Order", pos: "POS", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings", reports: "Reports", weighIn: "Weigh-In", statistics: "Statistics", crm: "CRM", consolidate: "Consolidate Order", printLabels: "Print Labels" }[tab];
+  return { orders: "New Order", pos: "POS", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings", reports: "Reports", weighIn: "Weigh-In", statistics: "Statistics", crm: "CRM", consolidate: "Consolidate Order", printLabels: "Print Labels", accounts: "Customer Accounts" }[tab];
 }
 
 function tabSubtitle(tab: Tab) {
@@ -7048,6 +7388,7 @@ function tabSubtitle(tab: Tab) {
     statistics: "Sales performance and stock movement per item.",
     crm: "Contacts, message history, and WhatsApp automation.",
     consolidate: "Scan every item to verify a Ready order, then finalize one barcode and receipt for it.",
-    printLabels: "Pick a product, set weight/quantity/format, and print with a live preview."
+    printLabels: "Pick a product, set weight/quantity/format, and print with a live preview.",
+    accounts: "Manage prepaid balances and credit tabs, top up, and print scannable cards."
   }[tab];
 }

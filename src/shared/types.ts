@@ -291,10 +291,17 @@ export interface CreateOrderInput {
   discountAmount?: number;
   // How the POS sale was paid — a plain record for reporting/reconciliation,
   // not an actual payment integration (this app never touches card data).
-  paymentMethod?: "cash" | "card";
+  // "account" charges a customer account's prepaid balance/credit tab (see
+  // CustomerAccount) — requires customerAccountId below.
+  paymentMethod?: "cash" | "card" | "account";
   // What the customer physically handed over, for cash sales only — the
   // change due is derived from this minus the total, not stored separately.
   cashTendered?: number | null;
+  // Which customer account to charge — required when paymentMethod is
+  // "account" (see server/database.ts's createOrder for the balance/credit
+  // validation and the atomic charge). Selected at POS either by searching
+  // the account's name or scanning its card barcode.
+  customerAccountId?: number | null;
   // Optional "Customer number" from POS checkout — a bare phone number,
   // not a contact id. Server resolves-or-creates a crm_contacts row and
   // links the order to it; left blank, the order stays unlinked and
@@ -323,8 +330,9 @@ export interface Order {
   createdAt: string;
   updatedAt: string;
   discountAmount: number;
-  paymentMethod: "cash" | "card";
+  paymentMethod: "cash" | "card" | "account";
   cashTendered: number | null;
+  customerAccountId: number | null;
   crmContactId: string | null;
   customerEmail: string | null;
   // Set only for a completeImmediately (POS) sale, at creation time — the
@@ -339,6 +347,63 @@ export interface Order {
   consolidatedAt: string | null;
   consolidationBarcode: string | null;
   items: OrderItem[];
+}
+
+// ── Customer accounts ────────────────────────────────────────────────────────
+// A customer-facing prepaid balance and/or credit tab, chargeable as a POS
+// payment method (see Order.paymentMethod === "account"). Identified at POS
+// either by searching the account's name or by scanning its own physical
+// card barcode (see customerAccountBarcode.ts) — a separate identity from
+// crm_contacts (the phone-based WhatsApp CRM record), deliberately: not
+// every paying account needs (or wants) WhatsApp messaging, and not every
+// CRM contact runs a tab.
+export interface CustomerAccount {
+  id: number;
+  name: string;
+  // The account's own barcode, generated once at creation (deterministic
+  // from `id` — see generateCustomerAccountBarcode) and printable as a
+  // physical card via the existing label-printing feature. Never null in
+  // practice once created, but nullable here to match the DB column during
+  // the brief window between the INSERT and the follow-up UPDATE that sets it.
+  cardCode: string | null;
+  // Can go negative only if allowCredit is set — see creditLimit.
+  balance: number;
+  // 0/1 (SQLite has no real boolean) — false means this is a prepaid-only
+  // account: a sale is rejected outright if it would take the balance below
+  // zero. True allows the balance to run negative (a tab), optionally capped
+  // by creditLimit.
+  allowCredit: number;
+  // Only meaningful when allowCredit is set. Null means an uncapped tab;
+  // otherwise the balance may never go below -creditLimit.
+  creditLimit: number | null;
+  isActive: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomerAccountInput {
+  name: string;
+  allowCredit: boolean;
+  creditLimit: number | null;
+}
+
+// One balance-changing event on an account — the transaction log a running
+// `balance` is always derived from, so the two can never silently drift
+// apart (see server/database.ts's recordAccountTransaction, the one place
+// either ever changes). "sale" rows are negative and carry orderId; "topup"
+// rows are positive, staff-entered cash/card received onto the account;
+// "adjustment" rows are a signed admin-only correction and always require a
+// note explaining why.
+export interface CustomerAccountTransaction {
+  id: number;
+  accountId: number;
+  type: "topup" | "sale" | "adjustment";
+  amount: number;
+  orderId: number | null;
+  note: string | null;
+  createdById: number | null;
+  createdByName: string | null;
+  createdAt: string;
 }
 
 // ── Statistics (admin) ───────────────────────────────────────────────────────

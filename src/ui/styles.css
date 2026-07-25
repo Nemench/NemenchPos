@@ -2915,6 +2915,38 @@ button.sm {
   font-size: 16px;
 }
 
+.pos-account-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pos-account-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.pos-account-selected {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--chip-bg);
+}
+
+.pos-account-selected > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .pos-change-due {
   display: flex;
   justify-content: space-between;

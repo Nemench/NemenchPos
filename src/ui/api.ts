@@ -1,7 +1,7 @@
 // Thin typed wrapper around the backend REST API. Every call goes through
 // req()/download(), which attach the JWT and centrally handle a 401 (token
 // missing/expired) by clearing it and forcing a reload back to the login screen.
-import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput, StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, CrmContact, CrmContactInput, CrmContactDetail, CrmTag, CrmMessage, CrmAutomationRule, ConsentStatus, EmailSubscriber, CampaignPromo, LabelFormat, LabelFormatInput, DiscoveredPrinter, PrintQueueJob } from "../shared/types";
+import type { User, UserInput, Product, ProductInput, QuickCreateProductInput, Order, OrderItemInput, CreateOrderInput, OrderStatus, Department, DeptStatus, Supplier, WeighInBatch, WeighInBatchSummary, WeighInLine, WeighInLineInput, StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, CrmContact, CrmContactInput, CrmContactDetail, CrmTag, CrmMessage, CrmAutomationRule, ConsentStatus, EmailSubscriber, CampaignPromo, LabelFormat, LabelFormatInput, DiscoveredPrinter, PrintQueueJob, CustomerAccount, CustomerAccountInput, CustomerAccountTransaction } from "../shared/types";
 import { tokenStorage } from "./tokenStorage";
 
 // The native Android app now live-loads its own server's page directly
@@ -129,6 +129,19 @@ export const api = {
   },
   print: (printerName: string, html: string) =>
     req<{ ok: boolean }>("POST", "/print", { printerName, html }),
+  customerAccounts: {
+    list: () => req<CustomerAccount[]>("GET", "/customer-accounts"),
+    search: (q: string) => req<CustomerAccount[]>("GET", `/customer-accounts/search?q=${encodeURIComponent(q)}`),
+    get: (id: number) => req<CustomerAccount>("GET", `/customer-accounts/${id}`),
+    transactions: (id: number) => req<CustomerAccountTransaction[]>("GET", `/customer-accounts/${id}/transactions`),
+    create: (input: CustomerAccountInput) => req<CustomerAccount>("POST", "/customer-accounts", input),
+    update: (id: number, input: CustomerAccountInput & { isActive?: boolean }) =>
+      req<CustomerAccount>("PUT", `/customer-accounts/${id}`, input),
+    topUp: (id: number, amount: number, note?: string) =>
+      req<CustomerAccount>("POST", `/customer-accounts/${id}/topup`, { amount, note }),
+    adjust: (id: number, amount: number, note: string) =>
+      req<CustomerAccount>("POST", `/customer-accounts/${id}/adjust`, { amount, note })
+  },
   stock: {
     list: () => req<Product[]>("GET", "/stock"),
     low: () => req<Product[]>("GET", "/stock/low"),

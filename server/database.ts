@@ -17,11 +17,13 @@ import type {
   StockLocation, ProductStockRow, ItemSalesStat, ItemStockMovementStat, StatisticsOverview,
   MarginStat, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, PendingYieldItem,
   CrmContact, CrmContactInput, CrmMessage, MessageDirection, MessageType, MessageStatus,
-  WhatsappOutboxItem, CrmAutomationRule, ConsentStatus, CrmContactDetail, CrmTag, EmailOutboxItem, EmailSubscriber, OrderMessageTemplate, LabelFormat, LabelFormatInput
+  WhatsappOutboxItem, CrmAutomationRule, ConsentStatus, CrmContactDetail, CrmTag, EmailOutboxItem, EmailSubscriber, OrderMessageTemplate, LabelFormat, LabelFormatInput,
+  CustomerAccount, CustomerAccountInput, CustomerAccountTransaction
 } from "../src/shared/types.js";
 import { generateInternalBarcode } from "../src/shared/internalBarcode.js";
 import { generateConsolidationBarcode } from "../src/shared/orderConsolidationBarcode.js";
 import { parseWeighBarcode } from "../src/shared/weighBarcode.js";
+import { generateCustomerAccountBarcode } from "../src/shared/customerAccountBarcode.js";
 import { weightedMarginPct } from "../src/shared/margin.js";
 
 export class KotDatabase {
@@ -898,7 +900,7 @@ export class KotDatabase {
   private static readonly BACKUP_TABLES = [
     "users", "suppliers", "stock_locations", "crm_contacts", "crm_tags",
     "products", "crm_contact_tags", "crm_messages", "whatsapp_outbox", "crm_automation_rules",
-    "orders", "order_items", "weigh_in_batches", "weigh_in_lines",
+    "customer_accounts", "orders", "order_items", "customer_account_transactions", "weigh_in_batches", "weigh_in_lines",
     "product_cost_history", "product_yield_estimates", "pending_yield_conversions", "pending_yield_items",
     "product_stock", "email_outbox", "email_subscribers", "order_message_templates", "label_formats"
   ];
@@ -967,6 +969,95 @@ export class KotDatabase {
     this.db.prepare("UPDATE products SET isActive = 0, updatedAt = ? WHERE id = ?").run(new Date().toISOString(), id);
   }
 
+  // ── Customer accounts ───────────────────────────────────────────────────────
+
+  listCustomerAccounts(): CustomerAccount[] {
+    return this.db.prepare("SELECT * FROM customer_accounts ORDER BY name").all() as CustomerAccount[];
+  }
+
+  // Live-typeahead name search at POS — active accounts only (an admin who
+  // deactivates an account doesn't want it still selectable at checkout),
+  // capped since this is a dropdown, not a report.
+  searchCustomerAccounts(query: string): CustomerAccount[] {
+    const q = `%${query.trim().toLowerCase()}%`;
+    return this.db
+      .prepare("SELECT * FROM customer_accounts WHERE isActive = 1 AND lower(name) LIKE ? ORDER BY name LIMIT 20")
+      .all(q) as CustomerAccount[];
+  }
+
+  getCustomerAccount(id: number): CustomerAccount | null {
+    return this.db.prepare("SELECT * FROM customer_accounts WHERE id = ?").get(id) as CustomerAccount | null;
+  }
+
+  listAccountTransactions(accountId: number): CustomerAccountTransaction[] {
+    return this.db
+      .prepare(`SELECT t.*, u.name as createdByName FROM customer_account_transactions t
+                LEFT JOIN users u ON t.createdById = u.id
+                WHERE t.accountId = ? ORDER BY t.createdAt DESC`)
+      .all(accountId) as CustomerAccountTransaction[];
+  }
+
+  // cardCode is deterministic from the row's own id (see
+  // generateCustomerAccountBarcode), so it's set in a follow-up UPDATE
+  // rather than computed before the INSERT — there's no id to derive it
+  // from until the row exists.
+  createCustomerAccount(input: CustomerAccountInput): CustomerAccount {
+    if (!input.name.trim()) throw new Error("Account name is required");
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare("INSERT INTO customer_accounts (name, allowCredit, creditLimit, isActive, createdAt, updatedAt) VALUES (?, ?, ?, 1, ?, ?)")
+      .run(input.name.trim(), input.allowCredit ? 1 : 0, input.allowCredit ? input.creditLimit : null, now, now);
+    const id = Number(result.lastInsertRowid);
+    this.db.prepare("UPDATE customer_accounts SET cardCode = ? WHERE id = ?").run(generateCustomerAccountBarcode(id), id);
+    return this.getCustomerAccount(id)!;
+  }
+
+  updateCustomerAccount(id: number, input: CustomerAccountInput & { isActive?: boolean }): CustomerAccount {
+    const existing = this.getCustomerAccount(id);
+    if (!existing) throw new Error("Account not found");
+    if (!input.name.trim()) throw new Error("Account name is required");
+    const isActive = input.isActive ?? !!existing.isActive;
+    this.db
+      .prepare("UPDATE customer_accounts SET name = ?, allowCredit = ?, creditLimit = ?, isActive = ?, updatedAt = ? WHERE id = ?")
+      .run(input.name.trim(), input.allowCredit ? 1 : 0, input.allowCredit ? input.creditLimit : null, isActive ? 1 : 0, new Date().toISOString(), id);
+    return this.getCustomerAccount(id)!;
+  }
+
+  // The one place customer_accounts.balance ever changes — always paired
+  // with the transaction-log row that explains the change, so a balance
+  // can never silently drift from its own history. Private: every caller
+  // goes through topUpCustomerAccount/adjustCustomerAccountBalance/
+  // createOrder's account-charge below, each of which is responsible for
+  // its own validation (sufficient funds, a required note, etc.) before
+  // calling this.
+  private recordAccountTransaction(accountId: number, amount: number, type: CustomerAccountTransaction["type"], opts: { orderId?: number | null; note?: string | null; createdById?: number | null } = {}): void {
+    const now = new Date().toISOString();
+    this.db.prepare("UPDATE customer_accounts SET balance = balance + ?, updatedAt = ? WHERE id = ?").run(amount, now, accountId);
+    this.db
+      .prepare("INSERT INTO customer_account_transactions (accountId, type, amount, orderId, note, createdById, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(accountId, type, amount, opts.orderId ?? null, opts.note ?? null, opts.createdById ?? null, now);
+  }
+
+  // Staff-entered cash/card received onto the account (e.g. a customer
+  // topping up their tab balance at the counter) — always positive.
+  topUpCustomerAccount(id: number, amount: number, createdById: number, note?: string): CustomerAccount {
+    if (!this.getCustomerAccount(id)) throw new Error("Account not found");
+    if (!(amount > 0)) throw new Error("Top-up amount must be a positive number");
+    this.recordAccountTransaction(id, amount, "topup", { createdById, note: note?.trim() || null });
+    return this.getCustomerAccount(id)!;
+  }
+
+  // A manual, signed correction (e.g. fixing a mis-charged sale) — admin
+  // only (see the route gate), and a note is mandatory since this bypasses
+  // every other guardrail (credit limit included) other callers respect.
+  adjustCustomerAccountBalance(id: number, amount: number, createdById: number, note: string): CustomerAccount {
+    if (!this.getCustomerAccount(id)) throw new Error("Account not found");
+    if (!amount) throw new Error("Adjustment amount can't be zero");
+    if (!note.trim()) throw new Error("A note is required for a manual balance adjustment");
+    this.recordAccountTransaction(id, amount, "adjustment", { createdById, note: note.trim() });
+    return this.getCustomerAccount(id)!;
+  }
+
   // ── Orders ─────────────────────────────────────────────────────────────────
 
   createOrder(input: CreateOrderInput, requestedById: number): Order {
@@ -980,7 +1071,7 @@ export class KotDatabase {
     const overallStatus: OrderStatus = doneNow ? "Done" : "New";
 
     const discountAmount = Math.max(0, input.discountAmount ?? 0);
-    const paymentMethod = input.paymentMethod === "card" ? "card" : "cash";
+    const paymentMethod = input.paymentMethod === "card" ? "card" : input.paymentMethod === "account" ? "account" : "cash";
     const saleTotal = input.items.reduce((sum, i) => sum + (i.lineTotal ?? 0), 0) - discountAmount;
 
     // SARS requires a full tax invoice (buyer name + address) for any
@@ -996,6 +1087,25 @@ export class KotDatabase {
       }
     }
     const cashTendered = paymentMethod === "cash" ? (input.cashTendered ?? null) : null;
+
+    // Charging a customer account is only a real, final event for a
+    // completed (completeImmediately) sale — same reasoning as cash-
+    // tendered/paidAt above: a regular KOT ticket isn't paid yet, so
+    // there's nothing to charge until it actually completes. Validated
+    // (and the account resolved) BEFORE any writes below, so a bad/
+    // insufficient-balance account fails fast with a clear message rather
+    // than surfacing as a generic rollback.
+    let chargedAccount: CustomerAccount | null = null;
+    if (paymentMethod === "account" && doneNow) {
+      if (!input.customerAccountId) throw new Error("Select a customer account to charge");
+      const account = this.getCustomerAccount(input.customerAccountId);
+      if (!account || !account.isActive) throw new Error("That customer account is not available");
+      const floor = account.allowCredit ? (account.creditLimit != null ? -account.creditLimit : -Infinity) : 0;
+      if (account.balance - saleTotal < floor) {
+        throw new Error(`Insufficient balance on "${account.name}"'s account (available: ${account.balance.toFixed(2)})`);
+      }
+      chargedAccount = account;
+    }
 
     // Every catalog item in a completed (POS) sale must have a recorded
     // cost price — enforced here, not just the POS grid disabling the tap,
@@ -1030,39 +1140,51 @@ export class KotDatabase {
     // until a real "mark as paid" staff action exists.
     const paidAt = doneNow ? now : null;
 
-    const result = this.db
-      .prepare("INSERT INTO orders (ticketNumber, customerName, customerPhone, orderType, deliveryAddress, requestedTime, assignedTo, status, kitchenStatus, counterStatus, requestedById, createdAt, updatedAt, discountAmount, paymentMethod, cashTendered, crmContactId, customerEmail, paidAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(ticketNumber, input.customerName.trim(), input.customerPhone.trim(), input.orderType, input.orderType === "delivery" || input.deliveryAddress?.street ? JSON.stringify(input.deliveryAddress) : "{}", input.requestedTime.trim(), input.assignedTo?.trim() || null, overallStatus, kitchenStatus, counterStatus, requestedById, now, now, discountAmount, paymentMethod, cashTendered, crmContactId, input.customerEmail?.trim() || null, paidAt);
+    // Wrapped in a transaction so the order, its line items, the stock
+    // deduction, and (for an account sale) the account charge all either
+    // happen together or none do — a customer account can never end up
+    // charged for an order that didn't actually get created, or vice versa.
+    const create = this.db.transaction((): number => {
+      const result = this.db
+        .prepare("INSERT INTO orders (ticketNumber, customerName, customerPhone, orderType, deliveryAddress, requestedTime, assignedTo, status, kitchenStatus, counterStatus, requestedById, createdAt, updatedAt, discountAmount, paymentMethod, cashTendered, crmContactId, customerEmail, paidAt, customerAccountId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(ticketNumber, input.customerName.trim(), input.customerPhone.trim(), input.orderType, input.orderType === "delivery" || input.deliveryAddress?.street ? JSON.stringify(input.deliveryAddress) : "{}", input.requestedTime.trim(), input.assignedTo?.trim() || null, overallStatus, kitchenStatus, counterStatus, requestedById, now, now, discountAmount, paymentMethod, cashTendered, crmContactId, input.customerEmail?.trim() || null, paidAt, chargedAccount?.id ?? null);
 
-    const orderId = Number(result.lastInsertRowid);
-    const insertItem = this.db.prepare(
-      "INSERT INTO order_items (orderId, productId, name, kg, quantity, notes, unitPrice, lineTotal, wantedPrice, department, costAtSale) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    );
-    for (const item of input.items) {
-      // Total cost for the line (matching lineTotal being a total, not a
-      // per-unit figure) — the cost snapshotted now, at sale time, not
-      // whatever product_cost_history says later when a report reads it.
-      const unitCost = item.productId ? costPerItem.get(item.productId) : null;
-      const costAtSale = unitCost != null ? unitCost * (item.kg || item.quantity || 1) : null;
-      insertItem.run(orderId, item.productId ?? null, item.name.trim(), item.kg ?? null, item.quantity ?? null, item.notes.trim(), item.unitPrice ?? null, item.lineTotal ?? null, item.wantedPrice ?? null, item.department, costAtSale);
-    }
+      const orderId = Number(result.lastInsertRowid);
+      const insertItem = this.db.prepare(
+        "INSERT INTO order_items (orderId, productId, name, kg, quantity, notes, unitPrice, lineTotal, wantedPrice, department, costAtSale) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      );
+      for (const item of input.items) {
+        // Total cost for the line (matching lineTotal being a total, not a
+        // per-unit figure) — the cost snapshotted now, at sale time, not
+        // whatever product_cost_history says later when a report reads it.
+        const unitCost = item.productId ? costPerItem.get(item.productId) : null;
+        const costAtSale = unitCost != null ? unitCost * (item.kg || item.quantity || 1) : null;
+        insertItem.run(orderId, item.productId ?? null, item.name.trim(), item.kg ?? null, item.quantity ?? null, item.notes.trim(), item.unitPrice ?? null, item.lineTotal ?? null, item.wantedPrice ?? null, item.department, costAtSale);
+      }
 
-    // A completeImmediately order is a finished POS sale (see the
-    // completeImmediately doc on CreateOrderInput) — stock actually left
-    // the shop, so deduct it now. Regular KOT tickets don't touch stock
-    // here; they're still New/being prepared, not a completed sale.
-    if (doneNow) {
-      const salesLocationId = this.resolveSalesLocationId();
-      if (salesLocationId != null) {
-        for (const item of input.items) {
-          if (!item.productId) continue; // free-text lines aren't in the catalog — nothing to deduct
-          const amount = item.kg || item.quantity;
-          if (amount) this.adjustProductStock(item.productId, salesLocationId, -amount);
+      // A completeImmediately order is a finished POS sale (see the
+      // completeImmediately doc on CreateOrderInput) — stock actually left
+      // the shop, so deduct it now. Regular KOT tickets don't touch stock
+      // here; they're still New/being prepared, not a completed sale.
+      if (doneNow) {
+        const salesLocationId = this.resolveSalesLocationId();
+        if (salesLocationId != null) {
+          for (const item of input.items) {
+            if (!item.productId) continue; // free-text lines aren't in the catalog — nothing to deduct
+            const amount = item.kg || item.quantity;
+            if (amount) this.adjustProductStock(item.productId, salesLocationId, -amount);
+          }
         }
       }
-    }
 
-    return this.getOrder(orderId);
+      if (chargedAccount) {
+        this.recordAccountTransaction(chargedAccount.id, -saleTotal, "sale", { orderId, createdById: requestedById });
+      }
+
+      return orderId;
+    });
+
+    return this.getOrder(create());
   }
 
   // Which stock location a completed sale's items come out of. Explicit
@@ -1093,7 +1215,7 @@ export class KotDatabase {
     const base = `
       SELECT o.id, o.ticketNumber, o.customerName, o.customerPhone, o.orderType,
              o.deliveryAddress, o.requestedTime, o.assignedTo, o.status, o.kitchenStatus, o.counterStatus,
-             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, o.crmContactId, o.customerEmail, o.paidAt, o.consolidatedAt, o.consolidationBarcode, u.name as requestedByName,
+             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, o.crmContactId, o.customerEmail, o.paidAt, o.consolidatedAt, o.consolidationBarcode, o.customerAccountId, u.name as requestedByName,
              oi.id as oi_id, oi.productId as oi_productId, oi.name as oi_name,
              oi.kg as oi_kg, oi.quantity as oi_quantity, oi.notes as oi_notes,
              oi.unitPrice as oi_unitPrice, oi.lineTotal as oi_lineTotal, oi.wantedPrice as oi_wantedPrice, oi.department as oi_dept, oi.costAtSale as oi_costAtSale, oi.scannedAt as oi_scannedAt
@@ -1129,7 +1251,7 @@ export class KotDatabase {
     const sql = `
       SELECT o.id, o.ticketNumber, o.customerName, o.customerPhone, o.orderType,
              o.deliveryAddress, o.requestedTime, o.assignedTo, o.status, o.kitchenStatus, o.counterStatus,
-             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, o.crmContactId, o.customerEmail, o.paidAt, o.consolidatedAt, o.consolidationBarcode, u.name as requestedByName,
+             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, o.crmContactId, o.customerEmail, o.paidAt, o.consolidatedAt, o.consolidationBarcode, o.customerAccountId, u.name as requestedByName,
              oi.id as oi_id, oi.productId as oi_productId, oi.name as oi_name,
              oi.kg as oi_kg, oi.quantity as oi_quantity, oi.notes as oi_notes,
              oi.unitPrice as oi_unitPrice, oi.lineTotal as oi_lineTotal, oi.wantedPrice as oi_wantedPrice, oi.department as oi_dept, oi.costAtSale as oi_costAtSale, oi.scannedAt as oi_scannedAt
@@ -1381,7 +1503,7 @@ export class KotDatabase {
     const sql = `
       SELECT o.id, o.ticketNumber, o.customerName, o.customerPhone, o.orderType,
              o.deliveryAddress, o.requestedTime, o.assignedTo, o.status, o.kitchenStatus, o.counterStatus,
-             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, o.crmContactId, o.customerEmail, o.paidAt, o.consolidatedAt, o.consolidationBarcode, u.name as requestedByName,
+             o.requestedById, o.createdAt, o.updatedAt, o.discountAmount, o.paymentMethod, o.cashTendered, o.crmContactId, o.customerEmail, o.paidAt, o.consolidatedAt, o.consolidationBarcode, o.customerAccountId, u.name as requestedByName,
              oi.id as oi_id, oi.productId as oi_productId, oi.name as oi_name,
              oi.kg as oi_kg, oi.quantity as oi_quantity, oi.notes as oi_notes,
              oi.unitPrice as oi_unitPrice, oi.lineTotal as oi_lineTotal, oi.wantedPrice as oi_wantedPrice, oi.department as oi_dept, oi.costAtSale as oi_costAtSale, oi.scannedAt as oi_scannedAt
@@ -1601,6 +1723,9 @@ export class KotDatabase {
       // order-completion flag (see orders.status for that).
       if (!cols.includes("consolidatedAt")) this.db.exec("ALTER TABLE orders ADD COLUMN consolidatedAt TEXT");
       if (!cols.includes("consolidationBarcode")) this.db.exec("ALTER TABLE orders ADD COLUMN consolidationBarcode TEXT");
+      // Which customer account (see customer_accounts below) a paymentMethod
+      // 'account' sale was charged to.
+      if (!cols.includes("customerAccountId")) this.db.exec("ALTER TABLE orders ADD COLUMN customerAccountId INTEGER REFERENCES customer_accounts(id)");
     }
 
     // Add brand/code/pageWidthMm/pageHeightMm to label_formats if missing
@@ -1722,6 +1847,38 @@ export class KotDatabase {
         updatedAt TEXT NOT NULL
       );
 
+      -- ── Customer accounts ──────────────────────────────────────────────────
+      -- A prepaid balance and/or credit tab, chargeable at POS as
+      -- paymentMethod 'account' (see createOrder). Deliberately separate
+      -- from crm_contacts: not every paying account wants WhatsApp
+      -- messaging, and not every CRM contact runs a tab.
+      CREATE TABLE IF NOT EXISTS customer_accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        cardCode TEXT UNIQUE,
+        balance REAL NOT NULL DEFAULT 0,
+        allowCredit INTEGER NOT NULL DEFAULT 0,
+        creditLimit REAL,
+        isActive INTEGER NOT NULL DEFAULT 1,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+
+      -- The transaction log a customer_accounts.balance is always derived
+      -- from (see recordAccountTransaction) — 'sale' rows carry orderId,
+      -- 'topup'/'adjustment' rows don't.
+      CREATE TABLE IF NOT EXISTS customer_account_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        accountId INTEGER NOT NULL REFERENCES customer_accounts(id),
+        type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        orderId INTEGER REFERENCES orders(id),
+        note TEXT,
+        createdById INTEGER REFERENCES users(id),
+        createdAt TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_cust_acct_txn_account ON customer_account_transactions(accountId);
+
       CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ticketNumber TEXT NOT NULL UNIQUE,
@@ -1744,7 +1901,8 @@ export class KotDatabase {
         customerEmail TEXT,
         paidAt TEXT,
         consolidatedAt TEXT,
-        consolidationBarcode TEXT
+        consolidationBarcode TEXT,
+        customerAccountId INTEGER REFERENCES customer_accounts(id)
       );
 
       CREATE TABLE IF NOT EXISTS order_items (
