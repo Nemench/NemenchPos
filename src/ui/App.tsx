@@ -1178,9 +1178,9 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
     };
   }, []);
 
-  // Reused by both the always-focused search box above (see
-  // searchInputRef) and a real scan is indistinguishable from someone
-  // typing/pasting a code and hitting Enter manually — a
+  // Called both by the search box's own Enter handler (someone typed or
+  // pasted a code and pressed Enter manually) and by the global scanner
+  // capture below (a real scan, detected regardless of what has focus) — a
   // weigh-label decodes to an itemCode + the actual price that label was
   // printed for (see parseWeighBarcode); a plain product barcode is
   // looked up as-is. On a miss, shows a brief, non-blocking inline
@@ -1216,6 +1216,100 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
       window.setTimeout(() => setScanError(""), 3000);
     }
   };
+
+  // Global scanner capture — catches a scan REGARDLESS of what currently
+  // has focus, so scanning while a cashier is mid-way through typing into
+  // e.g. the customer phone field doesn't dump barcode digits into it.
+  // Auto-focusing one field (see searchInputRef above) can only ever
+  // handle the case where nothing else is deliberately focused; it can't
+  // solve this one, because a hardware scanner is just a keyboard from the
+  // browser's point of view — there's no way to tell its keystrokes apart
+  // from a person's except by how fast they arrive. A scanner transmits a
+  // whole code in a few milliseconds per character; realistic human typing
+  // never sustains that pace. So: keystrokes arriving faster than
+  // FAST_GAP_MS apart are treated as a scan in progress and intercepted
+  // (preventDefault + stopPropagation, so they never reach whatever field
+  // is actually focused) into our own buffer instead, mirrored live into
+  // the visible search box for feedback; anything slower passes through
+  // untouched, so normal typing anywhere is never interfered with.
+  //
+  // The one accepted imperfection: the very first character of a genuine
+  // scan can't be identified as "fast" yet (nothing to compare its timing
+  // against), so it isn't intercepted — it types normally into whichever
+  // field currently has focus (or into the search box's own value, if
+  // that's what's focused, which is harmless). Every character after that
+  // is caught correctly. Deliberately NOT applied to the general "is this
+  // a scan at all" question the way an earlier attempt this session tried
+  // and abandoned — this only ever fires reactively, once a fast-enough
+  // run is already underway, and always yields to normal typing otherwise.
+  useEffect(() => {
+    const FAST_GAP_MS = 40;
+    const BURST_TIMEOUT_MS = 500;
+    const MIN_SCAN_LENGTH = 4;
+    let buffer = "";
+    let burstActive = false;
+    let lastCharTime = 0;
+    let timeoutId: number | undefined;
+
+    const resetBurst = () => {
+      buffer = "";
+      burstActive = false;
+      if (timeoutId != null) window.clearTimeout(timeoutId);
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const now = performance.now();
+
+      if (e.key === "Enter") {
+        if (burstActive && buffer.length >= MIN_SCAN_LENGTH) {
+          e.preventDefault();
+          e.stopPropagation();
+          const code = buffer;
+          resetBurst();
+          setSearch("");
+          void handleScan(code);
+        } else {
+          resetBurst();
+        }
+        return;
+      }
+
+      // Only single printable characters count toward a burst — modifier/
+      // navigation/function keys (Tab, Shift, arrows, Ctrl+C, ...) neither
+      // extend nor break one, so they pass through completely untouched.
+      if (e.key.length !== 1) return;
+
+      const gap = now - lastCharTime;
+      lastCharTime = now;
+      if (timeoutId != null) window.clearTimeout(timeoutId);
+
+      if (gap <= FAST_GAP_MS && buffer.length > 0) {
+        burstActive = true;
+        buffer += e.key;
+        setSearch(buffer);
+        e.preventDefault();
+        e.stopPropagation();
+      } else {
+        // Too slow to be a continuation — starts a new speculative buffer
+        // (this one character is allowed through normally; see the
+        // accepted-imperfection note above).
+        buffer = e.key;
+        burstActive = false;
+      }
+      timeoutId = window.setTimeout(resetBurst, BURST_TIMEOUT_MS);
+    };
+
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      if (timeoutId != null) window.clearTimeout(timeoutId);
+    };
+    // Deliberately mount-once: handleScan/setSearch only ever close over
+    // stable setters (useState setters, functional cart updates, plain API
+    // calls) — never a per-render value that could go stale — so capturing
+    // them once here behaves identically to re-subscribing on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const updateLine = (index: number, patch: Partial<OrderItemInput>) =>
     setCart((cur) => cur.map((line, i) => {
