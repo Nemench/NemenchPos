@@ -1130,35 +1130,32 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
     });
   };
 
-  // Scanner capture — the "always-focused hidden input" pattern proven
-  // working in isolation on /dev/scan-test (see ScanTestPage), now wired
-  // into the real screen. No timing/burst-speed heuristics: a hardware
-  // scanner just types its decoded digits followed by Enter into
-  // whatever currently has focus, so keeping a dedicated hidden input
-  // focused by default is the entire mechanism.
-  //
-  // "A real field currently in use" is tracked via document-level
-  // focusin/focusout (not per-field onFocus/onBlur wiring, which is easy
-  // to forget when a new field gets added later) — refocusing the hidden
-  // input is deferred one tick on focusout so document.activeElement has
-  // already settled on wherever focus actually landed next before
-  // deciding whether to steal it back.
-  const hiddenScanRef = useRef<HTMLInputElement>(null);
-  const HIDDEN_SCAN_ID = "pos-hidden-scan-input";
-  const [hiddenScanValue, setHiddenScanValue] = useState("");
+  // Scanner capture — a separate invisible decoy input turned out to be
+  // unreliable on real till hardware (never reliably received focus at
+  // all, for reasons that didn't reproduce in testing — plausibly a
+  // browser/OS heuristic refusing to focus a zero-size, opacity:0,
+  // aria-hidden element). Replaced with the simplest possible mechanism:
+  // the real, VISIBLE search box below (searchInputRef) is itself what
+  // stays auto-focused by default — no separate hidden element, no extra
+  // layer that can silently fail. A hardware scanner just types its
+  // decoded digits followed by Enter into whatever has focus, and now
+  // that's always this ordinary, guaranteed-focusable input unless staff
+  // are actively using a different field.
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const SEARCH_INPUT_ID = "pos-scan-search";
 
   useEffect(() => {
-    const isRealInput = (el: Element | null): boolean =>
-      el instanceof HTMLElement && (el.tagName === "INPUT" || el.tagName === "TEXTAREA") && el.id !== HIDDEN_SCAN_ID;
+    const isOtherRealInput = (el: Element | null): boolean =>
+      el instanceof HTMLElement && (el.tagName === "INPUT" || el.tagName === "TEXTAREA") && el.id !== SEARCH_INPUT_ID;
 
-    const refocusHidden = () => {
-      if (!isRealInput(document.activeElement)) hiddenScanRef.current?.focus({ preventScroll: true });
+    const reclaimFocus = () => {
+      if (!isOtherRealInput(document.activeElement)) searchInputRef.current?.focus({ preventScroll: true });
     };
 
-    const onFocusOut = () => window.setTimeout(refocusHidden, 0);
+    const onFocusOut = () => window.setTimeout(reclaimFocus, 0);
 
     document.addEventListener("focusout", onFocusOut);
-    refocusHidden(); // claim focus on mount
+    reclaimFocus(); // claim focus on mount
 
     // Belt-and-suspenders beyond the focusout listener above, which only
     // fires when something that previously HAD focus loses it — it can't
@@ -1168,31 +1165,22 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
     // app/window), the printed-receipt overlay closing, or simply the very
     // first paint racing the mount-time focus() call above on a slow
     // device. A short interval catches all of these the same way,
-    // regardless of which one actually happened — "fully automatic"
-    // scanning shouldn't depend on correctly special-casing every path
-    // that can leave focus stranded.
-    window.addEventListener("focus", refocusHidden);
-    document.addEventListener("visibilitychange", refocusHidden);
-    const intervalId = window.setInterval(refocusHidden, 800);
+    // regardless of which one actually happened.
+    window.addEventListener("focus", reclaimFocus);
+    document.addEventListener("visibilitychange", reclaimFocus);
+    const intervalId = window.setInterval(reclaimFocus, 800);
 
     return () => {
       document.removeEventListener("focusout", onFocusOut);
-      window.removeEventListener("focus", refocusHidden);
-      document.removeEventListener("visibilitychange", refocusHidden);
+      window.removeEventListener("focus", reclaimFocus);
+      document.removeEventListener("visibilitychange", reclaimFocus);
       window.clearInterval(intervalId);
     };
   }, []);
 
-  const handleHiddenScanKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key !== "Enter") return;
-    e.preventDefault();
-    const code = hiddenScanValue.trim();
-    setHiddenScanValue(""); // always clear immediately — ready for the next scan regardless of outcome
-    if (code) void handleScan(code);
-  };
-
-  // Reused by both the hidden scanner input above and the manual search
-  // box's Enter fallback (same lookup, same add — see addToCart) — a
+  // Reused by both the always-focused search box above (see
+  // searchInputRef) and a real scan is indistinguishable from someone
+  // typing/pasting a code and hitting Enter manually — a
   // weigh-label decodes to an itemCode + the actual price that label was
   // printed for (see parseWeighBarcode); a plain product barcode is
   // looked up as-is. On a miss, shows a brief, non-blocking inline
@@ -1343,37 +1331,27 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
     <div className="pos-panel">
       <div className="pos-catalog">
         <div className="pos-scan-panel">
-          <label htmlFor="pos-scan-search" className="pos-scan-label">Scan or search a product</label>
+          <label htmlFor={SEARCH_INPUT_ID} className="pos-scan-label">Scan or search a product</label>
           <div className="pos-search-row">
-            {/* Manual fallback only — a real, ordinary input, separate
-                from the hidden scanner input below. Typing updates
-                `search` for the live matches list; Enter reuses the same
-                handleScan lookup a real scan uses. */}
+            {/* This IS the scanner target — permanently focused by default
+                (see the effect above), not a decoy. A real scanner types
+                its decoded digits then Enter here exactly as if someone
+                had typed/pasted a code and pressed Enter manually; typing
+                also drives the live matches list below. */}
             <input
-              id="pos-scan-search"
+              ref={searchInputRef}
+              id={SEARCH_INPUT_ID}
               className="pos-search"
               placeholder="Scan a barcode, or type a name…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && search.trim()) { void handleScan(search.trim()); setSearch(""); } }}
+              autoFocus
             />
             <button type="button" className="secondary" onClick={() => { setReorderError(""); setReorderScanOpen(true); }} title="Scan a past receipt to add its items to this sale">
               <ScanLine size={16} /> Reorder
             </button>
           </div>
-
-          {/* The actual scanner target — permanently focused by default,
-              1x1px/opacity:0 but still a real, focusable input. */}
-          <input
-            ref={hiddenScanRef}
-            id={HIDDEN_SCAN_ID}
-            className="pos-hidden-scan-input"
-            value={hiddenScanValue}
-            onChange={(e) => setHiddenScanValue(e.target.value)}
-            onKeyDown={handleHiddenScanKeyDown}
-            aria-hidden="true"
-            tabIndex={-1}
-          />
 
           {searchMatches.length > 0 && (
             <div className="pos-search-matches">
