@@ -382,25 +382,6 @@ nav button.active {
   min-width: 0;
 }
 
-.topbar-controls {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 0 0 auto;
-}
-
-.topbar-uimode-select {
-  min-height: 40px;
-  width: auto;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--chip-bg);
-  color: var(--accent-text);
-  padding: 0 10px;
-  font-size: 13px;
-  font-weight: 600;
-}
-
 h1, h2, p { margin: 0; }
 
 h1 {
@@ -2885,6 +2866,23 @@ button.sm {
   font-size: 12px;
   color: var(--muted);
   padding-left: 4px;
+}
+
+/* Compact/keyboard mode's inline weight/quantity editor — replaces the
+   plain read-only detail text on the selected line only (see isCompact in
+   POSPanel). */
+.till-slip-line-edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 4px;
+}
+
+.till-slip-line-edit input {
+  width: 90px;
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 13px;
 }
 
 .till-slip-row {

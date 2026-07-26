@@ -96,18 +96,4 @@ router.patch("/theme-mode", requireAuth, (req: AuthRequest, res) => {
   res.json({ token: signToken(user), user });
 });
 
-// Lets the logged-in user set their own touch/non-touch control-sizing
-// preference — same per-account/re-issue-the-token pattern as theme-mode
-// above. "auto" defers to the device's own pointer type at render time
-// (see theme.ts) rather than baking in a fixed choice.
-router.patch("/ui-mode", requireAuth, (req: AuthRequest, res) => {
-  const { uiMode } = req.body as { uiMode: string };
-  if (uiMode !== "auto" && uiMode !== "touch" && uiMode !== "compact") {
-    res.status(400).json({ message: "uiMode must be 'auto', 'touch', or 'compact'" });
-    return;
-  }
-  const user = db.setUserUiMode(req.user!.id, uiMode);
-  res.json({ token: signToken(user), user });
-});
-
 export default router;

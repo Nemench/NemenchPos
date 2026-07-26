@@ -93,7 +93,7 @@ import { api, assetUrl } from "./api";
 import { useBarcodeScan } from "./useBarcodeScan";
 import { calculateLineTotal, buildCartLine } from "../shared/posCart";
 import { iconSwitcher, type IconVariant } from "./iconSwitcher";
-import { applyTheme, applyThemeMode, deriveShades, initThemeMode, ThemeMode, applyInputMode, initInputMode, getStoredUiModePref, UiModePref, applyThemePreset, initThemePreset, UiThemePreset } from "./theme";
+import { applyTheme, applyThemeMode, deriveShades, initThemeMode, ThemeMode, applyInputMode, initInputMode, applyThemePreset, initThemePreset, UiThemePreset } from "./theme";
 import { tokenStorage } from "./tokenStorage";
 
 type Tab = "orders" | "pos" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "weighIn" | "statistics" | "crm" | "consolidate" | "printLabels" | "accounts";
@@ -237,21 +237,12 @@ export function App() {
       .catch(() => undefined);
   };
 
-  // Same account-wins-over-device-fallback pattern as theme mode, for
-  // touch vs mouse/keyboard control sizing.
-  const [uiModePref, setUiModePref] = useState<UiModePref>(() => getStoredUiModePref());
+  // Touch vs mouse/keyboard control sizing — admin-set per staff member
+  // (see UsersPanel), not self-service, so this just applies whatever the
+  // account already carries on login/refresh. "auto" (or no explicit
+  // choice yet) resolves per-device via matchMedia inside applyInputMode.
   const applyUserUiMode = (user: User) => {
-    if (user.uiMode === "auto" || user.uiMode === "touch" || user.uiMode === "compact") {
-      applyInputMode(user.uiMode);
-      setUiModePref(user.uiMode);
-    }
-  };
-  const changeUiMode = (next: UiModePref) => {
-    applyInputMode(next);
-    setUiModePref(next);
-    api.auth.setUiMode(next)
-      .then(({ token }) => tokenStorage.set(token))
-      .catch(() => undefined);
+    applyInputMode(user.uiMode === "touch" || user.uiMode === "compact" ? user.uiMode : "auto");
   };
 
   // Validate any stored token against the server on load, rather than
@@ -294,7 +285,7 @@ export function App() {
 
   if (booting) return <div className="boot-screen"><Scissors size={32} /></div>;
   if (!currentUser) return <LoginScreen onLogin={(user) => { setCurrentUser(user); applyUserThemeMode(user); applyUserUiMode(user); }} branding={branding} />;
-  return <MainApp currentUser={currentUser} onLogout={logout} branding={branding} onBrandingChange={setBranding} themeMode={themeMode} onToggleTheme={toggleThemeMode} uiModePref={uiModePref} onUiModeChange={changeUiMode} />;
+  return <MainApp currentUser={currentUser} onLogout={logout} branding={branding} onBrandingChange={setBranding} themeMode={themeMode} onToggleTheme={toggleThemeMode} />;
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
@@ -460,7 +451,7 @@ function applyColorMode(html: string): string {
 // The logged-in shell: sidebar nav (gated per role) + whichever panel the
 // current tab selects. Owns the shared data (products/orders) that multiple
 // panels need, refreshed on mount and lightly polled while on the Queue tab.
-function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode, onToggleTheme, uiModePref, onUiModeChange }: { currentUser: User; onLogout: () => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void; themeMode: ThemeMode; onToggleTheme: () => void; uiModePref: UiModePref; onUiModeChange: (mode: UiModePref) => void }) {
+function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode, onToggleTheme }: { currentUser: User; onLogout: () => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void; themeMode: ThemeMode; onToggleTheme: () => void }) {
   // stock_taker gets a completely separate, minimal nav (Stock Take +
   // Weigh-In only) — everything else below the ternary is for other roles.
   const isStockTaker = currentUser.role === "stock_taker";
@@ -622,27 +613,14 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
             <h1>{tabTitle(tab)}</h1>
             <p>{tabSubtitle(tab)}</p>
           </div>
-          <div className="topbar-controls">
-            <select
-              className="topbar-uimode-select"
-              value={uiModePref}
-              onChange={(e) => onUiModeChange(e.target.value as UiModePref)}
-              title="Control size: Auto detects touch vs mouse for this device"
-              aria-label="Touch/mouse control sizing"
-            >
-              <option value="auto">Auto (detect device)</option>
-              <option value="touch">Touch — larger controls</option>
-              <option value="compact">Compact — mouse/keyboard</option>
-            </select>
-            <button
-              type="button" className="icon-button secondary theme-toggle"
-              onClick={onToggleTheme}
-              title={themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-              aria-label="Toggle dark mode"
-            >
-              {themeMode === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-            </button>
-          </div>
+          <button
+            type="button" className="icon-button secondary theme-toggle"
+            onClick={onToggleTheme}
+            title={themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            aria-label="Toggle dark mode"
+          >
+            {themeMode === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
         </header>
 
         {message && <div className={`toast${messageTone === "error" ? " toast-error" : ""}`}>{message}</div>}
@@ -899,6 +877,16 @@ function OrderEntry({ products, currentUser, autoPrint, printStyle, printerMap, 
 // straight in History, never the prep Queue. Gated to the same roles as
 // "New Order" (admin/cashier/master_cashier), both in MainApp's nav and here.
 function POSPanel({ products, printerMap, currentUser, onCompleted }: { products: Product[]; printerMap: Record<string, string>; currentUser: User; onCompleted: (order: Order) => void }) {
+  // Resolved once by theme.ts's applyInputMode at login (see App()'s
+  // applyUserUiMode) and stamped onto <html> — read directly rather than
+  // threaded down as a prop, since it's effectively static for the
+  // lifetime of this component (an admin-set account preference, not a
+  // live per-render toggle). In compact/keyboard mode the numeric keypad
+  // panel is unnecessary chrome — a mouse+keyboard user edits a selected
+  // line's weight/quantity directly inline instead (see the till-slip-line
+  // rendering and the slim actions bar below).
+  const isCompact = document.documentElement.getAttribute("data-input-mode") === "compact";
+
   // Keyed per-user (not just per-device) so switching cashiers on a shared
   // terminal can't hand one cashier's in-progress sale to the next — an
   // abandoned cart silently reappearing on someone else's till would be a
@@ -1443,11 +1431,32 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
                     <span className="till-slip-line-name">{line.name}</span>
                     <span className="till-slip-line-total">{line.lineTotal != null ? currency.format(line.lineTotal) : "—"}</span>
                   </div>
-                  {line.kg != null && (
-                    <div className="till-slip-line-detail">{line.kg.toFixed(3)} kg @ {currency.format(line.unitPrice ?? 0)}/kg</div>
-                  )}
-                  {line.quantity != null && (
-                    <div className="till-slip-line-detail">{line.quantity} x {currency.format(line.unitPrice ?? 0)}</div>
+                  {/* Compact/keyboard mode: the selected line's weight or
+                      quantity becomes a real, directly-typable input right
+                      here instead of plain text — there's no keypad panel
+                      to edit it from (see isCompact above). stopPropagation
+                      so clicking into the field to fix a typo doesn't
+                      re-trigger selectLine and reset the buffer to the
+                      line's last-saved value out from under you. */}
+                  {isCompact && selectedLine === i ? (
+                    <div className="till-slip-line-detail till-slip-line-edit" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="number" min="0" step={line.quantity != null ? "1" : "0.001"} autoFocus
+                        value={keypadValue}
+                        onChange={(e) => setKeypadValue(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") applyKeypad(); }}
+                      />
+                      <span>{line.quantity != null ? "units" : "kg"} @ {currency.format(line.unitPrice ?? 0)}{line.quantity != null ? "" : "/kg"}</span>
+                    </div>
+                  ) : (
+                    <>
+                      {line.kg != null && (
+                        <div className="till-slip-line-detail">{line.kg.toFixed(3)} kg @ {currency.format(line.unitPrice ?? 0)}/kg</div>
+                      )}
+                      {line.quantity != null && (
+                        <div className="till-slip-line-detail">{line.quantity} x {currency.format(line.unitPrice ?? 0)}</div>
+                      )}
+                    </>
                   )}
                 </button>
               ))}
@@ -1483,17 +1492,30 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
       {/* Right column — entry controls + checkout only. No receipt/cart
           content lives here. */}
       <div className="pos-controls-column">
-        <PosKeypad
-          value={keypadValue}
-          disabled={selectedLine == null}
-          unitLabel={selectedLineItem?.quantity != null ? "units" : "kg"}
-          onDigit={keypadDigit}
-          onDecimal={keypadDecimal}
-          onBackspace={keypadBackspace}
-          onClear={keypadClear}
-          onApply={applyKeypad}
-          onRemove={() => { if (selectedLine != null) setPendingRemoveIndex(selectedLine); }}
-        />
+        {isCompact ? (
+          // No digit grid — a keyboard/mouse user already typed the new
+          // value directly into the selected till-slip line above (see
+          // isCompact in the line rendering); this is just the same
+          // Clear/Remove/Update actions the touch keypad has, without the
+          // tap-grid that only made sense for a fingertip.
+          <div className="pos-keypad-actions pos-keypad-actions-standalone">
+            <button type="button" className="secondary" disabled={selectedLine == null} onClick={keypadClear}>Clear</button>
+            <button type="button" className="danger" disabled={selectedLine == null} onClick={() => { if (selectedLine != null) setPendingRemoveIndex(selectedLine); }}>Remove item</button>
+            <button type="button" disabled={selectedLine == null || !keypadValue} onClick={applyKeypad}>Update</button>
+          </div>
+        ) : (
+          <PosKeypad
+            value={keypadValue}
+            disabled={selectedLine == null}
+            unitLabel={selectedLineItem?.quantity != null ? "units" : "kg"}
+            onDigit={keypadDigit}
+            onDecimal={keypadDecimal}
+            onBackspace={keypadBackspace}
+            onClear={keypadClear}
+            onApply={applyKeypad}
+            onRemove={() => { if (selectedLine != null) setPendingRemoveIndex(selectedLine); }}
+          />
+        )}
 
         {needsFullInvoice && (
           <div className="pos-invoice-fields">
@@ -4205,7 +4227,7 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
 
 // ── Users (admin) ─────────────────────────────────────────────────────────────
 
-const EMPTY_USER: UserInput = { name: "", pin: "", role: "cashier", department: null };
+const EMPTY_USER: UserInput = { name: "", pin: "", role: "cashier", department: null, uiMode: "auto" };
 // Kitchen/counter roles are tied to that department; every other role has no department.
 const roleDept = (role: UserInput["role"]): Department | null =>
   role === "kitchen" ? "kitchen" : role === "counter" ? "counter" : null;
@@ -4237,7 +4259,7 @@ function UsersPanel() {
       if (editingId) {
         // PIN field starts blank on edit (see startEdit) — only include it
         // in the patch if the admin actually typed a new one.
-        const patch: Partial<UserInput> = { name: payload.name, role: payload.role, department: payload.department };
+        const patch: Partial<UserInput> = { name: payload.name, role: payload.role, department: payload.department, uiMode: payload.uiMode };
         if (form.pin) patch.pin = form.pin;
         await api.users.update(editingId, patch);
       } else {
@@ -4275,7 +4297,7 @@ function UsersPanel() {
 
   const startEdit = (user: User) => {
     setEditingId(user.id);
-    setForm({ name: user.name, pin: "", role: user.role, department: user.department ?? "counter" });
+    setForm({ name: user.name, pin: "", role: user.role, department: user.department ?? "counter", uiMode: user.uiMode ?? "auto" });
   };
 
   return (
@@ -4307,6 +4329,14 @@ function UsersPanel() {
             <option value="kitchen">Kitchen</option>
             <option value="stock_taker">Stock Taker</option>
             <option value="admin">Admin</option>
+          </select>
+        </label>
+        <label>
+          Control size
+          <select value={form.uiMode ?? "auto"} onChange={(e) => setForm({ ...form, uiMode: e.target.value as UserInput["uiMode"] })}>
+            <option value="auto">Auto (detect device)</option>
+            <option value="touch">Touch — larger controls</option>
+            <option value="compact">Compact — keyboard/mouse</option>
           </select>
         </label>
         {msg && <div className="form-message">{msg}</div>}

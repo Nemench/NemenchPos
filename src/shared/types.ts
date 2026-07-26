@@ -33,6 +33,10 @@ export interface UserInput {
   pin: string;
   role: Role;
   department: Department | null;
+  // Touch vs mouse/keyboard control sizing — admin-set per staff member
+  // (see UsersPanel in App.tsx), not self-service. Omitted/undefined on
+  // create defaults to "auto" (per-device detection).
+  uiMode?: "auto" | "touch" | "compact";
 }
 
 // ── Products & stock ─────────────────────────────────────────────────────────

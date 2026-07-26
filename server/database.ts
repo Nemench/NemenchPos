@@ -166,16 +166,6 @@ export class KotDatabase {
     return this.getUser(id)!;
   }
 
-  // "auto" defers to the device's own pointer type (touch vs mouse) via
-  // matchMedia — see theme.ts's detectInputMode/initInputMode — so a
-  // shared login carried between a counter tablet and a back-office
-  // desktop doesn't drag one screen's control sizing onto the other. An
-  // explicit "touch"/"compact" choice overrides that per-device guess.
-  setUserUiMode(id: number, uiMode: "auto" | "touch" | "compact"): User {
-    this.db.prepare("UPDATE users SET uiMode = ? WHERE id = ?").run(uiMode, id);
-    return this.getUser(id)!;
-  }
-
   // Login is now passcode-only (no name field — see getUserByPin below),
   // so every active user's PIN must be unique on its own: it's the entire
   // identity, not just a second factor after picking a name. Can't be
@@ -222,8 +212,8 @@ export class KotDatabase {
     const hash = bcrypt.hashSync(input.pin, 10);
     const now = new Date().toISOString();
     const result = this.db
-      .prepare("INSERT INTO users (name, pin, role, department, isActive, createdAt) VALUES (?, ?, ?, ?, 1, ?)")
-      .run(input.name.trim(), hash, input.role, input.department ?? null, now);
+      .prepare("INSERT INTO users (name, pin, role, department, isActive, createdAt, uiMode) VALUES (?, ?, ?, ?, 1, ?, ?)")
+      .run(input.name.trim(), hash, input.role, input.department ?? null, now, input.uiMode ?? "auto");
     return this.getUser(Number(result.lastInsertRowid))!;
   }
 
@@ -260,6 +250,9 @@ export class KotDatabase {
     }
     if (input.isActive !== undefined) {
       this.db.prepare("UPDATE users SET isActive = ?, updatedAt = ? WHERE id = ?").run(input.isActive, now, id);
+    }
+    if (input.uiMode !== undefined) {
+      this.db.prepare("UPDATE users SET uiMode = ?, updatedAt = ? WHERE id = ?").run(input.uiMode, now, id);
     }
     return this.getUser(id)!;
   }
