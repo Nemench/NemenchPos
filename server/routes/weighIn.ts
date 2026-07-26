@@ -4,7 +4,7 @@
 // and produces the numbers for the printed summary.
 import { Router } from "express";
 import { db } from "../index.js";
-import { requireAuth, requireAdmin } from "../auth.js";
+import { requireAuth, requirePermission } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
 import type { WeighInLineInput, Grade } from "../../src/shared/types.js";
 
@@ -14,7 +14,7 @@ router.use(requireAuth);
 // A line can be a single grade or a combined pair (e.g. mixed A/B pieces
 // weighed together) — but never all three at once, so only pairs are listed.
 const GRADES: Grade[] = ["A", "B", "C", "A,B", "A,C", "B,C"];
-const canSubmit = (req: AuthRequest) => req.user?.role === "admin" || req.user?.role === "stock_taker";
+const canSubmit = (req: AuthRequest) => !!req.user?.permissions.includes("weighIn");
 
 function validateLineInput(input: WeighInLineInput): string | null {
   if (!GRADES.includes(input.grade)) return "grade must be 'A', 'B', 'C', or a pair like 'A,B'";
@@ -33,7 +33,7 @@ router.get("/current", (_req, res) => {
 
 // History of finalized batches, optionally filtered to a date range —
 // admin-only (individual stock takers only need the current in-progress batch).
-router.get("/", requireAdmin, (req, res) => {
+router.get("/", requirePermission("weighInHistory"), (req, res) => {
   const from = req.query.from as string | undefined;
   const to = req.query.to as string | undefined;
   if ((from && !/^\d{4}-\d{2}-\d{2}$/.test(from)) || (to && !/^\d{4}-\d{2}-\d{2}$/.test(to))) {
@@ -68,7 +68,7 @@ router.post("/pending-yields/:id/dismiss", (req: AuthRequest, res) => {
   } catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to dismiss conversion" }); }
 });
 
-router.get("/:batchId", requireAdmin, (req, res) => {
+router.get("/:batchId", requirePermission("weighInHistory"), (req, res) => {
   try {
     const batch = db.getBatch(Number(req.params.batchId));
     res.json({ batch, lines: db.listWeighInLines(batch.id) });

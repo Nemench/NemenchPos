@@ -18,8 +18,10 @@ import type {
   MarginStat, MarginOverview, YieldEstimate, YieldEstimateInput, PendingYieldConversion, PendingYieldItem,
   CrmContact, CrmContactInput, CrmMessage, MessageDirection, MessageType, MessageStatus,
   WhatsappOutboxItem, CrmAutomationRule, ConsentStatus, CrmContactDetail, CrmTag, EmailOutboxItem, EmailSubscriber, OrderMessageTemplate, LabelFormat, LabelFormatInput,
-  CustomerAccount, CustomerAccountInput, CustomerAccountTransaction
+  CustomerAccount, CustomerAccountInput, CustomerAccountTransaction,
+  AppRole, AppRoleInput, Permission
 } from "../src/shared/types.js";
+import { ALL_PERMISSIONS } from "../src/shared/types.js";
 import { generateInternalBarcode } from "../src/shared/internalBarcode.js";
 import { generateConsolidationBarcode } from "../src/shared/orderConsolidationBarcode.js";
 import { parseWeighBarcode } from "../src/shared/weighBarcode.js";
@@ -128,10 +130,32 @@ export class KotDatabase {
 
   // ── Users ──────────────────────────────────────────────────────────────────
 
+  // A user row's `permissions` is never stored on the row itself — always
+  // resolved live from its current role, here, the one place that happens.
+  // A role with no matching row (deleted out from under a user — shouldn't
+  // normally happen since deleteRole refuses while any active user still
+  // references it, but a role can still be deleted after its last user was
+  // deactivated) resolves to no permissions at all, not a crash.
+  private resolvePermissions(roleId: string): Permission[] {
+    const row = this.db.prepare("SELECT permissions FROM roles WHERE id = ?").get(roleId) as { permissions: string } | null;
+    if (!row) return [];
+    return JSON.parse(row.permissions) as Permission[];
+  }
+
+  private resolveRoleName(roleId: string): string {
+    const row = this.db.prepare("SELECT name FROM roles WHERE id = ?").get(roleId) as { name: string } | null;
+    return row?.name ?? roleId;
+  }
+
+  private attachPermissions<T extends { role: string }>(row: T): T & { permissions: Permission[]; roleName: string } {
+    return { ...row, permissions: this.resolvePermissions(row.role), roleName: this.resolveRoleName(row.role) };
+  }
+
   listUsers(): User[] {
-    return this.db
+    const rows = this.db
       .prepare("SELECT id, name, role, department, isActive, createdAt, lastSeenAt, themeMode, uiMode FROM users ORDER BY name")
-      .all() as User[];
+      .all() as Omit<User, "permissions" | "roleName">[];
+    return rows.map((r) => this.attachPermissions(r));
   }
 
   touchLastSeen(id: number): void {
@@ -139,15 +163,26 @@ export class KotDatabase {
   }
 
   getUser(id: number): User | null {
-    return this.db
-      .prepare("SELECT id, name, role, department, isActive, createdAt, themeMode, uiMode FROM users WHERE id = ?")
-      .get(id) as User | null;
+    const row = this.db
+      .prepare("SELECT id, name, role, department, isActive, createdAt, lastSeenAt, themeMode, uiMode FROM users WHERE id = ?")
+      .get(id) as Omit<User, "permissions" | "roleName"> | null;
+    return row ? this.attachPermissions(row) : null;
   }
 
-  getUserByName(name: string): (User & { pin: string }) | null {
-    return this.db
-      .prepare("SELECT id, name, pin, role, department, isActive, createdAt, themeMode, uiMode FROM users WHERE lower(name) = lower(?) AND isActive = 1")
-      .get(name) as (User & { pin: string }) | null;
+  // Counts active users who'd hold `permission` if `pretendRoleId` were
+  // substituted for `excludeUserId`'s own current role (or just counts the
+  // real current state if pretendRoleId/excludeUserId are omitted) — the
+  // single implementation both updateUser's lockout guard and updateRole's
+  // "don't strip roles-management from every role" guard build on, so the
+  // two can't drift into checking slightly different things.
+  private countActiveUsersWithPermission(permission: Permission, excludeUserId: number | null, pretendRoleId?: string): number {
+    const users = this.db.prepare("SELECT id, role FROM users WHERE isActive = 1").all() as { id: number; role: string }[];
+    let count = 0;
+    for (const u of users) {
+      const roleId = (excludeUserId != null && u.id === excludeUserId) ? pretendRoleId : u.role;
+      if (roleId && this.resolvePermissions(roleId).includes(permission)) count++;
+    }
+    return count;
   }
 
   // Re-confirms the currently logged-in user's own PIN (e.g. before an
@@ -196,7 +231,8 @@ export class KotDatabase {
     // a new sensitive column added to users later shouldn't silently leak
     // out just by not being excluded.
     return {
-      id: match.id, name: match.name, role: match.role, department: match.department,
+      id: match.id, name: match.name, role: match.role, roleName: this.resolveRoleName(match.role), department: match.department,
+      permissions: this.resolvePermissions(match.role),
       isActive: match.isActive, createdAt: match.createdAt, lastSeenAt: match.lastSeenAt,
       themeMode: match.themeMode, uiMode: match.uiMode
     };
@@ -209,21 +245,51 @@ export class KotDatabase {
     if (this.pinInUseByAnotherUser(input.pin)) {
       throw new Error("That passcode is already in use by another active staff member — choose a different one");
     }
+    // department is never taken from the input — always the chosen role's
+    // own configured department (see AppRole), so it can't drift from what
+    // the role actually declares.
+    const role = this.getRole(input.role);
+    if (!role) throw new Error("That role no longer exists — pick a different one");
     const hash = bcrypt.hashSync(input.pin, 10);
     const now = new Date().toISOString();
     const result = this.db
       .prepare("INSERT INTO users (name, pin, role, department, isActive, createdAt, uiMode) VALUES (?, ?, ?, ?, 1, ?, ?)")
-      .run(input.name.trim(), hash, input.role, input.department ?? null, now, input.uiMode ?? "auto");
+      .run(input.name.trim(), hash, input.role, role.department, now, input.uiMode ?? "auto");
     return this.getUser(Number(result.lastInsertRowid))!;
   }
 
   updateUser(id: number, input: Partial<UserInput & { isActive: number }>): User {
     const user = this.getUser(id);
     if (!user) throw new Error("User not found");
-    if (input.isActive === 0 && user.role === "admin") {
-      const { count } = this.db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin' AND isActive = 1 AND id != ?").get(id) as { count: number };
-      if (count === 0) throw new Error("Cannot deactivate the only active admin account");
+
+    // Generalizes the old "can't deactivate the only active admin" guard
+    // to any permission a role change or deactivation would leave nobody
+    // holding — and, unlike the old guard, actually covers a role
+    // REASSIGNMENT away from a permission-holding role, not just outright
+    // deactivation (a real gap in the previous single-role "admin" check:
+    // demoting the last admin to another role was never blocked). Checked
+    // for both "users" (staff management) and "roles" (role management) —
+    // the two sensitive enough to need their own protection; losing every
+    // other permission is recoverable by someone with "users" reassigning
+    // a role, so it isn't guarded the same way.
+    if (input.role !== undefined && !this.getRole(input.role)) {
+      throw new Error("That role no longer exists — pick a different one");
     }
+
+    const willBeActive = input.isActive !== undefined ? !!input.isActive : !!user.isActive;
+    const nextRoleId = input.role !== undefined ? input.role : user.role;
+    if (user.isActive && (nextRoleId !== user.role || !willBeActive)) {
+      for (const permission of ["users", "roles"] as const) {
+        if (!user.permissions.includes(permission)) continue; // this user losing access isn't the concern if they never had it
+        const stillCovered = willBeActive && this.resolvePermissions(nextRoleId).includes(permission)
+          ? true
+          : this.countActiveUsersWithPermission(permission, id, willBeActive ? nextRoleId : undefined) > 0;
+        if (!stillCovered) {
+          throw new Error(`This is the only active staff member who can ${permission === "users" ? "manage staff" : "manage roles"} — reassign that ability to someone else first`);
+        }
+      }
+    }
+
     // NOTE: reactivating a user whose old passcode was reissued to someone
     // else while they were inactive isn't checked here — bcrypt hashes are
     // one-way, so there's no plaintext left to re-run the uniqueness check
@@ -243,10 +309,10 @@ export class KotDatabase {
       this.db.prepare("UPDATE users SET name = ?, updatedAt = ? WHERE id = ?").run(input.name.trim(), now, id);
     }
     if (input.role !== undefined) {
-      this.db.prepare("UPDATE users SET role = ?, updatedAt = ? WHERE id = ?").run(input.role, now, id);
-    }
-    if (input.department !== undefined) {
-      this.db.prepare("UPDATE users SET department = ?, updatedAt = ? WHERE id = ?").run(input.department, now, id);
+      // department is force-derived from the new role, same as createUser
+      // — a role change always carries its department along with it.
+      const newRole = this.getRole(input.role)!;
+      this.db.prepare("UPDATE users SET role = ?, department = ?, updatedAt = ? WHERE id = ?").run(input.role, newRole.department, now, id);
     }
     if (input.isActive !== undefined) {
       this.db.prepare("UPDATE users SET isActive = ?, updatedAt = ? WHERE id = ?").run(input.isActive, now, id);
@@ -940,7 +1006,7 @@ export class KotDatabase {
   // captured on export but silently dropped on import, because the old
   // restore INSERT hand-typed an older, shorter column list).
   private static readonly BACKUP_TABLES = [
-    "users", "suppliers", "stock_locations", "crm_contacts", "crm_tags",
+    "roles", "users", "suppliers", "stock_locations", "crm_contacts", "crm_tags",
     "products", "crm_contact_tags", "crm_messages", "whatsapp_outbox", "crm_automation_rules",
     "customer_accounts", "orders", "order_items", "customer_account_transactions", "weigh_in_batches", "weigh_in_lines",
     "product_cost_history", "product_yield_estimates", "pending_yield_conversions", "pending_yield_items",
@@ -1855,6 +1921,19 @@ export class KotDatabase {
     const hadProductStock = (this.db.prepare("SELECT COUNT(*) as n FROM sqlite_master WHERE type='table' AND name='product_stock'").get() as { n: number }).n > 0;
 
     this.db.exec(`
+      -- Admin-definable roles (see RolesPanel) — a saved, named bundle of
+      -- permissions (+ optional department). users.role is a plain id
+      -- referencing this table's id column, not a fixed literal set.
+      CREATE TABLE IF NOT EXISTS roles (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        department TEXT,
+        permissions TEXT NOT NULL DEFAULT '[]',
+        isBuiltIn INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT
+      );
+
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
@@ -2264,6 +2343,8 @@ export class KotDatabase {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_prod_item_code ON products(itemCode) WHERE itemCode IS NOT NULL;
     `);
 
+    this.seedBuiltInRoles();
+
     // One-time migration for databases that predate per-location stock
     // tracking: create a default "Main" location and move each product's
     // existing onHandQty total into it, so nothing is lost — the admin can
@@ -2488,6 +2569,112 @@ export class KotDatabase {
     ]) {
       seedLabelFormat.run(f.id, f.name, f.type, f.brand, f.code, f.w, f.h, f.cols, f.rows, f.mt, f.ml, f.gx, f.gy, f.pw, f.ph, f.sort, nowIso);
     }
+  }
+
+  // Runs on every boot (cheap no-op after the first) rather than being
+  // gated behind seed()'s "no users yet" check — an existing install
+  // upgrading into this permission system has real users referencing
+  // these role ids (users.role = 'admin'/'cashier'/etc — those string
+  // values predate roles being a real table) but has never had rows in
+  // `roles` itself, so this needs to backfill regardless of how old the
+  // database is, not just on a brand-new one. Permissions here are an
+  // exact match for each role's actual pre-permissions-system behavior
+  // (every server route's old role check, every client nav gate) — see
+  // the design notes in shared/types.ts's Permission type — so upgrading
+  // an existing install changes nobody's access on day one.
+  private seedBuiltInRoles(): void {
+    const { count } = this.db.prepare("SELECT COUNT(*) as count FROM roles").get() as { count: number };
+    if (count > 0) return;
+    const now = new Date().toISOString();
+    const insert = this.db.prepare("INSERT INTO roles (id, name, department, permissions, isBuiltIn, createdAt, updatedAt) VALUES (?, ?, ?, ?, 1, ?, ?)");
+    const roles: { id: string; name: string; department: string | null; permissions: string[] }[] = [
+      { id: "admin", name: "Admin", department: null, permissions: [...ALL_PERMISSIONS] },
+      { id: "cashier", name: "Cashier", department: null, permissions: ["pos", "orders", "queue", "history", "consolidate", "accountsUse"] },
+      { id: "master_cashier", name: "Master Cashier", department: null, permissions: ["pos", "orders", "queue", "queueManageAll", "history", "accountsUse"] },
+      { id: "counter", name: "Counter", department: "counter", permissions: ["queue", "history", "consolidate", "printLabels"] },
+      { id: "kitchen", name: "Kitchen", department: "kitchen", permissions: ["queue", "history", "consolidate"] },
+      { id: "stock_taker", name: "Stock Taker", department: null, permissions: ["stock", "weighIn", "suppliersManage"] }
+    ];
+    for (const r of roles) {
+      insert.run(r.id, r.name, r.department, JSON.stringify(r.permissions), now, now);
+    }
+  }
+
+  // ── Roles ──────────────────────────────────────────────────────────────────
+
+  listRoles(): AppRole[] {
+    return (this.db.prepare("SELECT * FROM roles ORDER BY isBuiltIn DESC, name").all() as (Omit<AppRole, "permissions"> & { permissions: string })[])
+      .map((r) => ({ ...r, permissions: JSON.parse(r.permissions) as Permission[] }));
+  }
+
+  getRole(id: string): AppRole | null {
+    const row = this.db.prepare("SELECT * FROM roles WHERE id = ?").get(id) as (Omit<AppRole, "permissions"> & { permissions: string }) | null;
+    if (!row) return null;
+    return { ...row, permissions: JSON.parse(row.permissions) as Permission[] };
+  }
+
+  // Validates every requested permission against ALL_PERMISSIONS (not just
+  // trusting the caller) — a role saved with an unrecognized key would
+  // otherwise silently grant nothing (every requirePermission check would
+  // just never match it), which is confusing to debug; better to reject it
+  // outright at save time.
+  private validatePermissions(permissions: Permission[]): void {
+    for (const p of permissions) {
+      if (!ALL_PERMISSIONS.includes(p)) throw new Error(`Unknown permission "${p}"`);
+    }
+  }
+
+  createRole(input: AppRoleInput): AppRole {
+    if (!input.name.trim()) throw new Error("Role name is required");
+    this.validatePermissions(input.permissions);
+    const id = `role_${randomUUID()}`;
+    const now = new Date().toISOString();
+    this.db.prepare("INSERT INTO roles (id, name, department, permissions, isBuiltIn, createdAt, updatedAt) VALUES (?, ?, ?, ?, 0, ?, ?)")
+      .run(id, input.name.trim(), input.department, JSON.stringify(input.permissions), now, now);
+    return this.getRole(id)!;
+  }
+
+  updateRole(id: string, input: AppRoleInput): AppRole {
+    const existing = this.getRole(id);
+    if (!existing) throw new Error("Role not found");
+    if (!input.name.trim()) throw new Error("Role name is required");
+    this.validatePermissions(input.permissions);
+    // A built-in role's permissions/department stay fully editable (an
+    // admin might genuinely want to change what "Counter" can do) — only
+    // its id is protected (see deleteRole), so every route/seed reference
+    // to e.g. 'admin' as an id keeps resolving to *some* row.
+    //
+    // Guards against editing a role's permissions into a state where NO
+    // active user, via ANY role, could still manage roles at all — the
+    // separate lockout guard in updateUser only protects against a single
+    // *user* losing a permission, not a role definition itself losing the
+    // ability to ever grant it to anyone. Simulated directly (not reusing
+    // countActiveUsersWithPermission, which answers a different question —
+    // "what if this ONE user's role changed" — not "what if this role's OWN
+    // permission set changed"): resolve every active user's permissions as
+    // they'd be immediately after this save, using the proposed new
+    // permission set for role `id` and each user's real current role
+    // otherwise.
+    if (existing.permissions.includes("roles") && !input.permissions.includes("roles")) {
+      const users = this.db.prepare("SELECT role FROM users WHERE isActive = 1").all() as { role: string }[];
+      const stillHasAHolder = users.some((u) => (u.role === id ? input.permissions : this.resolvePermissions(u.role)).includes("roles"));
+      if (!stillHasAHolder) {
+        throw new Error(`Can't remove role management from "${existing.name}" — no active staff member would be able to manage roles anymore`);
+      }
+    }
+    const now = new Date().toISOString();
+    this.db.prepare("UPDATE roles SET name = ?, department = ?, permissions = ?, updatedAt = ? WHERE id = ?")
+      .run(input.name.trim(), input.department, JSON.stringify(input.permissions), now, id);
+    return this.getRole(id)!;
+  }
+
+  deleteRole(id: string): void {
+    const role = this.getRole(id);
+    if (!role) throw new Error("Role not found");
+    if (role.isBuiltIn) throw new Error("Built-in roles can't be deleted — edit its permissions instead, or deactivate the staff using it");
+    const { count } = this.db.prepare("SELECT COUNT(*) as count FROM users WHERE role = ? AND isActive = 1").get(id) as { count: number };
+    if (count > 0) throw new Error(`${count} active staff member(s) still use this role — reassign them first`);
+    this.db.prepare("DELETE FROM roles WHERE id = ?").run(id);
   }
 
   // ── Settings ───────────────────────────────────────────────────────────────

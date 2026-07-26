@@ -5,24 +5,10 @@
 // this router is just auth/role gating plus thin request/response glue.
 import { Router } from "express";
 import { db } from "../index.js";
-import { requireAuth } from "../auth.js";
-import type { AuthRequest } from "../auth.js";
+import { requireAuth, requirePermission } from "../auth.js";
 
 const router = Router();
-router.use(requireAuth);
-
-// Matches the roles named in the feature spec exactly (kitchen, counter,
-// cashier, admin) — deliberately not master_cashier/stock_taker, which
-// weren't asked for; easy to extend later if that's wrong.
-const canConsolidate = (req: AuthRequest) => {
-  const role = req.user?.role;
-  return role === "kitchen" || role === "counter" || role === "cashier" || role === "admin";
-};
-
-router.use((req: AuthRequest, res, next) => {
-  if (!canConsolidate(req)) { res.status(403).json({ message: "Not authorized to consolidate orders" }); return; }
-  next();
-});
+router.use(requireAuth, requirePermission("consolidate"));
 
 router.get("/pending", (_req, res) => {
   res.json(db.listOrdersPendingConsolidation());

@@ -3,13 +3,13 @@
 // through weighIn.ts instead — see db.adjustProductStock.)
 import { Router } from "express";
 import { db } from "../index.js";
-import { requireAuth, requireAdmin } from "../auth.js";
+import { requireAuth, requirePermission } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
 
 const router = Router();
 router.use(requireAuth);
 
-const canCount = (req: AuthRequest) => req.user?.role === "admin" || req.user?.role === "stock_taker";
+const canCount = (req: AuthRequest) => !!req.user?.permissions.includes("stock");
 
 router.get("/", (_req, res) => { res.json(db.listProducts()); });
 
@@ -55,12 +55,12 @@ router.put("/:id", (req: AuthRequest, res) => {
 
 router.get("/locations", (_req, res) => { res.json(db.listStockLocations()); });
 
-router.post("/locations", requireAdmin, (req, res) => {
+router.post("/locations", requirePermission("stockManage"), (req, res) => {
   try { res.status(201).json(db.createStockLocation((req.body as { name: string }).name)); }
   catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to add location" }); }
 });
 
-router.delete("/locations/:id", requireAdmin, (req, res) => {
+router.delete("/locations/:id", requirePermission("stockManage"), (req, res) => {
   db.deactivateStockLocation(Number(req.params.id));
   res.json({ success: true });
 });

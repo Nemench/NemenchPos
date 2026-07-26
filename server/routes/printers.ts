@@ -6,11 +6,11 @@
 // shelling into the host directly.
 import { Router } from "express";
 import { exec, execFile } from "node:child_process";
-import { requireAuth, requireAdmin } from "../auth.js";
+import { requireAuth, requirePermission } from "../auth.js";
 import type { DiscoveredPrinter, PrintQueueJob } from "../../src/shared/types.js";
 
 const router = Router();
-router.use(requireAuth, requireAdmin);
+router.use(requireAuth, requirePermission("settings"));
 
 // Runs a shell command and resolves with stdout, swallowing errors — printer
 // discovery is best-effort, so a failed probe should just yield no results

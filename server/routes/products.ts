@@ -1,18 +1,19 @@
 // Product catalog CRUD, plus bulk CSV import/export for the admin menu editor.
 import { Router } from "express";
 import { db } from "../index.js";
-import { requireAuth, requireAdmin } from "../auth.js";
+import { requireAuth, requirePermission } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
 import type { ProductInput, QuickCreateProductInput, YieldEstimateInput } from "../../src/shared/types.js";
 
 const router = Router();
 router.use(requireAuth);
 
-// Roles that build orders/receipts and so are allowed to add a new item
-// on the spot via an unrecognized barcode scan (see quick-create below) —
-// deliberately narrower than full admin product management.
+// Whoever builds orders/receipts (POS or the New Order ticket screen) is
+// allowed to add a new item on the spot via an unrecognized barcode scan
+// (see quick-create below) — deliberately narrower than full product
+// management ("stockManage").
 const canQuickCreate = (req: AuthRequest) =>
-  req.user?.role === "admin" || req.user?.role === "cashier" || req.user?.role === "master_cashier";
+  !!req.user?.permissions.includes("pos") || !!req.user?.permissions.includes("orders");
 
 router.get("/", (_req, res) => { res.json(db.listProducts()); });
 
@@ -24,7 +25,7 @@ router.get("/quick-picks", (_req, res) => { res.json(db.getQuickPickProducts());
 // Admin dashboard widget: active products with no cost price ever
 // recorded (see listProductsMissingCost) — deliberately never auto-filled
 // with 0, so these need someone to actually enter a real number.
-router.get("/missing-cost", requireAdmin, (_req, res) => { res.json(db.listProductsMissingCost()); });
+router.get("/missing-cost", requirePermission("stockManage"), (_req, res) => { res.json(db.listProductsMissingCost()); });
 
 // On-demand version of the reconciliation pass that otherwise only runs
 // at server startup and after a CSV import (see
@@ -32,7 +33,7 @@ router.get("/missing-cost", requireAdmin, (_req, res) => { res.json(db.listProdu
 // missing a barcode/item code right now, from the running app, without
 // needing to restart the service. Wired to the Stock tab's Refresh
 // button on the client.
-router.post("/reconcile-codes", requireAdmin, (_req, res) => {
+router.post("/reconcile-codes", requirePermission("stockManage"), (_req, res) => {
   const barcodeIds = db.reconcileMissingBarcodes();
   const itemCodeIds = db.reconcileMissingItemCodes();
   res.json({ barcodeIds, itemCodeIds });
@@ -82,8 +83,7 @@ function maybeUpdateCost(productId: number, costPerUnit: number | null | undefin
   db.setProductCost(productId, costPerUnit, createdById);
 }
 
-// Only admins may create, update, or delete products
-router.post("/", requireAdmin, (req: AuthRequest, res) => {
+router.post("/", requirePermission("stockManage"), (req: AuthRequest, res) => {
   try {
     const input = req.body as ProductInput;
     const product = db.upsertProduct(input);
@@ -92,7 +92,7 @@ router.post("/", requireAdmin, (req: AuthRequest, res) => {
   } catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to save product" }); }
 });
 
-router.put("/:id", requireAdmin, (req: AuthRequest, res) => {
+router.put("/:id", requirePermission("stockManage"), (req: AuthRequest, res) => {
   try {
     const input = { ...req.body, id: Number(req.params.id) } as ProductInput;
     const product = db.upsertProduct(input);
@@ -101,7 +101,7 @@ router.put("/:id", requireAdmin, (req: AuthRequest, res) => {
   } catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to update product" }); }
 });
 
-router.delete("/:id", requireAdmin, (req, res) => {
+router.delete("/:id", requirePermission("stockManage"), (req, res) => {
   try { db.deleteProduct(Number(req.params.id)); res.json({ success: true }); }
   catch (err) { res.status(400).json({ message: err instanceof Error ? err.message : "Failed to delete product" }); }
 });
@@ -110,11 +110,11 @@ router.delete("/:id", requireAdmin, (req, res) => {
 // typically becomes each cut/sub-product — configured per raw product,
 // consumed automatically by Weigh-In (see db.addWeighInLine) to queue a
 // pending conversion, never applied to stock directly from here.
-router.get("/:id/yield-estimates", requireAdmin, (req, res) => {
+router.get("/:id/yield-estimates", requirePermission("stockManage"), (req, res) => {
   res.json(db.listYieldEstimates(Number(req.params.id)));
 });
 
-router.put("/:id/yield-estimates", requireAdmin, (req, res) => {
+router.put("/:id/yield-estimates", requirePermission("stockManage"), (req, res) => {
   try {
     const estimates = req.body as YieldEstimateInput[];
     res.json(db.setYieldEstimates(Number(req.params.id), estimates));
@@ -128,7 +128,7 @@ router.put("/:id/yield-estimates", requireAdmin, (req, res) => {
 // "unitPrice", "retailPrice"; cost: "cost", "costPerUnit", "costPrice" -
 // applied via the same dedup-by-value guard as the manual edit form, see
 // importProducts).
-router.post("/import", requireAdmin, (req: AuthRequest, res) => {
+router.post("/import", requirePermission("stockManage"), (req: AuthRequest, res) => {
   try {
     const { csv } = req.body as { csv: string };
     if (!csv) { res.status(400).json({ message: "No CSV data provided" }); return; }
@@ -175,7 +175,7 @@ router.post("/import", requireAdmin, (req: AuthRequest, res) => {
   }
 });
 
-router.get("/export", requireAdmin, (_req, res) => {
+router.get("/export", requirePermission("stockManage"), (_req, res) => {
   res.setHeader("Content-Type", "text/csv");
   res.setHeader("Content-Disposition", `attachment; filename="nemenchpos-products-${new Date().toISOString().slice(0, 10)}.csv"`);
   res.send(db.exportProducts());

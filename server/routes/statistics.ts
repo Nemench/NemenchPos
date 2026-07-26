@@ -1,11 +1,11 @@
-// Admin-only Statistics screen: per-item sales performance and stock
-// movement (received vs. current on-hand) within a date range.
+// Statistics screen: per-item sales performance and stock movement
+// (received vs. current on-hand) within a date range. Gated to "statistics".
 import { Router } from "express";
 import { db } from "../index.js";
-import { requireAuth, requireAdmin } from "../auth.js";
+import { requireAuth, requirePermission } from "../auth.js";
 
 const router = Router();
-router.use(requireAuth, requireAdmin);
+router.use(requireAuth, requirePermission("statistics"));
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 

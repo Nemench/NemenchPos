@@ -1,15 +1,15 @@
-// Admin CRM API: contact list/detail, consent/tag management, and manual
-// staff messaging. Admin-only, same as users.ts — contact phone numbers
-// and message history are sensitive customer data.
+// CRM API: contact list/detail, consent/tag management, and manual staff
+// messaging. Gated to "crm" — contact phone numbers and message history
+// are sensitive customer data.
 import { Router } from "express";
 import { db } from "../index.js";
-import { requireAuth, requireAdmin } from "../auth.js";
+import { requireAuth, requirePermission } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
 import type { ConsentStatus, CrmContactInput } from "../../src/shared/types.js";
 import { getTemplateCatalog, getTemplate, renderTemplateBody } from "../whatsapp/templates.js";
 
 const router = Router();
-router.use(requireAuth, requireAdmin);
+router.use(requireAuth, requirePermission("crm"));
 
 router.get("/contacts", (req, res) => {
   res.json(db.listContacts(typeof req.query.search === "string" ? req.query.search : undefined));

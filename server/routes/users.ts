@@ -1,13 +1,14 @@
-// Staff account management (create/list/edit). Admin-only across the board —
-// PINs and roles are sensitive, so nothing here is exposed to other roles.
+// Staff account management (create/list/edit). Gated to the "users"
+// permission across the board — PINs and roles are sensitive, so nothing
+// here is exposed without it.
 import { Router } from "express";
 import { db } from "../index.js";
-import { requireAuth, requireAdmin } from "../auth.js";
+import { requireAuth, requirePermission } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
 import type { UserInput } from "../../src/shared/types.js";
 
 const router = Router();
-router.use(requireAuth, requireAdmin);
+router.use(requireAuth, requirePermission("users"));
 
 router.get("/", (_req, res) => { res.json(db.listUsers()); });
 

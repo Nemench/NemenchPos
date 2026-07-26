@@ -5,7 +5,7 @@ import { Router } from "express";
 import fs from "node:fs";
 import path from "node:path";
 import { db } from "../index.js";
-import { requireAuth, requireAdmin } from "../auth.js";
+import { requireAuth, requirePermission } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
 import { getBusinessProfile } from "../controlPlaneSync.js";
 import { sendEmail } from "../email/mailer.js";
@@ -37,13 +37,13 @@ router.get("/public", (req, res) => {
   });
 });
 
-// This endpoint is requireAuth only (not requireAdmin — every logged-in
+// This endpoint is requireAuth only (not permission-gated — every logged-in
 // role reads settings for things like receipt branding), so the SMTP
 // password must never be included in its response even to an admin caller
 // — swapped for a boolean so the UI can show "configured ✓" without ever
 // re-displaying the real secret (same write-only pattern as the
 // control-plane API key display). The real value is only ever written via
-// PUT / below, which is requireAdmin.
+// PUT / below, which requires the "settings" permission.
 router.get("/", requireAuth, (_req, res) => {
   const s = db.getAllSettings();
   const hasPassword = !!s.emailSmtpPass;
@@ -56,13 +56,13 @@ router.get("/", requireAuth, (_req, res) => {
 // LicenseStatusBanner in src/ui/App.tsx, which is the only consumer).
 // Reads the in-memory cache synchronously (see controlPlaneSync.ts) —
 // never itself makes a network call to the control plane.
-router.get("/license-status", requireAuth, requireAdmin, (_req, res) => {
+router.get("/license-status", requireAuth, requirePermission("settings"), (_req, res) => {
   const p = getBusinessProfile();
   res.json({ licenseStatus: p.license_status, gracePeriodEndsAt: p.grace_period_ends_at });
 });
 
 // Generic settings bag: any key/value pairs (siteName, themeColor, etc).
-router.put("/", requireAuth, requireAdmin, (req: AuthRequest, res) => {
+router.put("/", requireAuth, requirePermission("settings"), (req: AuthRequest, res) => {
   const updates = req.body as Record<string, string>;
   for (const [key, value] of Object.entries(updates)) {
     db.setSetting(key, String(value));
@@ -74,7 +74,7 @@ router.put("/", requireAuth, requireAdmin, (req: AuthRequest, res) => {
 // admin gets instant pass/fail feedback while setting up SMTP — a real
 // send through the exact same code path production notifications use,
 // not a simulated check.
-router.post("/email-test", requireAuth, requireAdmin, async (req, res) => {
+router.post("/email-test", requireAuth, requirePermission("settings"), async (req, res) => {
   const { to } = req.body as { to: string };
   if (!to || !/\S+@\S+\.\S+/.test(to)) {
     res.status(400).json({ message: "Enter a valid email address to send the test to" });
@@ -92,7 +92,7 @@ router.post("/email-test", requireAuth, requireAdmin, async (req, res) => {
 // Uploads a new logo from a base64 data URL (as produced by a <input
 // type=file> + FileReader on the client) and stores it on disk under
 // DATA_DIR/uploads, served statically at /uploads/* (see server/index.ts).
-router.post("/logo", requireAuth, requireAdmin, (req, res) => {
+router.post("/logo", requireAuth, requirePermission("settings"), (req, res) => {
   const { dataUrl } = req.body as { dataUrl: string };
   const match = /^data:image\/(png|jpe?g|webp);base64,(.+)$/i.exec(dataUrl ?? "");
   if (!match) {

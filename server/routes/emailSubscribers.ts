@@ -1,21 +1,22 @@
-// Admin API for the email marketing list: view/add/remove subscribers
-// (mostly auto-captured from order checkouts, see db.upsertEmailSubscriber
-// in orders.ts) and send a one-off news/deals broadcast to everyone still
-// subscribed. Admin-only, same posture as crm.ts — a list of customer
-// names/emails is sensitive customer data.
+// Email marketing list: view/add/remove subscribers (mostly auto-captured
+// from order checkouts, see db.upsertEmailSubscriber in orders.ts) and
+// send a one-off news/deals broadcast to everyone still subscribed. Gated
+// to "crm", same posture as crm.ts — a list of customer names/emails is
+// sensitive customer data, grouped under the same permission as the rest
+// of customer messaging.
 import { Router } from "express";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { db } from "../index.js";
-import { requireAuth, requireAdmin } from "../auth.js";
+import { requireAuth, requirePermission } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
 import { buildCampaignHtml } from "../email/campaign.js";
 import type { CampaignPromo } from "../email/campaign.js";
 import { resolvePublicBaseUrl } from "../email/publicUrl.js";
 
 const router = Router();
-router.use(requireAuth, requireAdmin);
+router.use(requireAuth, requirePermission("crm"));
 
 const dataDir = process.env.DATA_DIR ?? path.join(process.cwd(), "data");
 const uploadsDir = path.join(dataDir, "uploads");

@@ -2,8 +2,7 @@
 // taker can pick a previously-used supplier instead of retyping the name).
 import { Router } from "express";
 import { db } from "../index.js";
-import { requireAuth } from "../auth.js";
-import type { AuthRequest } from "../auth.js";
+import { requireAuth, requirePermission } from "../auth.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -11,12 +10,7 @@ router.use(requireAuth);
 // Any authenticated user can read the list (needed to populate the dropdown).
 router.get("/", (_req, res) => { res.json(db.listSuppliers()); });
 
-// Only admin/stock_taker can add a new supplier — everyone else is read-only.
-router.post("/", (req: AuthRequest, res) => {
-  if (req.user?.role !== "admin" && req.user?.role !== "stock_taker") {
-    res.status(403).json({ message: "Not authorized to add suppliers" });
-    return;
-  }
+router.post("/", requirePermission("suppliersManage"), (req, res) => {
   const { name } = req.body as { name: string };
   try {
     // db.createSupplier enforces a case-insensitive unique name and throws

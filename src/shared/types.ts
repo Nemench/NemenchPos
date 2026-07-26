@@ -9,15 +9,108 @@ export type Department = "kitchen" | "counter";
 // keeps it from blocking that order's overall status computation.
 export type DeptStatus = "n/a" | "New" | "Received" | "Ready" | "Done";
 
-// ── Users ────────────────────────────────────────────────────────────────────
+// ── Roles & permissions ──────────────────────────────────────────────────────
+// Roles are admin-definable (see RolesPanel in App.tsx) — `role` on a User
+// is just an id referencing a row in the `roles` table (server/database.ts),
+// not a fixed set of literal strings anymore. Every actual authorization
+// decision, client and server, is a `permissions.includes("...")` check,
+// never a check against a role's name or id — a role is nothing more than
+// a saved, named bundle of permissions (+ an optional department).
 
-export type Role = "admin" | "cashier" | "master_cashier" | "counter" | "kitchen" | "stock_taker";
+export type Permission =
+  | "pos" | "orders" | "queue" | "queueManageAll" | "history" | "consolidate"
+  | "printLabels" | "labelsManage"
+  | "stock" | "stockManage" | "suppliersManage"
+  | "weighIn" | "weighInHistory"
+  | "accountsUse" | "accountsManage"
+  | "users" | "roles" | "settings"
+  | "reports" | "statistics" | "crm";
+
+// Every valid permission, in the order RolesPanel groups/displays them —
+// also what a route's requirePermission() validates an unknown string
+// against, so a typo'd/removed permission key can never silently grant
+// nothing-checked-for-it access.
+export const ALL_PERMISSIONS: Permission[] = [
+  "pos", "orders", "queue", "queueManageAll", "history", "consolidate",
+  "printLabels", "labelsManage",
+  "stock", "stockManage", "suppliersManage",
+  "weighIn", "weighInHistory",
+  "accountsUse", "accountsManage",
+  "users", "roles", "settings",
+  "reports", "statistics", "crm"
+];
+
+// Human-readable labels/descriptions for RolesPanel's checklist — kept
+// here (not hardcoded in the component) so server-side validation and the
+// client UI can never list a different set of permissions.
+export const PERMISSION_LABELS: Record<Permission, { label: string; hint: string }> = {
+  pos: { label: "POS", hint: "Ring up walk-in sales and take payment." },
+  orders: { label: "New Order", hint: "Create a KOT ticket (kitchen/counter prep order)." },
+  queue: { label: "Prep Queue", hint: "View and advance tickets through prep." },
+  queueManageAll: { label: "Queue: manage all departments", hint: "Accept/complete a ticket across every department in one action, not just their own." },
+  history: { label: "Order History", hint: "View completed orders." },
+  consolidate: { label: "Consolidate Order", hint: "Scan-verify and finalize a Ready order." },
+  printLabels: { label: "Print Labels", hint: "Print product/weigh labels using existing formats." },
+  labelsManage: { label: "Manage label formats", hint: "Create/edit/delete custom label sheet formats." },
+  stock: { label: "Stock", hint: "View the catalog and record stock counts." },
+  stockManage: { label: "Manage products & stock", hint: "Create/edit/delete products, yield estimates, CSV import/export, stock locations." },
+  suppliersManage: { label: "Manage suppliers", hint: "Add new suppliers." },
+  weighIn: { label: "Weigh-In", hint: "Submit weigh-in batches and lines." },
+  weighInHistory: { label: "Weigh-In history", hint: "View past weigh-in batches." },
+  accountsUse: { label: "Use customer accounts", hint: "Search/select a customer account and top it up at POS." },
+  accountsManage: { label: "Manage customer accounts", hint: "Edit account terms, make manual balance adjustments, view transaction history." },
+  users: { label: "Manage staff", hint: "Create/edit staff accounts, PINs, roles, active status." },
+  roles: { label: "Manage roles", hint: "Create/edit/delete roles and their permissions." },
+  settings: { label: "Settings", hint: "Branding, printers, email, VAT, backup/restore, print queue." },
+  reports: { label: "Reports", hint: "Date-range order reports and CSV export." },
+  statistics: { label: "Statistics", hint: "Sales performance and stock movement." },
+  crm: { label: "CRM", hint: "Contacts, WhatsApp messaging, email campaigns." }
+};
+
+// Role name/id is a free string now (admin-definable — see RolesPanel),
+// not a fixed literal union.
+export type Role = string;
+
+export interface AppRole {
+  id: string;
+  name: string;
+  department: Department | null;
+  permissions: Permission[];
+  // 1 for the 6 roles seeded on first install (see database.ts's migrate())
+  // — kept only so RolesPanel can label them distinctly, NOT to block
+  // editing their permissions or department; only deleting one is blocked
+  // (see deleteRole), so an install can always get back to "stock" default
+  // behavior for its original roles even after heavy customization.
+  isBuiltIn: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AppRoleInput {
+  name: string;
+  department: Department | null;
+  permissions: Permission[];
+}
+
+// ── Users ────────────────────────────────────────────────────────────────────
 
 export interface User {
   id: number;
   name: string;
   role: Role;
+  // The role's current display name, resolved alongside permissions below
+  // (same "resolved at token-issue time" caveat) — so the sidebar/user
+  // label never needs a separate roles fetch just to show something more
+  // useful than a raw role id.
+  roleName: string;
   department: Department | null;
+  // Resolved from the user's role at token-issue time (login, or any
+  // token-reissuing action) — see server/auth.ts's signToken. A role's
+  // permissions can be edited after the fact without retroactively
+  // changing already-issued tokens; affected users see the change on
+  // their next login, same as a role/department change already did before
+  // this system existed.
+  permissions: Permission[];
   isActive: number;
   createdAt: string;
   lastSeenAt: string | null;
@@ -32,7 +125,11 @@ export interface UserInput {
   name: string;
   pin: string;
   role: Role;
-  department: Department | null;
+  // Not independently settable — always derived from the chosen role's own
+  // department (see database.ts's createUser/updateUser). Kept off this
+  // input type entirely so there's no stale/conflicting value a caller
+  // could pass; User.department (the stored, denormalized result) is what
+  // order dept-scoping etc. actually reads.
   // Touch vs mouse/keyboard control sizing — admin-set per staff member
   // (see UsersPanel in App.tsx), not self-service. Omitted/undefined on
   // create defaults to "auto" (per-device detection).

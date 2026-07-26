@@ -1,11 +1,11 @@
-// JWT issuing/verification and the requireAuth/requireAdmin route guards
-// used by every router in server/routes/.
+// JWT issuing/verification and the requireAuth/requirePermission route
+// guards used by every router in server/routes/.
 import jwt from "jsonwebtoken";
 import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import type { Request, Response, NextFunction } from "express";
-import type { User } from "../src/shared/types.js";
+import type { User, Permission } from "../src/shared/types.js";
 
 // Picks the JWT signing secret: an explicit env var wins, otherwise a
 // secret is generated once and persisted to disk so tokens survive server
@@ -34,9 +34,14 @@ export interface AuthRequest extends Request {
 
 // Issues a shift-length (8h) token. Deliberately excludes the PIN hash —
 // only the fields the client legitimately needs are embedded in the JWT.
+// `permissions` is resolved from the user's role at THIS moment (see
+// database.ts's resolvePermissions) and baked into the token — editing a
+// role's permissions later doesn't retroactively change an already-issued
+// token; affected users see it on their next login, same as a role change
+// itself already worked before roles were even a real table.
 export function signToken(user: User): string {
   return jwt.sign(
-    { id: user.id, name: user.name, role: user.role, department: user.department, themeMode: user.themeMode, uiMode: user.uiMode },
+    { id: user.id, name: user.name, role: user.role, roleName: user.roleName, department: user.department, permissions: user.permissions, themeMode: user.themeMode, uiMode: user.uiMode },
     SECRET,
     { expiresIn: "8h" }
   );
@@ -55,9 +60,18 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
   }
 }
 
-// Express middleware: must run after requireAuth. Restricts a route to the
-// admin role only (used for user management, settings, backups, reports).
-export function requireAdmin(req: AuthRequest, res: Response, next: NextFunction): void {
-  if (req.user?.role !== "admin") { res.status(403).json({ message: "Admin access required" }); return; }
-  next();
+// Express middleware factory: must run after requireAuth. Replaces the old
+// single hardcoded requireAdmin check — every route's authorization is now
+// "does this token's baked-in permission set include X," never a role name
+// comparison. Kept as a function that returns middleware (not one
+// middleware taking a param) so route files read `requirePermission("x")`
+// inline in a router chain, the same shape requireAdmin used to have.
+export function requirePermission(permission: Permission) {
+  return (req: AuthRequest, res: Response, next: NextFunction): void => {
+    if (!req.user?.permissions?.includes(permission)) {
+      res.status(403).json({ message: "Not authorized" });
+      return;
+    }
+    next();
+  };
 }

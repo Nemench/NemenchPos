@@ -1,12 +1,12 @@
-// Admin-only sales reporting: orders within a date range.
+// Sales reporting: orders within a date range. Gated to the "reports" permission.
 import { Router } from "express";
 import { db } from "../index.js";
-import { requireAuth, requireAdmin } from "../auth.js";
+import { requireAuth, requirePermission } from "../auth.js";
 
 const router = Router();
 
 // GET /api/reports?from=YYYY-MM-DD&to=YYYY-MM-DD
-router.get("/", requireAuth, requireAdmin, (req, res) => {
+router.get("/", requireAuth, requirePermission("reports"), (req, res) => {
   const from = req.query.from as string;
   const to = req.query.to as string;
   // Both dates are required and must match the plain YYYY-MM-DD format used

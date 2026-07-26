@@ -1,11 +1,13 @@
-// Full-database export/import as a downloadable JSON snapshot. Admin-only —
-// a restore overwrites live data, so this is a deliberately narrow surface.
+// Full-database export/import as a downloadable JSON snapshot. Gated to
+// "settings" — a restore overwrites live data, so this is a deliberately
+// narrow surface, grouped under the same permission as the rest of
+// back-office configuration.
 import { Router } from "express";
 import { db } from "../index.js";
-import { requireAuth, requireAdmin } from "../auth.js";
+import { requireAuth, requirePermission } from "../auth.js";
 
 const router = Router();
-router.use(requireAuth, requireAdmin);
+router.use(requireAuth, requirePermission("settings"));
 
 // Downloads every table (orders, products, users, suppliers, weigh-ins, ...)
 // as one JSON file, named with today's date.

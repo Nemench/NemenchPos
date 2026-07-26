@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { KotDatabase } from "./database.js";
 import authRouter from "./routes/auth.js";
 import usersRouter from "./routes/users.js";
+import rolesRouter from "./routes/roles.js";
 import productsRouter from "./routes/products.js";
 import ordersRouter from "./routes/orders.js";
 import consolidationRouter from "./routes/consolidation.js";
@@ -145,6 +146,7 @@ app.use("/api/backup/restore", backupRestoreLimit);
 
 app.use("/api/auth",     authRouter);
 app.use("/api/users",    usersRouter);
+app.use("/api/roles",    rolesRouter);
 app.use("/api/products", productsRouter);
 app.use("/api/orders",   ordersRouter);
 app.use("/api/consolidation", consolidationRouter);

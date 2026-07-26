@@ -31,24 +31,24 @@ function maybeTriggerOrderReady(previousStatus: OrderStatus, order: Order, reque
 const router = Router();
 router.use(requireAuth);
 
-// Roles that build receipts — same set allowed to quick-create a product
-// via an unrecognized barcode scan (see products.ts).
+// Whoever builds receipts — same permission set allowed to quick-create a
+// product via an unrecognized barcode scan (see products.ts).
 const canAddItems = (req: AuthRequest) =>
-  req.user?.role === "admin" || req.user?.role === "cashier" || req.user?.role === "master_cashier";
+  !!req.user?.permissions.includes("pos") || !!req.user?.permissions.includes("orders");
 
 // GET /api/orders?scope=active|history|all
-// Kitchen/counter roles are implicitly scoped to their own department's
-// orders (dept), everyone else (admin/cashier) sees all departments.
+// A user whose role carries a department is implicitly scoped to that
+// department's orders only; a user with no department (most roles) sees
+// every department. Department-based, not a role-name check — see
+// AppRole.department (server/database.ts) — so this works the same for
+// any custom role assigned to kitchen/counter, not just the two built-in
+// "kitchen"/"counter" roles.
 router.get("/", (req: AuthRequest, res) => {
   if (req.user?.id) db.touchLastSeen(req.user.id);
   const rawScope = req.query.scope as string;
   const scope: "active" | "history" | "all" =
     rawScope === "history" ? "history" : rawScope === "all" ? "all" : "active";
-  const role = req.user?.role;
-  const dept: Department | null =
-    role === "kitchen" ? "kitchen" :
-    role === "counter" ? "counter" :
-    null;
+  const dept: Department | null = req.user?.department ?? null;
   res.json(db.listOrders(scope, dept));
 });
 
@@ -129,14 +129,12 @@ router.patch("/:id/status", (req, res) => {
 router.patch("/:id/dept-status", (req: AuthRequest, res) => {
   try {
     const { department, status } = req.body as { department: Department; status: DeptStatus };
-    const role = req.user?.role;
-    // Kitchen staff can only update kitchen; counter staff can only update counter
-    if (role === "kitchen" && department !== "kitchen") {
-      res.status(403).json({ message: "Kitchen staff can only update kitchen status" });
-      return;
-    }
-    if (role === "counter" && department !== "counter") {
-      res.status(403).json({ message: "Counter staff can only update counter status" });
+    // A department-scoped user (their role has one — see AppRole.department)
+    // may only advance that department's status; a user with no department
+    // restriction may advance either. Department-based, not a role-name
+    // check, same reasoning as the GET / scoping above.
+    if (req.user?.department && req.user.department !== department) {
+      res.status(403).json({ message: `Only ${req.user.department} staff can update ${req.user.department} status` });
       return;
     }
     const id = Number(req.params.id);

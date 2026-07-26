@@ -38,6 +38,7 @@ import {
   ScanLine,
   Scissors,
   Settings,
+  ShieldCheck,
   ShoppingCart,
   Sun,
   Tag,
@@ -87,8 +88,12 @@ import type {
   UnitDefault,
   CustomerAccount,
   CustomerAccountInput,
-  CustomerAccountTransaction
+  CustomerAccountTransaction,
+  Permission,
+  AppRole,
+  AppRoleInput
 } from "../shared/types";
+import { ALL_PERMISSIONS, PERMISSION_LABELS } from "../shared/types";
 import { api, assetUrl } from "./api";
 import { useBarcodeScan } from "./useBarcodeScan";
 import { calculateLineTotal, buildCartLine } from "../shared/posCart";
@@ -96,7 +101,32 @@ import { iconSwitcher, type IconVariant } from "./iconSwitcher";
 import { applyTheme, applyThemeMode, deriveShades, initThemeMode, ThemeMode, applyInputMode, initInputMode, applyThemePreset, initThemePreset, UiThemePreset } from "./theme";
 import { tokenStorage } from "./tokenStorage";
 
-type Tab = "orders" | "pos" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "weighIn" | "statistics" | "crm" | "consolidate" | "printLabels" | "accounts";
+type Tab = "orders" | "pos" | "queue" | "history" | "products" | "users" | "roles" | "settings" | "reports" | "weighIn" | "statistics" | "crm" | "consolidate" | "printLabels" | "accounts";
+
+// Lands a freshly-logged-in user on the first tab that actually makes
+// sense for their permissions, in rough order of "most likely to be what
+// they're here to do" — POS/orders-first (till-facing roles are the vast
+// majority of logins), then queue, then whatever back-office tab they
+// might have instead. No permission at all still resolves to "queue"
+// (harmless empty state) rather than crashing on an inaccessible tab.
+function defaultTabFor(permissions: Permission[]): Tab {
+  const has = (p: Permission) => permissions.includes(p);
+  if (has("pos")) return "pos";
+  if (has("orders")) return "orders";
+  if (has("queue")) return "queue";
+  if (has("consolidate")) return "consolidate";
+  if (has("history")) return "history";
+  if (has("printLabels")) return "printLabels";
+  if (has("stock") || has("stockManage")) return "products";
+  if (has("weighIn") || has("weighInHistory")) return "weighIn";
+  if (has("accountsManage")) return "accounts";
+  if (has("settings")) return "settings";
+  if (has("reports")) return "reports";
+  if (has("statistics")) return "statistics";
+  if (has("crm")) return "crm";
+  if (has("users") || has("roles")) return "users";
+  return "queue";
+}
 
 // Applied at module load (before React's first render) so there's no flash
 // of the wrong theme — reads the stored preference (or system default).
@@ -452,10 +482,14 @@ function applyColorMode(html: string): string {
 // current tab selects. Owns the shared data (products/orders) that multiple
 // panels need, refreshed on mount and lightly polled while on the Queue tab.
 function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode, onToggleTheme }: { currentUser: User; onLogout: () => void; branding: { siteName: string; logoUrl: string }; onBrandingChange: (b: { siteName: string; logoUrl: string }) => void; themeMode: ThemeMode; onToggleTheme: () => void }) {
-  // stock_taker gets a completely separate, minimal nav (Stock Take +
-  // Weigh-In only) — everything else below the ternary is for other roles.
-  const isStockTaker = currentUser.role === "stock_taker";
-  const [tab, setTab] = useState<Tab>(isStockTaker ? "products" : currentUser.role === "kitchen" || currentUser.role === "counter" ? "queue" : "pos");
+  const [tab, setTab] = useState<Tab>(() => defaultTabFor(currentUser.permissions));
+  // A boolean per permission (Record<Permission, boolean>), rather than
+  // repeating currentUser.permissions.includes("x") at every nav/tab gate
+  // below — every gate in this component reads from here.
+  const perm = useMemo(
+    () => Object.fromEntries(ALL_PERMISSIONS.map((p) => [p, currentUser.permissions.includes(p)])) as Record<Permission, boolean>,
+    [currentUser.permissions]
+  );
   const [products, setProducts] = useState<Product[]>([]);
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
   const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
@@ -534,70 +568,56 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
           <img src={assetUrl(branding.logoUrl || "/logo.jpg")} alt={branding.siteName} className="brand-logo" />
           <div>
             <strong>{branding.siteName}</strong>
-            <span>{currentUser.name} · {{ admin: "Admin", cashier: "Cashier", master_cashier: "Master Cashier", kitchen: "Kitchen", counter: "Counter", stock_taker: "Stock Taker" }[currentUser.role]}</span>
+            <span>{currentUser.name} · {currentUser.roleName}</span>
           </div>
         </div>
         <nav>
-          {isStockTaker ? (
-            <>
-              <button className={tab === "products" ? "active" : ""} onClick={() => setTab("products")}><Package size={18} /><span>Stock</span></button>
-              <button className={tab === "weighIn" ? "active" : ""} onClick={() => setTab("weighIn")}><Weight size={18} /><span>Weigh-In</span></button>
-            </>
-          ) : (
-            <>
-              {/* Grouped into Sales / Catalog / Admin — every tab that
-                  existed before still exists, nothing removed, just no
-                  longer one long undifferentiated list. Sales is what
-                  every till-facing role touches constantly; Catalog is
-                  occasional (stock, printing, weigh-in, accounts); Admin
-                  is admin-only back-office/reporting, used least often. */}
-              <div className="nav-group">
-                <span className="nav-group-label">Sales</span>
-                {(currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier") && (
-                  <button className={tab === "pos" ? "active" : ""} onClick={() => setTab("pos")}><ShoppingCart size={18} /><span>POS</span></button>
-                )}
-                {(currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier") && (
-                  <button className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}><Plus size={18} /><span>New</span></button>
-                )}
-                <button className={tab === "queue" ? "active" : ""} onClick={() => setTab("queue")}><ClipboardList size={18} /><span>Queue</span></button>
-                <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}><History size={18} /><span>History</span></button>
-                {(currentUser.role === "kitchen" || currentUser.role === "counter" || currentUser.role === "cashier" || currentUser.role === "admin") && (
-                  <button className={tab === "consolidate" ? "active" : ""} onClick={() => setTab("consolidate")}><ScanLine size={18} /><span>Consolidate</span></button>
-                )}
-              </div>
+          {/* Fully permission-driven — every button checks its own
+              permission directly, no special-cased "this role gets a
+              different nav entirely" branch. A role (built-in or custom)
+              with only e.g. stock+weighIn naturally ends up with a nav
+              that shows only Stock and Weigh-In, without needing a
+              dedicated code path for it. Grouped into Sales / Catalog /
+              Admin — a group only renders at all if at least one of its
+              buttons would; individual buttons inside still check their
+              own permission so a partial-access role doesn't see gaps
+              where a button silently wouldn't work. */}
+          {(perm.pos || perm.orders || perm.queue || perm.history || perm.consolidate) && (
+            <div className="nav-group">
+              <span className="nav-group-label">Sales</span>
+              {perm.pos && <button className={tab === "pos" ? "active" : ""} onClick={() => setTab("pos")}><ShoppingCart size={18} /><span>POS</span></button>}
+              {perm.orders && <button className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}><Plus size={18} /><span>New</span></button>}
+              {perm.queue && <button className={tab === "queue" ? "active" : ""} onClick={() => setTab("queue")}><ClipboardList size={18} /><span>Queue</span></button>}
+              {perm.history && <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}><History size={18} /><span>History</span></button>}
+              {perm.consolidate && <button className={tab === "consolidate" ? "active" : ""} onClick={() => setTab("consolidate")}><ScanLine size={18} /><span>Consolidate</span></button>}
+            </div>
+          )}
 
-              {(currentUser.role === "counter" || currentUser.role === "admin") && (
-                <div className="nav-group">
-                  <span className="nav-group-label">Catalog</span>
-                  {(currentUser.role === "counter" || currentUser.role === "admin") && (
-                    <button className={tab === "printLabels" ? "active" : ""} onClick={() => setTab("printLabels")}><Tag size={18} /><span>Print Labels</span></button>
-                  )}
-                  {currentUser.role === "admin" && (
-                    <button className={tab === "products" ? "active" : ""} onClick={() => setTab("products")}>
-                      <Package size={18} /><span>Stock</span>
-                      {lowStockCount > 0 && <span className="badge-count">{lowStockCount}</span>}
-                    </button>
-                  )}
-                  {currentUser.role === "admin" && (
-                    <button className={tab === "weighIn" ? "active" : ""} onClick={() => setTab("weighIn")}><Weight size={18} /><span>Weigh-In</span></button>
-                  )}
-                  {currentUser.role === "admin" && (
-                    <button className={tab === "accounts" ? "active" : ""} onClick={() => setTab("accounts")}><CreditCard size={18} /><span>Accounts</span></button>
-                  )}
-                </div>
+          {(perm.printLabels || perm.stock || perm.stockManage || perm.weighIn || perm.weighInHistory || perm.accountsManage) && (
+            <div className="nav-group">
+              <span className="nav-group-label">Catalog</span>
+              {perm.printLabels && <button className={tab === "printLabels" ? "active" : ""} onClick={() => setTab("printLabels")}><Tag size={18} /><span>Print Labels</span></button>}
+              {(perm.stock || perm.stockManage) && (
+                <button className={tab === "products" ? "active" : ""} onClick={() => setTab("products")}>
+                  <Package size={18} /><span>Stock</span>
+                  {lowStockCount > 0 && <span className="badge-count">{lowStockCount}</span>}
+                </button>
               )}
+              {(perm.weighIn || perm.weighInHistory) && <button className={tab === "weighIn" ? "active" : ""} onClick={() => setTab("weighIn")}><Weight size={18} /><span>Weigh-In</span></button>}
+              {perm.accountsManage && <button className={tab === "accounts" ? "active" : ""} onClick={() => setTab("accounts")}><CreditCard size={18} /><span>Accounts</span></button>}
+            </div>
+          )}
 
-              {currentUser.role === "admin" && (
-                <div className="nav-group">
-                  <span className="nav-group-label">Admin</span>
-                  <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={18} /><span>Users</span></button>
-                  <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Settings size={18} /><span>Settings</span></button>
-                  <button className={tab === "reports" ? "active" : ""} onClick={() => setTab("reports")}><BarChart2 size={18} /><span>Reports</span></button>
-                  <button className={tab === "statistics" ? "active" : ""} onClick={() => setTab("statistics")}><TrendingUp size={18} /><span>Statistics</span></button>
-                  <button className={tab === "crm" ? "active" : ""} onClick={() => setTab("crm")}><MessageCircle size={18} /><span>CRM</span></button>
-                </div>
-              )}
-            </>
+          {(perm.users || perm.roles || perm.settings || perm.reports || perm.statistics || perm.crm) && (
+            <div className="nav-group">
+              <span className="nav-group-label">Admin</span>
+              {perm.users && <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={18} /><span>Users</span></button>}
+              {perm.roles && <button className={tab === "roles" ? "active" : ""} onClick={() => setTab("roles")}><ShieldCheck size={18} /><span>Roles</span></button>}
+              {perm.settings && <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Settings size={18} /><span>Settings</span></button>}
+              {perm.reports && <button className={tab === "reports" ? "active" : ""} onClick={() => setTab("reports")}><BarChart2 size={18} /><span>Reports</span></button>}
+              {perm.statistics && <button className={tab === "statistics" ? "active" : ""} onClick={() => setTab("statistics")}><TrendingUp size={18} /><span>Statistics</span></button>}
+              {perm.crm && <button className={tab === "crm" ? "active" : ""} onClick={() => setTab("crm")}><MessageCircle size={18} /><span>CRM</span></button>}
+            </div>
           )}
           {/* Sign out lives in nav itself (not just .sidebar-footer below) so it's
               never hidden — .sidebar-footer is dropped by the ≤920px responsive
@@ -629,9 +649,9 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
             tabs themselves — this is informational for the business owner,
             never something a cashier or kitchen screen should show or be
             distracted by. See LicenseStatusBanner. */}
-        {currentUser.role === "admin" && tab !== "pos" && tab !== "queue" && <LicenseStatusBanner />}
+        {perm.settings && tab !== "pos" && tab !== "queue" && <LicenseStatusBanner />}
 
-        {tab === "orders" && (
+        {tab === "orders" && perm.orders && (
           <OrderEntry
             products={products}
             currentUser={currentUser}
@@ -641,7 +661,7 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
             onCreated={async (order) => { notify(`Created ${order.ticketNumber}`); await refresh(); setTab("queue"); }}
           />
         )}
-        {tab === "pos" && (currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier") && (
+        {tab === "pos" && perm.pos && (
           <POSPanel
             products={products}
             printerMap={printerMap}
@@ -649,22 +669,23 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
             onCompleted={async (order) => { notify(`Sale ${order.ticketNumber} complete`); await refresh(); }}
           />
         )}
-        {tab === "queue" && <Queue orders={activeOrders} currentUser={currentUser} onChanged={refresh} printStyle={printStyle} printerMap={printerMap} />}
-        {tab === "history" && <HistoryView orders={historyOrders} printStyle={printStyle} printerMap={printerMap} />}
-        {tab === "consolidate" && (currentUser.role === "kitchen" || currentUser.role === "counter" || currentUser.role === "cashier" || currentUser.role === "admin") && (
+        {tab === "queue" && perm.queue && <Queue orders={activeOrders} currentUser={currentUser} onChanged={refresh} printStyle={printStyle} printerMap={printerMap} />}
+        {tab === "history" && perm.history && <HistoryView orders={historyOrders} printStyle={printStyle} printerMap={printerMap} />}
+        {tab === "consolidate" && perm.consolidate && (
           <ConsolidationPanel printStyle={printStyle} printerMap={printerMap} />
         )}
-        {tab === "printLabels" && (currentUser.role === "counter" || currentUser.role === "admin") && <PrintLabelsPanel products={products} printerName={printerMap.label} />}
-        {tab === "products" && (currentUser.role === "admin" || isStockTaker) && <StockPanel products={products} currentUser={currentUser} onChanged={refresh} />}
-        {tab === "weighIn" && (currentUser.role === "admin" || isStockTaker) && <WeighInPanel products={products} currentUser={currentUser} onChanged={refresh} />}
-        {tab === "users" && currentUser.role === "admin" && <UsersPanel />}
-        {tab === "accounts" && currentUser.role === "admin" && <AccountsPanel />}
-        {tab === "settings" && currentUser.role === "admin" && (
+        {tab === "printLabels" && perm.printLabels && <PrintLabelsPanel products={products} printerName={printerMap.label} />}
+        {tab === "products" && (perm.stock || perm.stockManage) && <StockPanel products={products} currentUser={currentUser} onChanged={refresh} />}
+        {tab === "weighIn" && (perm.weighIn || perm.weighInHistory) && <WeighInPanel products={products} currentUser={currentUser} onChanged={refresh} />}
+        {tab === "users" && perm.users && <UsersPanel />}
+        {tab === "roles" && perm.roles && <RolesPanel />}
+        {tab === "accounts" && perm.accountsManage && <AccountsPanel />}
+        {tab === "settings" && perm.settings && (
           <SettingsPanel autoPrint={autoPrint} onAutoPrintChange={setAutoPrint} printStyle={printStyle} onPrintStyleChange={setPrintStyle} printerMap={printerMap} onPrinterMapChange={setPrinterMap} branding={branding} onBrandingChange={onBrandingChange} />
         )}
-        {tab === "reports" && currentUser.role === "admin" && <ReportsPanel />}
-        {tab === "statistics" && currentUser.role === "admin" && <StatisticsPanel />}
-        {tab === "crm" && currentUser.role === "admin" && <CrmPanel />}
+        {tab === "reports" && perm.reports && <ReportsPanel />}
+        {tab === "statistics" && perm.statistics && <StatisticsPanel />}
+        {tab === "crm" && perm.crm && <CrmPanel />}
       </main>
     </div>
   );
@@ -1551,7 +1572,9 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
           <div className="pos-payment-tabs">
             <button type="button" className={`pos-payment-tab ${paymentMethod === "cash" ? "active" : ""}`} onClick={() => setPaymentMethod("cash")}>Cash</button>
             <button type="button" className={`pos-payment-tab ${paymentMethod === "card" ? "active" : ""}`} onClick={() => { setPaymentMethod("card"); setCashTendered(""); }}>Card</button>
-            <button type="button" className={`pos-payment-tab ${paymentMethod === "account" ? "active" : ""}`} onClick={() => { setPaymentMethod("account"); setCashTendered(""); }}>Account</button>
+            {currentUser.permissions.includes("accountsUse") && (
+              <button type="button" className={`pos-payment-tab ${paymentMethod === "account" ? "active" : ""}`} onClick={() => { setPaymentMethod("account"); setCashTendered(""); }}>Account</button>
+            )}
           </div>
           {paymentMethod === "cash" && (
             <div className="pos-cash-fields">
@@ -2117,19 +2140,21 @@ function Queue({ orders, currentUser, onChanged, printStyle, printerMap }: { ord
 
 // ── Ticket card ───────────────────────────────────────────────────────────────
 
-// One order's card in the Queue. Kitchen/counter roles only see and act on
-// their own department's items/status; admin/master_cashier see and can
-// advance both independently, or use Accept All/Complete All as a shortcut.
+// One order's card in the Queue. A department-scoped user (their role has
+// one — see AppRole.department) only sees and acts on their own
+// department's items/status; everyone else sees and can advance both
+// independently, or use Accept All/Complete All as a shortcut if they hold
+// "queueManageAll".
 function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: { order: Order; currentUser: User; onChanged: () => Promise<void>; printStyle: string; printerMap: Record<string, string> }) {
-  // Kitchen/counter staff only ever see their own department's line items.
+  // A department-scoped user only ever sees their own department's line items.
   const visibleItems =
-    currentUser.role === "kitchen" ? order.items.filter((i) => i.department === "kitchen") :
-    currentUser.role === "counter" ? order.items.filter((i) => i.department === "counter") :
+    currentUser.department === "kitchen" ? order.items.filter((i) => i.department === "kitchen") :
+    currentUser.department === "counter" ? order.items.filter((i) => i.department === "counter") :
     order.items;
 
   const hasKitchen = order.kitchenStatus !== "n/a";
   const hasCounter = order.counterStatus !== "n/a";
-  const isMasterCashier = currentUser.role === "master_cashier";
+  const canManageAllDepts = currentUser.permissions.includes("queueManageAll");
 
   const advanceDept = async (dept: Department, current: DeptStatus) => {
     const next = nextDeptStatus(current);
@@ -2150,9 +2175,12 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
     await onChanged();
   };
 
-  const canActKitchen = currentUser.role === "admin" || currentUser.role === "kitchen";
-  const canActCounter = currentUser.role === "admin" || currentUser.role === "counter";
-  const canAddItems = currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier";
+  // Department-scoped: a "kitchen" department user can only advance
+  // kitchen; a user with NO department restriction (most roles) can
+  // advance either, provided they hold "queue" at all.
+  const canActKitchen = currentUser.permissions.includes("queue") && (!currentUser.department || currentUser.department === "kitchen");
+  const canActCounter = currentUser.permissions.includes("queue") && (!currentUser.department || currentUser.department === "counter");
+  const canAddItems = currentUser.permissions.includes("pos") || currentUser.permissions.includes("orders");
   const [barcodeModalOpen, setBarcodeModalOpen] = useState(false);
   const [emailReceiptOpen, setEmailReceiptOpen] = useState(false);
   // Guards the print buttons below against rapid double-clicks: with no
@@ -2233,7 +2261,10 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
           <li key={item.id}>
             <div>
               <b>{item.name}</b>
-              {currentUser.role === "admin" && <span className={`item-dept ${item.department}`}>{item.department}</span>}
+              {/* Shown only to a user who ISN'T department-scoped — a
+                  department badge is only useful information to someone
+                  who can see items from more than one department at once. */}
+              {!currentUser.department && <span className={`item-dept ${item.department}`}>{item.department}</span>}
               {item.notes && <span>{item.notes}</span>}
             </div>
             <em>
@@ -2253,7 +2284,7 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
           {canAddItems && order.status !== "Done" && (
             <button className="secondary sm" onClick={() => setBarcodeModalOpen(true)}><ScanLine size={16} /> Scan</button>
           )}
-          {isMasterCashier && order.status !== "Done" && (
+          {canManageAllDepts && order.status !== "Done" && (
             <>
               {(order.kitchenStatus === "New" || order.counterStatus === "New") && (
                 <button onClick={() => void acceptAll()}>Accept</button>
@@ -2261,12 +2292,12 @@ function TicketCard({ order, currentUser, onChanged, printStyle, printerMap }: {
               <button onClick={() => void completeAll()}>Complete</button>
             </>
           )}
-          {!isMasterCashier && hasKitchen && canActKitchen && nextDeptStatus(order.kitchenStatus) && (
+          {!canManageAllDepts && hasKitchen && canActKitchen && nextDeptStatus(order.kitchenStatus) && (
             <button onClick={() => void advanceDept("kitchen", order.kitchenStatus)}>
               Kitchen → {nextDeptStatus(order.kitchenStatus)}
             </button>
           )}
-          {!isMasterCashier && hasCounter && canActCounter && nextDeptStatus(order.counterStatus) && (
+          {!canManageAllDepts && hasCounter && canActCounter && nextDeptStatus(order.counterStatus) && (
             <button onClick={() => void advanceDept("counter", order.counterStatus)}>
               Counter → {nextDeptStatus(order.counterStatus)}
             </button>
@@ -3063,7 +3094,7 @@ function PrintLabelsPanel({ products, printerName }: { products: Product[]; prin
 // stock_taker accounts can't edit the catalog, so they only ever see Count —
 // no toggle is rendered for them since there's nothing to switch to.
 function StockPanel({ products, currentUser, onChanged }: { products: Product[]; currentUser: User; onChanged: () => Promise<void> }) {
-  const canEditCatalog = currentUser.role === "admin";
+  const canEditCatalog = currentUser.permissions.includes("stockManage");
   const [view, setView] = useState<"catalog" | "count" | "yields">(canEditCatalog ? "catalog" : "count");
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState("");
@@ -3728,7 +3759,7 @@ function StockTakePanel({ products, currentUser, onChanged }: { products: Produc
 
   return (
     <div className="products-layout">
-      {currentUser.role === "admin" && (
+      {currentUser.permissions.includes("stockManage") && (
         <form className="panel product-form" onSubmit={(e) => void addLocation(e)}>
           <h2>Stock locations</h2>
           <p className="settings-hint">The physical places stock is kept — Cold Room, Counter, Freezer 2, etc.</p>
@@ -3865,7 +3896,7 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
   // (calling loadHistory() right after setHistoryFrom("") would otherwise
   // still see the old value due to stale closures).
   const loadHistory = (from = historyFrom, to = historyTo) => {
-    if (currentUser.role !== "admin") return;
+    if (!currentUser.permissions.includes("weighInHistory")) return;
     setHistoryLoading(true);
     api.weighIn.list(from && to ? from : undefined, from && to ? to : undefined)
       .then(setHistory).catch(() => undefined).finally(() => setHistoryLoading(false));
@@ -4167,7 +4198,7 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
         </footer>
       </div>
 
-      {currentUser.role === "admin" && (
+      {currentUser.permissions.includes("weighInHistory") && (
         <div className="panel reports-panel span-full">
           <h2>Weigh-in history</h2>
           <div className="report-controls">
@@ -4227,15 +4258,17 @@ function WeighInPanel({ products, currentUser, onChanged }: { products: Product[
 
 // ── Users (admin) ─────────────────────────────────────────────────────────────
 
-const EMPTY_USER: UserInput = { name: "", pin: "", role: "cashier", department: null, uiMode: "auto" };
-// Kitchen/counter roles are tied to that department; every other role has no department.
-const roleDept = (role: UserInput["role"]): Department | null =>
-  role === "kitchen" ? "kitchen" : role === "counter" ? "counter" : null;
+const EMPTY_USER: UserInput = { name: "", pin: "", role: "", uiMode: "auto" };
 
-// Admin-only staff account management: create/edit users, set roles/PINs,
-// activate/deactivate (soft — see database.ts's admin-lockout guard).
+// Staff account management: create/edit users, set roles/PINs,
+// activate/deactivate (soft — see database.ts's generalized lockout guard).
+// Role is now a dynamic list (built-in + admin-created custom roles — see
+// RolesPanel), not a hardcoded set of options; department is shown
+// read-only, inherited from whichever role is selected, never picked
+// independently (see AppRole.department).
 function UsersPanel() {
   const [users, setUsers] = useState<User[]>([]);
+  const [roles, setRoles] = useState<AppRole[]>([]);
   const [form, setForm] = useState<UserInput>(EMPTY_USER);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [msg, setMsg] = useState("");
@@ -4250,22 +4283,30 @@ function UsersPanel() {
     const id = setInterval(() => void load(), 10_000);
     return () => clearInterval(id);
   }, []);
+  useEffect(() => {
+    api.roles.list().then((r) => {
+      setRoles(r);
+      setForm((cur) => (cur.role ? cur : { ...cur, role: r[0]?.id ?? "" }));
+    }).catch(() => undefined);
+  }, []);
+
+  const selectedRole = roles.find((r) => r.id === form.role);
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
+    if (!form.role) { setMsg("Pick a role first."); return; }
     setBusy(true); setMsg("");
     try {
-      const payload = { ...form, department: roleDept(form.role) };
       if (editingId) {
         // PIN field starts blank on edit (see startEdit) — only include it
         // in the patch if the admin actually typed a new one.
-        const patch: Partial<UserInput> = { name: payload.name, role: payload.role, department: payload.department, uiMode: payload.uiMode };
+        const patch: Partial<UserInput> = { name: form.name, role: form.role, uiMode: form.uiMode };
         if (form.pin) patch.pin = form.pin;
         await api.users.update(editingId, patch);
       } else {
-        await api.users.create(payload);
+        await api.users.create(form);
       }
-      setForm(EMPTY_USER); setEditingId(null); setMsg("Saved.");
+      setForm({ ...EMPTY_USER, role: roles[0]?.id ?? "" }); setEditingId(null); setMsg("Saved.");
       await load();
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "Failed to save.");
@@ -4297,7 +4338,7 @@ function UsersPanel() {
 
   const startEdit = (user: User) => {
     setEditingId(user.id);
-    setForm({ name: user.name, pin: "", role: user.role, department: user.department ?? "counter", uiMode: user.uiMode ?? "auto" });
+    setForm({ name: user.name, pin: "", role: user.role, uiMode: user.uiMode ?? "auto" });
   };
 
   return (
@@ -4319,18 +4360,14 @@ function UsersPanel() {
         </label>
         <label>
           Role
-          <select value={form.role} onChange={(e) => {
-            const role = e.target.value as UserInput["role"];
-            setForm({ ...form, role, department: roleDept(role) });
-          }}>
-            <option value="cashier">Cashier</option>
-            <option value="master_cashier">Master Cashier</option>
-            <option value="counter">Counter</option>
-            <option value="kitchen">Kitchen</option>
-            <option value="stock_taker">Stock Taker</option>
-            <option value="admin">Admin</option>
+          <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} required>
+            {roles.length === 0 && <option value="">— No roles yet —</option>}
+            {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
           </select>
         </label>
+        {selectedRole?.department && (
+          <p className="settings-hint">This role is tied to the {selectedRole.department} department.</p>
+        )}
         <label>
           Control size
           <select value={form.uiMode ?? "auto"} onChange={(e) => setForm({ ...form, uiMode: e.target.value as UserInput["uiMode"] })}>
@@ -4341,7 +4378,7 @@ function UsersPanel() {
         </label>
         {msg && <div className="form-message">{msg}</div>}
         <footer className="actions">
-          {editingId && <button type="button" className="secondary" onClick={() => { setEditingId(null); setForm(EMPTY_USER); setMsg(""); }}>Cancel</button>}
+          {editingId && <button type="button" className="secondary" onClick={() => { setEditingId(null); setForm({ ...EMPTY_USER, role: roles[0]?.id ?? "" }); setMsg(""); }}>Cancel</button>}
           <button type="submit" disabled={busy}><Save size={18} /> {busy ? "Saving…" : "Save"}</button>
         </footer>
       </form>
@@ -4355,7 +4392,7 @@ function UsersPanel() {
               return (
               <tr key={u.id} className={u.isActive ? "" : "inactive-row"}>
                 <td>{u.name}</td>
-                <td className="role-text">{u.role.replace("_", " ")}</td>
+                <td className="role-text">{u.roleName}</td>
                 <td>{u.isActive ? "Active" : "Inactive"}</td>
                 <td>
                   <span className={`online-dot ${online ? "online" : "offline"}`}
@@ -4385,6 +4422,127 @@ function UsersPanel() {
           onCancel={() => setPendingDeactivate(null)}
         />
       )}
+    </div>
+  );
+}
+
+// ── Roles (admin) ────────────────────────────────────────────────────────────
+
+// Grouped the same way the sidebar nav groups tabs (Sales/Catalog/Admin),
+// so the checklist reads in the same order a role's actual effect on the
+// nav would — purely a display grouping, has no bearing on what's saved.
+const PERMISSION_GROUPS: { label: string; permissions: Permission[] }[] = [
+  { label: "Sales", permissions: ["pos", "orders", "queue", "queueManageAll", "history", "consolidate"] },
+  { label: "Catalog", permissions: ["printLabels", "labelsManage", "stock", "stockManage", "suppliersManage", "weighIn", "weighInHistory", "accountsUse", "accountsManage"] },
+  { label: "Admin", permissions: ["users", "roles", "settings", "reports", "statistics", "crm"] }
+];
+
+const EMPTY_ROLE_FORM: AppRoleInput = { name: "", department: null, permissions: [] };
+
+// Create/edit/delete admin-definable roles — the actual authorization
+// boundary everywhere else in the app (see Permission in shared/types.ts).
+// Built-in roles (isBuiltIn) can't be deleted but their permissions and
+// department are fully editable, same as a custom role.
+function RolesPanel() {
+  const [roles, setRoles] = useState<AppRole[]>([]);
+  const [form, setForm] = useState<AppRoleInput>(EMPTY_ROLE_FORM);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = () => api.roles.list().then(setRoles).catch(() => undefined);
+  useEffect(() => { void load(); }, []);
+
+  const togglePermission = (p: Permission) => {
+    setForm((cur) => ({
+      ...cur,
+      permissions: cur.permissions.includes(p) ? cur.permissions.filter((x) => x !== p) : [...cur.permissions, p]
+    }));
+  };
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setMsg("");
+    try {
+      if (editingId) await api.roles.update(editingId, form);
+      else await api.roles.create(form);
+      setForm(EMPTY_ROLE_FORM); setEditingId(null); setMsg("Saved.");
+      await load();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Failed to save.");
+    } finally { setBusy(false); }
+  };
+
+  const startEdit = (role: AppRole) => {
+    setEditingId(role.id);
+    setForm({ name: role.name, department: role.department, permissions: role.permissions });
+  };
+
+  const remove = async (role: AppRole) => {
+    if (!window.confirm(`Delete the role "${role.name}"? This can't be undone.`)) return;
+    try {
+      await api.roles.remove(role.id);
+      if (editingId === role.id) { setEditingId(null); setForm(EMPTY_ROLE_FORM); }
+      await load();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not delete role");
+    }
+  };
+
+  return (
+    <div className="products-layout">
+      <form className="panel product-form" onSubmit={(e) => void save(e)}>
+        <h2>{editingId ? "Edit role" : "Add role"}</h2>
+        <label>Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
+        <label>
+          Department <span className="settings-hint">(optional — restricts staff with this role to only their own department's orders)</span>
+          <select value={form.department ?? ""} onChange={(e) => setForm({ ...form, department: e.target.value ? (e.target.value as Department) : null })}>
+            <option value="">— None —</option>
+            <option value="kitchen">Kitchen</option>
+            <option value="counter">Counter</option>
+          </select>
+        </label>
+        <div className="role-permission-groups">
+          {PERMISSION_GROUPS.map((group) => (
+            <fieldset key={group.label} className="role-permission-group">
+              <legend>{group.label}</legend>
+              {group.permissions.map((p) => (
+                <label key={p} className="checkbox-label sm" title={PERMISSION_LABELS[p].hint}>
+                  <input type="checkbox" checked={form.permissions.includes(p)} onChange={() => togglePermission(p)} />
+                  {PERMISSION_LABELS[p].label}
+                </label>
+              ))}
+            </fieldset>
+          ))}
+        </div>
+        {msg && <div className="form-message">{msg}</div>}
+        <footer className="actions">
+          {editingId && <button type="button" className="secondary" onClick={() => { setEditingId(null); setForm(EMPTY_ROLE_FORM); setMsg(""); }}>Cancel</button>}
+          <button type="submit" disabled={busy}><Save size={18} /> {busy ? "Saving…" : "Save"}</button>
+        </footer>
+      </form>
+
+      <div className="panel table-panel">
+        <table>
+          <thead><tr><th>Name</th><th>Department</th><th>Permissions</th><th></th></tr></thead>
+          <tbody>
+            {roles.map((r) => (
+              <tr key={r.id}>
+                <td>{r.name}{!!r.isBuiltIn && <span className="settings-hint"> (built-in)</span>}</td>
+                <td className="settings-hint">{r.department ?? "—"}</td>
+                <td className="settings-hint">{r.permissions.length} of {ALL_PERMISSIONS.length}</td>
+                <td className="row-actions">
+                  <button type="button" className="secondary sm" onClick={() => startEdit(r)}>Edit</button>
+                  {!r.isBuiltIn && <button type="button" className="danger sm" onClick={() => void remove(r)}>Delete</button>}
+                </td>
+              </tr>
+            ))}
+            {roles.length === 0 && (
+              <tr><td colSpan={4} className="report-empty">No roles yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -7469,7 +7627,7 @@ function nextDeptStatus(status: DeptStatus): DeptStatus | null {
 }
 
 function tabTitle(tab: Tab) {
-  return { orders: "New Order", pos: "POS", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", settings: "Settings", reports: "Reports", weighIn: "Weigh-In", statistics: "Statistics", crm: "CRM", consolidate: "Consolidate Order", printLabels: "Print Labels", accounts: "Customer Accounts" }[tab];
+  return { orders: "New Order", pos: "POS", queue: "Prep Queue", history: "Order History", products: "Stock", users: "Users", roles: "Roles", settings: "Settings", reports: "Reports", weighIn: "Weigh-In", statistics: "Statistics", crm: "CRM", consolidate: "Consolidate Order", printLabels: "Print Labels", accounts: "Customer Accounts" }[tab];
 }
 
 function tabSubtitle(tab: Tab) {
@@ -7481,6 +7639,7 @@ function tabSubtitle(tab: Tab) {
     settings: "System configuration.",
     products: "Manage stock items, prices, and physical counts.",
     users: "Manage staff accounts and PINs.",
+    roles: "Create and edit roles and exactly what each one can access.",
     reports: "View and download orders for a date range.",
     weighIn: "Log received stock by weight, batch by batch.",
     statistics: "Sales performance and stock movement per item.",
