@@ -2564,6 +2564,9 @@ button.sm {
   color: var(--text);
   text-align: left;
   font-size: 14px;
+  /* Overridden (not just the name span) so its unstyled child spans
+     inherit normal wrapping too — same overflow bug as .pos-product-name. */
+  white-space: normal;
 }
 
 .pos-search-match:hover {
@@ -2690,11 +2693,18 @@ button.sm {
   font-weight: 700;
   font-size: 13px;
   line-height: 1.3;
+  /* The base button{} rule sets white-space: nowrap (right, for a normal
+     short label) and it's inherited by every descendant unless overridden
+     — a product tile's name is free text of unpredictable length though,
+     so without this it silently overflowed the tile's fixed width instead
+     of wrapping onto a second line. */
+  white-space: normal;
 }
 
 .pos-product-price {
   font-size: 12px;
   color: var(--muted);
+  white-space: normal;
 }
 
 .pos-product-tile-nocost {
@@ -2833,6 +2843,10 @@ button.sm {
   background: transparent;
   color: var(--text);
   font-family: inherit;
+  /* Same overflow bug as .pos-product-name: the base button{} rule's
+     white-space: nowrap was inherited by the name/detail text below,
+     which is unpredictable free-text length, not a fixed short label. */
+  white-space: normal;
 }
 
 .till-slip-line.selected {
