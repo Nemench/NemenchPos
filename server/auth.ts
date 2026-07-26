@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import type { Request, Response, NextFunction } from "express";
 import type { User, Permission } from "../src/shared/types.js";
+import { db } from "./index.js";
 
 // Picks the JWT signing secret: an explicit env var wins, otherwise a
 // secret is generated once and persisted to disk so tokens survive server
@@ -48,12 +49,26 @@ export function signToken(user: User): string {
 }
 
 // Express middleware: requires a valid "Authorization: Bearer <token>"
-// header, decodes it onto req.user for downstream handlers.
+// header. Re-fetches the user fresh from the DB by the token's id rather
+// than trusting the decoded JWT payload wholesale — the payload only
+// proves the token was legitimately issued to this id, not that its
+// embedded permissions/role/department are still current. This matters
+// for two real cases: (1) a token issued before a role's permissions were
+// edited — a fresh lookup makes that change take effect on the very next
+// request, not "next login"; (2) a token issued before a NEW field was
+// ever added to the payload at all (e.g. every session live when
+// permissions/roleName were introduced) — those tokens decode fine
+// (signature still valid) but are just missing the new keys, which
+// crashed the client wherever it assumed `permissions` is always an
+// array. Re-fetching self-heals both without forcing anyone to log out.
 export function requireAuth(req: AuthRequest, res: Response, next: NextFunction): void {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) { res.status(401).json({ message: "Authentication required" }); return; }
   try {
-    req.user = jwt.verify(token, SECRET) as User;
+    const decoded = jwt.verify(token, SECRET) as { id: number };
+    const user = db.getUser(decoded.id);
+    if (!user || !user.isActive) { res.status(401).json({ message: "Invalid or expired token" }); return; }
+    req.user = user;
     next();
   } catch {
     res.status(401).json({ message: "Invalid or expired token" });
