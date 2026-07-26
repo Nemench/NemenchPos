@@ -127,3 +127,27 @@ export function applyInputMode(pref: UiModePref): void {
 export function initInputMode(): void {
   applyInputMode(getStoredUiModePref());
 }
+
+// ── Theme preset (Classic vs Industrial) ─────────────────────────────────────
+// A shop-wide admin choice (see Settings), not a per-user preference like
+// light/dark or touch/compact above — the whole till should look the same
+// regardless of who's signed in, including the pre-login passcode screen.
+// Independent of light/dark mode: Industrial defines its own complete,
+// self-consistent charcoal/steel palette (see styles.css's
+// [data-theme-preset="industrial"] block) rather than having separate
+// light and dark variants of it.
+export type UiThemePreset = "classic" | "industrial";
+const THEME_PRESET_KEY = "nemenchpos-theme-preset";
+
+export function applyThemePreset(preset: UiThemePreset): void {
+  document.documentElement.setAttribute("data-theme-preset", preset);
+  localStorage.setItem(THEME_PRESET_KEY, preset);
+}
+
+// Pre-login fallback only (same division of responsibility as
+// getStoredThemeMode) — the real source of truth is the server's
+// /settings/public response, applied as soon as it loads in App().
+export function initThemePreset(): void {
+  const stored = localStorage.getItem(THEME_PRESET_KEY);
+  applyThemePreset(stored === "industrial" ? "industrial" : "classic");
+}

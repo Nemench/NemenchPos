@@ -59,6 +59,13 @@
      so this doesn't need its own media query here. */
   --control-h:  40px;
   --control-px: 16px;
+
+  /* Shape — sm for buttons/inputs, md for cards (.panel/.ticket). Separate
+     from color so the Industrial preset below can flatten/sharpen these
+     without needing to touch every element's color at the same time. */
+  --radius-sm:  6px;
+  --radius-md:  8px;
+  --card-shadow: 0 1px 3px rgba(26,26,46,0.08);
 }
 
 :root[data-input-mode="compact"] {
@@ -95,6 +102,69 @@
   --pos-cat-other: #454c5e;
 }
 
+/* Industrial preset — a shop-wide admin choice (Settings > Appearance),
+   applied via data-theme-preset on <html> (see theme.ts's
+   applyThemePreset), independent of the light/dark toggle above: this is
+   its own complete, self-consistent charcoal/steel look with a single
+   strong amber accent, not a "dark mode variant" of it. Reuses dark
+   mode's already-validated --pos-cat-* swatches (same dark-surface
+   contrast assumptions) rather than inventing a fourth unvalidated set. */
+:root[data-theme-preset="industrial"] {
+  --blue:       #f5a623;
+  --blue-dark:  #c9820f;
+  --blue-hover: #e0961c;
+  --blue-light: #3a2f18;
+  --red:        #ff5c5c;
+  --red-light:  #3a1f20;
+  --green:       #4caf6a;
+  --green-light: #1c2e20;
+  --border:     #454b54;
+  --bg:         #15171b;
+  --panel:      #1e2126;
+  --text:       #f2f3f5;
+  --muted:      #9aa1ab;
+
+  --input-bg:         #24272c;
+  --chip-bg:           #2a2e34;
+  --accent-text:       #f5a623;
+  --secondary-hover:  #34383f;
+  --overlay:          rgba(0, 0, 0, 0.75);
+  color-scheme: dark;
+
+  /* Flatter and sharper than Classic's rounded/soft-shadow cards — no
+     ambient glow at all, definition comes from the (now higher-contrast)
+     border alone. */
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --card-shadow: none;
+
+  --pos-cat-1: #3987e5;
+  --pos-cat-2: #199e70;
+  --pos-cat-3: #c98500;
+  --pos-cat-4: #008300;
+  --pos-cat-5: #9085e9;
+  --pos-cat-6: #e66767;
+  --pos-cat-7: #d55181;
+  --pos-cat-8: #d95926;
+  --pos-cat-other: #454c5e;
+}
+
+/* Bolder/heavier than Classic's 600 (see button{} above) — Industrial
+   reads as utilitarian partly through unambiguous, high-contrast weight,
+   not restraint. Sidebar gets its own explicit steel-charcoal background
+   rather than inheriting --blue-dark (now amber-dark) — the accent color
+   is for actions/highlights, not for what would otherwise tint the whole
+   nav rail amber. */
+:root[data-theme-preset="industrial"] button {
+  font-weight: 700;
+}
+
+:root[data-theme-preset="industrial"] .sidebar,
+:root[data-theme-preset="industrial"] .login-screen,
+:root[data-theme-preset="industrial"] .boot-screen {
+  background: #1a1c20;
+}
+
 * {
   box-sizing: border-box;
   min-width: 0;
@@ -122,7 +192,7 @@ button {
   justify-content: center;
   gap: 8px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   min-height: var(--control-h);
   padding: 0 var(--control-px);
   background: var(--blue);
@@ -265,6 +335,31 @@ nav button.active {
   color: #fff;
 }
 
+/* Groups the nav into Sales/Catalog/Admin sections (see MainApp) — purely
+   organizational, every button inside still behaves exactly as a flat nav
+   button. A shop-floor role only ever sees the Sales group (plus Catalog
+   for counter staff); the Admin group only exists at all for admins, so
+   nobody's list is longer than what actually applies to them. */
+.nav-group {
+  display: grid;
+  gap: 4px;
+  margin-top: 14px;
+}
+
+.nav-group:first-child {
+  margin-top: 0;
+}
+
+.nav-group-label {
+  padding: 0 12px;
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: rgba(255,255,255,0.4);
+}
+
 /* ── Workspace ── */
 .workspace {
   position: relative;
@@ -373,13 +468,13 @@ h2 { font-size: 17px; color: var(--accent-text); }
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 20px;
   /* A neutral warm-gray shadow, not one tinted with the brand accent — a
      card that already has a solid border doesn't also need to glow the
      theme color underneath it; that combination is what makes a screen
      read as templated rather than designed. */
-  box-shadow: 0 1px 3px rgba(26,26,46,0.08);
+  box-shadow: var(--card-shadow);
 }
 
 /* ── Forms ── */
@@ -402,7 +497,7 @@ input, select, textarea {
   width: 100%;
   min-height: var(--control-h);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: var(--input-bg);
   color: var(--text);
   padding: 8px 10px;
@@ -467,9 +562,9 @@ textarea {
   background: var(--panel);
   border: 1px solid var(--border);
   border-left: 5px solid var(--blue);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 16px;
-  box-shadow: 0 1px 3px rgba(26,26,46,0.08);
+  box-shadow: var(--card-shadow);
 }
 
 /* ── Ticket header ── */
@@ -1316,10 +1411,51 @@ th {
   max-width: 360px;
   display: grid;
   gap: 14px;
-  background: #fff;
+  background: var(--panel);
+  color: var(--text);
   border-radius: 14px;
   padding: 32px 28px;
   box-shadow: 0 24px 60px rgba(0,0,0,0.35);
+}
+
+.passcode-label {
+  display: grid;
+  gap: 8px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.passcode-display {
+  text-align: center;
+  font-size: 28px;
+  letter-spacing: 12px;
+  min-height: 56px;
+  padding: 0 0 0 12px; /* the letter-spacing above pushes the last dot past center without this */
+}
+
+.passcode-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.passcode-keypad button {
+  min-height: 56px;
+  font-size: 20px;
+  font-weight: 700;
+  background: var(--chip-bg);
+  color: var(--text);
+}
+
+.passcode-keypad button:hover:not(:disabled) {
+  background: var(--secondary-hover);
+}
+
+.passcode-enter {
+  min-height: 52px;
+  font-size: 16px;
 }
 
 .login-brand {

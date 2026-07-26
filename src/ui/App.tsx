@@ -93,7 +93,7 @@ import { api, assetUrl } from "./api";
 import { useBarcodeScan } from "./useBarcodeScan";
 import { calculateLineTotal, buildCartLine } from "../shared/posCart";
 import { iconSwitcher, type IconVariant } from "./iconSwitcher";
-import { applyTheme, applyThemeMode, deriveShades, initThemeMode, ThemeMode, applyInputMode, initInputMode, getStoredUiModePref, UiModePref } from "./theme";
+import { applyTheme, applyThemeMode, deriveShades, initThemeMode, ThemeMode, applyInputMode, initInputMode, getStoredUiModePref, UiModePref, applyThemePreset, initThemePreset, UiThemePreset } from "./theme";
 import { tokenStorage } from "./tokenStorage";
 
 type Tab = "orders" | "pos" | "queue" | "history" | "products" | "users" | "settings" | "reports" | "weighIn" | "statistics" | "crm" | "consolidate" | "printLabels" | "accounts";
@@ -104,6 +104,10 @@ initThemeMode();
 // Same no-flash treatment for touch-vs-mouse control sizing — resolves
 // "auto" against this device's pointer type immediately.
 initInputMode();
+// Same again for the shop-wide Classic/Industrial theme preset — the real
+// value arrives shortly after from /settings/public (see App()'s branding
+// effect below); this is just the pre-fetch fallback.
+initThemePreset();
 
 const deptStatusFlow: DeptStatus[] = ["New", "Received", "Ready", "Done"];
 const emptyLine: OrderItemInput = { productId: null, name: "", kg: null, quantity: null, notes: "", unitPrice: null, lineTotal: null, wantedPrice: null, department: "counter" };
@@ -268,6 +272,7 @@ export function App() {
       applyBranding(s.siteName, s.logoUrl);
       setReceiptBranding({ siteName: s.siteName, logoUrl: s.logoUrl, themeColor: s.themeColor, vatRegistered: s.vatRegistered, vatNumber: s.vatNumber, businessAddress: s.businessAddress, publicBaseUrl: s.publicBaseUrl });
       if (s.themeColor) applyTheme(s.themeColor);
+      applyThemePreset(s.uiThemePreset);
     }).catch(() => undefined);
   }, []);
 
@@ -294,49 +299,78 @@ export function App() {
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 
-// Name + PIN login form, shown when there's no valid session.
+// Passcode-only login — no name step. Every active user's passcode is
+// enforced unique at the database layer (see getUserByPin/
+// pinInUseByAnotherUser in server/database.ts), so the code alone is
+// enough to identify who's signing in; who it resolves to comes back from
+// the server, not typed here. Real keyboard entry (type into the masked
+// field directly, Enter to submit) and an on-screen keypad both drive the
+// same `pin` buffer, so this works the same on a counter tablet or a
+// back-office desktop.
 function LoginScreen({ onLogin, branding }: { onLogin: (user: User) => void; branding: { siteName: string; logoUrl: string } }) {
-  const [name, setName] = useState("");
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const submit = async () => {
+    if (pin.length < 4 || busy) return;
     setBusy(true); setError("");
     try {
-      const { token, user } = await api.auth.login(name, pin);
+      const { token, user } = await api.auth.login(pin);
       tokenStorage.set(token);
       onLogin(user);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
-    } finally { setBusy(false); }
+      setError(err instanceof Error ? err.message : "Incorrect passcode");
+      setPin("");
+      inputRef.current?.focus();
+    } finally {
+      setBusy(false);
+    }
   };
+
+  const digit = (d: string) => setPin((cur) => (cur.length < 8 ? cur + d : cur));
+  const backspace = () => setPin((cur) => cur.slice(0, -1));
 
   return (
     <div className="login-screen">
-      <form className="login-card panel" onSubmit={(e) => void submit(e)}>
+      <div className="login-card panel passcode-card">
         <div className="login-brand">
           <img src={assetUrl(branding.logoUrl || "/logo.jpg")} alt={branding.siteName} className="login-logo" />
           <h1>{branding.siteName}</h1>
         </div>
-        <label>Name
-          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus required />
-        </label>
-        <label>PIN
+        <label className="passcode-label">Enter your passcode
           <input
+            ref={inputRef}
+            className="passcode-display"
             type="password"
             inputMode="numeric"
-            maxLength={4}
-            placeholder="••••"
+            maxLength={8}
             value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            required
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 8))}
+            onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}
+            autoFocus
           />
         </label>
         {error && <div className="form-message">{error}</div>}
-        <button type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
-      </form>
+        <div className="passcode-keypad">
+          {["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫"].map((k, i) =>
+            k === "" ? <span key={i} /> : (
+              <button
+                key={i} type="button" disabled={busy}
+                onClick={() => (k === "⌫" ? backspace() : digit(k))}
+              >
+                {k}
+              </button>
+            )
+          )}
+        </div>
+        <button type="button" className="passcode-enter" disabled={pin.length < 4 || busy} onClick={() => void submit()}>
+          {busy ? "Signing in…" : "Enter"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -520,46 +554,57 @@ function MainApp({ currentUser, onLogout, branding, onBrandingChange, themeMode,
             </>
           ) : (
             <>
-              {(currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier") && (
-                <button className={tab === "pos" ? "active" : ""} onClick={() => setTab("pos")}><ShoppingCart size={18} /><span>POS</span></button>
-              )}
-              {(currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier") && (
-                <button className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}><Plus size={18} /><span>New</span></button>
-              )}
-              <button className={tab === "queue" ? "active" : ""} onClick={() => setTab("queue")}><ClipboardList size={18} /><span>Queue</span></button>
-              <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}><History size={18} /><span>History</span></button>
-              {(currentUser.role === "kitchen" || currentUser.role === "counter" || currentUser.role === "cashier" || currentUser.role === "admin") && (
-                <button className={tab === "consolidate" ? "active" : ""} onClick={() => setTab("consolidate")}><ScanLine size={18} /><span>Consolidate</span></button>
-              )}
+              {/* Grouped into Sales / Catalog / Admin — every tab that
+                  existed before still exists, nothing removed, just no
+                  longer one long undifferentiated list. Sales is what
+                  every till-facing role touches constantly; Catalog is
+                  occasional (stock, printing, weigh-in, accounts); Admin
+                  is admin-only back-office/reporting, used least often. */}
+              <div className="nav-group">
+                <span className="nav-group-label">Sales</span>
+                {(currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier") && (
+                  <button className={tab === "pos" ? "active" : ""} onClick={() => setTab("pos")}><ShoppingCart size={18} /><span>POS</span></button>
+                )}
+                {(currentUser.role === "admin" || currentUser.role === "cashier" || currentUser.role === "master_cashier") && (
+                  <button className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}><Plus size={18} /><span>New</span></button>
+                )}
+                <button className={tab === "queue" ? "active" : ""} onClick={() => setTab("queue")}><ClipboardList size={18} /><span>Queue</span></button>
+                <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}><History size={18} /><span>History</span></button>
+                {(currentUser.role === "kitchen" || currentUser.role === "counter" || currentUser.role === "cashier" || currentUser.role === "admin") && (
+                  <button className={tab === "consolidate" ? "active" : ""} onClick={() => setTab("consolidate")}><ScanLine size={18} /><span>Consolidate</span></button>
+                )}
+              </div>
+
               {(currentUser.role === "counter" || currentUser.role === "admin") && (
-                <button className={tab === "printLabels" ? "active" : ""} onClick={() => setTab("printLabels")}><Tag size={18} /><span>Print Labels</span></button>
+                <div className="nav-group">
+                  <span className="nav-group-label">Catalog</span>
+                  {(currentUser.role === "counter" || currentUser.role === "admin") && (
+                    <button className={tab === "printLabels" ? "active" : ""} onClick={() => setTab("printLabels")}><Tag size={18} /><span>Print Labels</span></button>
+                  )}
+                  {currentUser.role === "admin" && (
+                    <button className={tab === "products" ? "active" : ""} onClick={() => setTab("products")}>
+                      <Package size={18} /><span>Stock</span>
+                      {lowStockCount > 0 && <span className="badge-count">{lowStockCount}</span>}
+                    </button>
+                  )}
+                  {currentUser.role === "admin" && (
+                    <button className={tab === "weighIn" ? "active" : ""} onClick={() => setTab("weighIn")}><Weight size={18} /><span>Weigh-In</span></button>
+                  )}
+                  {currentUser.role === "admin" && (
+                    <button className={tab === "accounts" ? "active" : ""} onClick={() => setTab("accounts")}><CreditCard size={18} /><span>Accounts</span></button>
+                  )}
+                </div>
               )}
+
               {currentUser.role === "admin" && (
-                <button className={tab === "products" ? "active" : ""} onClick={() => setTab("products")}>
-                  <Package size={18} /><span>Stock</span>
-                  {lowStockCount > 0 && <span className="badge-count">{lowStockCount}</span>}
-                </button>
-              )}
-              {currentUser.role === "admin" && (
-                <button className={tab === "weighIn" ? "active" : ""} onClick={() => setTab("weighIn")}><Weight size={18} /><span>Weigh-In</span></button>
-              )}
-              {currentUser.role === "admin" && (
-                <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={18} /><span>Users</span></button>
-              )}
-              {currentUser.role === "admin" && (
-                <button className={tab === "accounts" ? "active" : ""} onClick={() => setTab("accounts")}><CreditCard size={18} /><span>Accounts</span></button>
-              )}
-              {currentUser.role === "admin" && (
-                <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Settings size={18} /><span>Settings</span></button>
-              )}
-              {currentUser.role === "admin" && (
-                <button className={tab === "reports" ? "active" : ""} onClick={() => setTab("reports")}><BarChart2 size={18} /><span>Reports</span></button>
-              )}
-              {currentUser.role === "admin" && (
-                <button className={tab === "statistics" ? "active" : ""} onClick={() => setTab("statistics")}><TrendingUp size={18} /><span>Statistics</span></button>
-              )}
-              {currentUser.role === "admin" && (
-                <button className={tab === "crm" ? "active" : ""} onClick={() => setTab("crm")}><MessageCircle size={18} /><span>CRM</span></button>
+                <div className="nav-group">
+                  <span className="nav-group-label">Admin</span>
+                  <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={18} /><span>Users</span></button>
+                  <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Settings size={18} /><span>Settings</span></button>
+                  <button className={tab === "reports" ? "active" : ""} onClick={() => setTab("reports")}><BarChart2 size={18} /><span>Reports</span></button>
+                  <button className={tab === "statistics" ? "active" : ""} onClick={() => setTab("statistics")}><TrendingUp size={18} /><span>Statistics</span></button>
+                  <button className={tab === "crm" ? "active" : ""} onClick={() => setTab("crm")}><MessageCircle size={18} /><span>CRM</span></button>
+                </div>
               )}
             </>
           )}
@@ -4975,6 +5020,7 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
   const [historyDays, setHistoryDays] = useState(30);
   const [siteName, setSiteName] = useState(branding.siteName);
   const [themeColor, setThemeColor] = useState("#1a47a0");
+  const [themePreset, setThemePreset] = useState<UiThemePreset>("classic");
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [stockLocations, setStockLocations] = useState<StockLocation[]>([]);
   const [salesStockLocationId, setSalesStockLocationId] = useState("");
@@ -5053,6 +5099,7 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
     api.settings.get().then((s) => {
       setHistoryDays(Number(s.historyDays ?? 30));
       setThemeColor(s.themeColor || "#1a47a0");
+      setThemePreset(s.uiThemePreset === "industrial" ? "industrial" : "classic");
       setSalesStockLocationId(s.salesStockLocationId ?? "");
       setVatRegistered(s.vatRegistered === "true");
       setVatNumber(s.vatNumber ?? "");
@@ -5216,6 +5263,17 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
     applyTheme(hex);
     setReceiptBranding({ themeColor: hex });
     await api.settings.set({ themeColor: hex });
+  };
+
+  // Shop-wide, not per-user (see theme.ts's applyThemePreset comment) —
+  // applies immediately for whoever's looking at Settings right now, same
+  // instant-feedback posture as the color picker above; every other
+  // signed-in terminal picks it up next time it fetches /settings/public
+  // (login) or /settings (already-signed-in).
+  const saveThemePreset = async (preset: UiThemePreset) => {
+    setThemePreset(preset);
+    applyThemePreset(preset);
+    await api.settings.set({ uiThemePreset: preset });
   };
 
   const toggle = async () => {
@@ -5514,9 +5572,19 @@ function SettingsPanel({ autoPrint, onAutoPrintChange, printStyle, onPrintStyleC
         <div className="setting-row">
           <div className="setting-info">
             <strong>Brand color</strong>
-            <p>Sets the primary color used across buttons, the sidebar, and highlights.</p>
+            <p>Sets the primary color used across buttons, the sidebar, and highlights. Only applies to the Classic appearance below.</p>
           </div>
-          <input type="color" value={themeColor} onChange={(e) => void saveThemeColor(e.target.value)} />
+          <input type="color" value={themeColor} onChange={(e) => void saveThemeColor(e.target.value)} disabled={themePreset !== "classic"} />
+        </div>
+        <div className="setting-row">
+          <div className="setting-info">
+            <strong>Appearance</strong>
+            <p>Classic is the light/dark, brand-colorable look above. Industrial is a fixed charcoal/steel/amber look built for a shop-floor tablet — it replaces the brand color while active. Applies to every till, including the login screen.</p>
+          </div>
+          <select className="settings-select" value={themePreset} onChange={(e) => void saveThemePreset(e.target.value as UiThemePreset)}>
+            <option value="classic">Classic</option>
+            <option value="industrial">Industrial</option>
+          </select>
         </div>
       </section>
 

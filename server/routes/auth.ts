@@ -1,10 +1,8 @@
-// Login (name + PIN, not a password) and "who am I" endpoints.
+// Login (passcode only — see getUserByPin) and "who am I" endpoints.
 import { Router } from "express";
-import bcrypt from "bcryptjs";
 import { db } from "../index.js";
 import { signToken, requireAuth } from "../auth.js";
 import type { AuthRequest } from "../auth.js";
-import type { User } from "../../src/shared/types.js";
 
 const router = Router();
 
@@ -23,34 +21,27 @@ router.post("/login", (req, res) => {
     return;
   }
 
-  const { name, pin } = req.body as { name: string; pin: string };
-  if (!name || !pin) { res.status(400).json({ message: "Name and PIN required" }); return; }
+  const { pin } = req.body as { pin: string };
+  if (!pin) { res.status(400).json({ message: "Passcode required" }); return; }
 
-  const user = db.getUserByName(name);
-  if (!user || !bcrypt.compareSync(String(pin), user.pin)) {
+  // No name to narrow the lookup — getUserByPin checks every active
+  // user's hash and returns whichever one matches (uniqueness is enforced
+  // at write time in createUser/updateUser, so at most one ever does).
+  const user = db.getUserByPin(pin);
+  if (!user) {
     const existing = loginAttempts.get(ip);
     if (existing && now < existing.resetAt) {
       existing.count++;
     } else {
       loginAttempts.set(ip, { count: 1, resetAt: now + 15 * 60 * 1000 });
     }
-    res.status(401).json({ message: "Invalid name or PIN" });
+    res.status(401).json({ message: "Incorrect passcode" });
     return;
   }
 
   // Clear rate limit counter on successful login
   loginAttempts.delete(ip);
-
-  // Built explicitly (not via destructure-and-discard) so a new sensitive
-  // column added to the users table later doesn't silently leak here by
-  // just not being excluded — only fields on the public User shape ever
-  // go out.
-  const safeUser: User = {
-    id: user.id, name: user.name, role: user.role, department: user.department,
-    isActive: user.isActive, createdAt: user.createdAt, lastSeenAt: user.lastSeenAt, themeMode: user.themeMode,
-    uiMode: user.uiMode
-  };
-  res.json({ token: signToken(safeUser), user: safeUser });
+  res.json({ token: signToken(user), user });
 });
 
 // Re-confirms the logged-in user's own PIN before a mistake-prone action

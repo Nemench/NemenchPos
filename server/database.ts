@@ -176,9 +176,48 @@ export class KotDatabase {
     return this.getUser(id)!;
   }
 
+  // Login is now passcode-only (no name field — see getUserByPin below),
+  // so every active user's PIN must be unique on its own: it's the entire
+  // identity, not just a second factor after picking a name. Can't be
+  // enforced with a UNIQUE column (bcrypt hashes the same plaintext
+  // differently every time, salt included) — loops every active user's
+  // hash and bcrypt-compares the new plaintext against each, which is
+  // fine at the scale of a single shop's staff list.
+  private pinInUseByAnotherUser(pin: string, excludeId?: number): boolean {
+    const rows = (excludeId != null
+      ? this.db.prepare("SELECT pin FROM users WHERE isActive = 1 AND id != ?").all(excludeId)
+      : this.db.prepare("SELECT pin FROM users WHERE isActive = 1").all()) as { pin: string }[];
+    return rows.some((r) => bcrypt.compareSync(pin, r.pin));
+  }
+
+  // The passcode-only login's lookup: no name to narrow the search, so
+  // every active user's hash has to be checked (bcrypt hashes aren't
+  // indexable/reversible) until one matches. Uniqueness is enforced at
+  // write time (see pinInUseByAnotherUser above), so at most one match is
+  // ever possible.
+  getUserByPin(pin: string): User | null {
+    const rows = this.db
+      .prepare("SELECT id, name, pin, role, department, isActive, createdAt, lastSeenAt, themeMode, uiMode FROM users WHERE isActive = 1")
+      .all() as (User & { pin: string })[];
+    const match = rows.find((u) => bcrypt.compareSync(String(pin), u.pin));
+    if (!match) return null;
+    // Built explicitly, not via destructure-and-discard — same reasoning
+    // as the login route's safeUser used to have before this replaced it:
+    // a new sensitive column added to users later shouldn't silently leak
+    // out just by not being excluded.
+    return {
+      id: match.id, name: match.name, role: match.role, department: match.department,
+      isActive: match.isActive, createdAt: match.createdAt, lastSeenAt: match.lastSeenAt,
+      themeMode: match.themeMode, uiMode: match.uiMode
+    };
+  }
+
   createUser(input: UserInput): User {
     if (!input.pin || input.pin.length < 4 || input.pin.length > 8 || !/^\d+$/.test(input.pin)) {
       throw new Error("PIN must be 4–8 digits");
+    }
+    if (this.pinInUseByAnotherUser(input.pin)) {
+      throw new Error("That passcode is already in use by another active staff member — choose a different one");
     }
     const hash = bcrypt.hashSync(input.pin, 10);
     const now = new Date().toISOString();
@@ -195,9 +234,19 @@ export class KotDatabase {
       const { count } = this.db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin' AND isActive = 1 AND id != ?").get(id) as { count: number };
       if (count === 0) throw new Error("Cannot deactivate the only active admin account");
     }
+    // NOTE: reactivating a user whose old passcode was reissued to someone
+    // else while they were inactive isn't checked here — bcrypt hashes are
+    // one-way, so there's no plaintext left to re-run the uniqueness check
+    // against on a reactivation that doesn't also set a fresh PIN. In
+    // practice this means: after reactivating someone, tell them to set a
+    // new passcode if login behaves unexpectedly (getUserByPin just
+    // returns whichever matching account it finds first).
     const now = new Date().toISOString();
     if (input.pin) {
       if (!/^\d{4,8}$/.test(input.pin)) throw new Error("PIN must be 4–8 digits");
+      if (this.pinInUseByAnotherUser(input.pin, id)) {
+        throw new Error("That passcode is already in use by another active staff member — choose a different one");
+      }
       this.db.prepare("UPDATE users SET pin = ?, updatedAt = ? WHERE id = ?").run(bcrypt.hashSync(input.pin, 10), now, id);
     }
     if (input.name !== undefined) {

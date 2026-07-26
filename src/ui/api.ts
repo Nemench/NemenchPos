@@ -60,7 +60,7 @@ async function download(path: string, filename: string): Promise<void> {
 
 export const api = {
   auth: {
-    login: (name: string, pin: string) => req<{ token: string; user: User }>("POST", "/auth/login", { name, pin }),
+    login: (pin: string) => req<{ token: string; user: User }>("POST", "/auth/login", { pin }),
     me: () => req<User>("GET", "/auth/me"),
     setThemeMode: (themeMode: "light" | "dark") =>
       req<{ token: string; user: User }>("PATCH", "/auth/theme-mode", { themeMode }),
@@ -116,7 +116,7 @@ export const api = {
   settings: {
     get: () => req<Record<string, string>>("GET", "/settings"),
     set: (data: Record<string, string>) => req<Record<string, string>>("PUT", "/settings", data),
-    public: () => req<{ siteName: string; logoUrl: string; themeColor: string; vatRegistered: boolean; vatNumber: string; businessAddress: string; publicBaseUrl: string }>("GET", "/settings/public"),
+    public: () => req<{ siteName: string; logoUrl: string; themeColor: string; uiThemePreset: "classic" | "industrial"; vatRegistered: boolean; vatNumber: string; businessAddress: string; publicBaseUrl: string }>("GET", "/settings/public"),
     uploadLogo: (dataUrl: string) => req<{ logoUrl: string }>("POST", "/settings/logo", { dataUrl }),
     licenseStatus: () => req<{ licenseStatus: string; gracePeriodEndsAt: string | null }>("GET", "/settings/license-status"),
     testEmail: (to: string) => req<{ ok: boolean }>("POST", "/settings/email-test", { to })

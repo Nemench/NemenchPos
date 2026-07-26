@@ -28,6 +28,10 @@ router.get("/public", (req, res) => {
   const s = db.getAllSettings();
   res.json({
     siteName: s.siteName || "NemenchPos", logoUrl: s.logoUrl || "", themeColor: s.themeColor || "",
+    // "classic" | "industrial" — read pre-login too (not just after auth)
+    // so the passcode screen itself already reflects the shop's chosen
+    // look, not just the logged-in app.
+    uiThemePreset: s.uiThemePreset === "industrial" ? "industrial" : "classic",
     vatRegistered: s.vatRegistered === "true", vatNumber: s.vatNumber || "", businessAddress: s.businessAddress || "",
     publicBaseUrl: resolvePublicBaseUrl(s, `${req.protocol}://${req.get("host")}`)
   });
