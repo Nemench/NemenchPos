@@ -104,12 +104,57 @@
 
 /* Industrial preset — a shop-wide admin choice (Settings > Appearance),
    applied via data-theme-preset on <html> (see theme.ts's
-   applyThemePreset), independent of the light/dark toggle above: this is
-   its own complete, self-consistent charcoal/steel look with a single
-   strong amber accent, not a "dark mode variant" of it. Reuses dark
-   mode's already-validated --pos-cat-* swatches (same dark-surface
-   contrast assumptions) rather than inventing a fourth unvalidated set. */
+   applyThemePreset). Independent of WHICH axis of surface color: the
+   light/dark toggle still works while Industrial is active, same as it
+   does under Classic — this block only sets what's constant across both
+   (the amber accent, and the flatter/sharper shape), with a light variant
+   here and a [data-theme="dark"] override below carrying the two actual
+   surface palettes. Reuses Classic dark mode's already-validated
+   --pos-cat-* swatches for the dark variant (same dark-surface contrast
+   assumptions) rather than inventing a fourth unvalidated set; the light
+   variant reuses Classic light's original --pos-cat-* set for the same
+   reason. */
 :root[data-theme-preset="industrial"] {
+  --blue:       #c9820f;
+  --blue-dark:  #9c6608;
+  --blue-hover: #b3740c;
+  --blue-light: #f5e6cc;
+  --red:        #c0392b;
+  --red-light:  #fbeae7;
+  --green:       #3f7d32;
+  --green-light: #eaf3e6;
+  --border:     #c3c9ce;
+  --bg:         #eceff1;
+  --panel:      #f5f6f7;
+  --text:       #1c1f23;
+  --muted:      #5b6169;
+
+  --input-bg:         #ffffff;
+  --chip-bg:           #e4e7ea;
+  --accent-text:       #9c6608;
+  --secondary-hover:  #d7dbde;
+  --overlay:          rgba(20, 22, 25, 0.5);
+  color-scheme: light;
+
+  /* Flatter and sharper than Classic's rounded/soft-shadow cards — no
+     ambient glow at all, definition comes from the (now higher-contrast)
+     border alone. */
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --card-shadow: none;
+
+  --pos-cat-1: #2a78d6;
+  --pos-cat-2: #1baf7a;
+  --pos-cat-3: #eda100;
+  --pos-cat-4: #008300;
+  --pos-cat-5: #4a3aa7;
+  --pos-cat-6: #e34948;
+  --pos-cat-7: #e87ba4;
+  --pos-cat-8: #eb6834;
+  --pos-cat-other: #8a94a8;
+}
+
+:root[data-theme-preset="industrial"][data-theme="dark"] {
   --blue:       #f5a623;
   --blue-dark:  #c9820f;
   --blue-hover: #e0961c;
@@ -131,13 +176,6 @@
   --overlay:          rgba(0, 0, 0, 0.75);
   color-scheme: dark;
 
-  /* Flatter and sharper than Classic's rounded/soft-shadow cards — no
-     ambient glow at all, definition comes from the (now higher-contrast)
-     border alone. */
-  --radius-sm: 3px;
-  --radius-md: 4px;
-  --card-shadow: none;
-
   --pos-cat-1: #3987e5;
   --pos-cat-2: #199e70;
   --pos-cat-3: #c98500;
@@ -152,9 +190,8 @@
 /* Bolder/heavier than Classic's 600 (see button{} above) — Industrial
    reads as utilitarian partly through unambiguous, high-contrast weight,
    not restraint. Sidebar gets its own explicit steel-charcoal background
-   rather than inheriting --blue-dark (now amber-dark) — the accent color
-   is for actions/highlights, not for what would otherwise tint the whole
-   nav rail amber. */
+   in both light and dark — the accent color is for actions/highlights,
+   not for what would otherwise tint the whole nav rail amber. */
 :root[data-theme-preset="industrial"] button {
   font-weight: 700;
 }
@@ -162,6 +199,12 @@
 :root[data-theme-preset="industrial"] .sidebar,
 :root[data-theme-preset="industrial"] .login-screen,
 :root[data-theme-preset="industrial"] .boot-screen {
+  background: #22262b;
+}
+
+:root[data-theme-preset="industrial"][data-theme="dark"] .sidebar,
+:root[data-theme-preset="industrial"][data-theme="dark"] .login-screen,
+:root[data-theme-preset="industrial"][data-theme="dark"] .boot-screen {
   background: #1a1c20;
 }
 
