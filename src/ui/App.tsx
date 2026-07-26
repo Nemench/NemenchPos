@@ -1159,7 +1159,28 @@ function POSPanel({ products, printerMap, currentUser, onCompleted }: { products
 
     document.addEventListener("focusout", onFocusOut);
     refocusHidden(); // claim focus on mount
-    return () => document.removeEventListener("focusout", onFocusOut);
+
+    // Belt-and-suspenders beyond the focusout listener above, which only
+    // fires when something that previously HAD focus loses it — it can't
+    // help if focus is simply stuck nowhere (document.activeElement ===
+    // body) with no prior focusout to react to. That happens after: the
+    // browser tab/window regaining focus (switching back from another
+    // app/window), the printed-receipt overlay closing, or simply the very
+    // first paint racing the mount-time focus() call above on a slow
+    // device. A short interval catches all of these the same way,
+    // regardless of which one actually happened — "fully automatic"
+    // scanning shouldn't depend on correctly special-casing every path
+    // that can leave focus stranded.
+    window.addEventListener("focus", refocusHidden);
+    document.addEventListener("visibilitychange", refocusHidden);
+    const intervalId = window.setInterval(refocusHidden, 800);
+
+    return () => {
+      document.removeEventListener("focusout", onFocusOut);
+      window.removeEventListener("focus", refocusHidden);
+      document.removeEventListener("visibilitychange", refocusHidden);
+      window.clearInterval(intervalId);
+    };
   }, []);
 
   const handleHiddenScanKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
